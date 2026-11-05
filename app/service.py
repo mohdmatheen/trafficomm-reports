@@ -235,7 +235,8 @@ def create_revision(s, task: Task, user: User, feedback: str, base_version_id: i
     task.status = "queued"
     task.approved_version_id = None if task.approved_version_id == base.id and False else task.approved_version_id
     s.add(Message(task_id=task.id, version_id=v.id, author_id=None, kind="assistant",
-                  text=f"Creating v{v.number} from v{base.number}: {rp.summary}." + (" (" + provider.name + ")" if provider.mocked else "")))
+                  text=f"Creating v{v.number} from v{base.number}: {rp.summary}." + (" (" + provider.name + ")" if provider.mocked else
+                       (" (read by " + ("Claude" if provider.steps and provider.steps[-1]["engine"] == "claude" else "built-in rules") + ")" if getattr(provider, "steps", None) else ""))))
     enqueue(s, v, "revision")
     audit(s, user.id, "revision", f"task {task.id} v{v.number}")
     return v, rp.summary
@@ -374,6 +375,14 @@ def persist_result(job_id: int, vid: int, tid: int, result: dict):
         v.status = result["status"]
         task.status = result["status"]
         v.error = result.get("error")
+        st_info = result.get("structure") or {}
+        if (result["status"] == "ready_for_review" and st_info.get("fingerprint") and not st_info.get("known") and task.profile_id
+                and not result.get("ai_mocked")):  # only reports Claude has handled count as known structures
+            prof = s.get(Profile, task.profile_id)
+            stt = dict(prof.settings or {})
+            ks = [k for k in (stt.get("known_structures") or []) if k != st_info["fingerprint"]] + [st_info["fingerprint"]]
+            stt["known_structures"] = ks[-50:]
+            prof.settings = stt
         if result["status"] in ("ready_for_review", "validation_blocked"):
             v.completed_at = now()
             if v.base_version_id:

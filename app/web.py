@@ -96,7 +96,7 @@ def healthz():
     with Session() as s:
         s.execute(select(1))
         q = s.scalar(select(func.count(Job.id)).where(Job.status == "queued"))
-    return {"ok": True, "queued_jobs": q, "ai": "claude" if settings.ai_enabled else "mocked"}
+    return {"ok": True, "queued_jobs": q, "ai": "hybrid" if settings.ai_enabled else "mocked"}
 
 
 # ---------------------------------------------------------------------------
