@@ -280,6 +280,30 @@
       finally { setTimeout(() => { sb.disabled = false; sb.innerHTML = old; }, 3000); }
     });
 
+    // Render invoices: entered by an admin (Render has no billing API)
+    const rf = $("#rinvForm");
+    if (rf) {
+      const err = $("#rinvErr");
+      const showErr = (m) => { err.textContent = m; err.hidden = !m; };
+      rf.addEventListener("submit", async (ev) => {
+        ev.preventDefault(); showErr("");
+        const month = rf.month.value, amount = rf.amount.value.trim();
+        if (!month) { showErr("Choose the invoice month."); rf.month.focus(); return; }
+        if (!/^\$?\d[\d,]*(\.\d{1,2})?$/.test(amount)) { showErr("Enter the invoice total in USD, for example 32.22."); rf.amount.focus(); return; }
+        const b = rf.querySelector("button[type=submit]"); b.disabled = true;
+        try { await api("PUT", "/api/admin/usage/render-invoices", { month, amount, note: rf.note.value }); toast("Render invoice saved"); location.reload(); }
+        catch (e) { showErr(e.message); b.disabled = false; }
+      });
+      $$("[data-rinv-edit]").forEach((x) => x.addEventListener("click", () => {
+        rf.month.value = x.dataset.rinvEdit; rf.amount.value = x.dataset.amount; rf.note.value = x.dataset.note || ""; rf.amount.focus();
+      }));
+      $$("[data-rinv-del]").forEach((x) => x.addEventListener("click", async () => {
+        if (x.dataset.armed !== "1") { x.dataset.armed = "1"; x.textContent = "Confirm remove"; setTimeout(() => { x.dataset.armed = ""; x.textContent = "Remove"; }, 4000); return; }
+        try { await api("DELETE", "/api/admin/usage/render-invoices/" + encodeURIComponent(x.dataset.rinvDel)); location.reload(); }
+        catch (e) { toast(e.message, true); }
+      }));
+    }
+
     // employee table: filter and sort over server-rendered rows
     function bindTable() {
       const q = $("#ucQ"), tb = $("#ucEmp tbody");

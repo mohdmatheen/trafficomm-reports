@@ -54,20 +54,33 @@
   </section>
   <section class="card uc-card" aria-labelledby="k2">
     <span class="uc-ic uc-ic-soft">{{ icon('table') }}</span>
-    <div><h2 id="k2">Render cost</h2><p class="uc-big uc-muted">Awaiting source</p><p class="small muted">Not included in any total.</p>
-    <span class="pill pill-warn">{{ icon('alert') }}Billing sync unsupported</span></div>
+    {% set rd = d.render %}
+    <div><h2 id="k2">Render cost</h2>
+    {% if rd.usd is not none %}
+      <p class="uc-big">{{ usd(rd.usd) }}</p><p class="uc-inr">{{ inr(rd.usd) }}</p>
+      <p class="small muted">Invoice {{ 'total' if rd.entered|length == 1 else 'totals' }} entered by an admin for {% for i in rd.entered %}{{ month_label(i.month) }}{{ ', ' if not loop.last }}{% endfor %}. Whole months, not prorated.</p>
+      {% if rd.missing %}<span class="pill pill-warn">{{ icon('alert') }}No invoice yet for {% for m in rd.missing %}{{ month_label(m) }}{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}
+    {% else %}
+      <p class="uc-big uc-muted">Awaiting entry</p><p class="small muted">Render has no billing API. Enter each monthly invoice total below. Not counted as $0.</p>
+      <span class="pill pill-warn">{{ icon('alert') }}No invoice for {% for m in rd.missing %}{{ month_label(m) }}{{ ', ' if not loop.last }}{% endfor %}</span>
+    {% endif %}</div>
   </section>
   <section class="card uc-card" aria-labelledby="k3">
     <span class="uc-ic uc-ic-soft">{{ icon('layers') }}</span>
     <div><h2 id="k3">Confirmed subtotal</h2>
     {% if d.combined.usd is not none %}<p class="uc-big">{{ usd(d.combined.usd) }}</p><p class="uc-inr">{{ inr(d.combined.usd) }}</p>
       <p class="small muted">{{ d.combined.label }}</p>
-      <span class="pill pill-warn">{{ icon('alert') }}Partial total · Render excluded</span>
+      {% if not d.combined.complete %}<span class="pill pill-warn">{{ icon('alert') }}Partial total{% if not d.combined.has_render %} · Render excluded{% elif not d.combined.has_claude %} · Claude excluded{% endif %}</span>{% endif %}
     {% else %}<p class="uc-big uc-muted">Unavailable</p><p class="small muted">No confirmed provider cost yet. Missing data isn’t counted as $0.</p>{% endif %}</div>
   </section>
 </div>
 
-<div class="notice notice-warn" role="note">{{ icon('alert') }}<div><p><b>Total incomplete:</b> Render billing can’t be synced, because Render’s public API has no billing or invoice endpoint. Missing data isn’t treated as $0.{% if c.usd is none %} Claude cost isn’t confirmed yet either.{% endif %}</p></div></div>
+{% if not d.combined.complete %}
+<div class="notice notice-warn" role="note">{{ icon('alert') }}<div><p><b>Total incomplete:</b>
+  {% if d.render.usd is none %}no Render invoice has been entered for this period.{% elif d.render.missing %}no Render invoice yet for {% for m in d.render.missing %}{{ month_label(m) }}{{ ', ' if not loop.last }}{% endfor %}.{% elif not d.render.whole_months %}Render invoices are monthly, and this period doesn’t cover whole months, so the totals don’t line up.{% endif %}
+  {% if c.usd is none %} Claude cost isn’t confirmed yet.{% elif c.partial_period %} Claude cost isn’t published for the whole period yet.{% endif %}
+  Missing data isn’t treated as $0.</p></div></div>
+{% endif %}
 
 <section class="card ad-card" aria-labelledby="h-emp" id="activity">
   <header class="ad-head"><span class="card-ic">{{ icon('user') }}</span>
@@ -85,7 +98,7 @@
     <tbody>
       <tr><th scope="row">Claude costs</th><td>{{ an.last_success_at|local if an and an.last_success_at else '—' }}</td><td>{{ an.data_refreshed_at|local if an and an.data_refreshed_at else '—' }}</td><td>{{ badge('unmapped' if c.status == 'unmapped' else (an.status if an else ('not_configured' if not d.cfg.admin_key else 'never'))) }}</td></tr>
       <tr><th scope="row">Live app activity</th><td colspan="2" id="lastActivity">{% if d.last_activity %}Latest request <time datetime="{{ d.last_activity.isoformat() }}">{{ d.last_activity|local }}</time>{% else %}No requests recorded yet{% endif %}</td><td><span class="badge-st tone-ok" id="streamBadge"><span class="bdot" aria-hidden="true"></span>Recorded live</span></td></tr>
-      <tr><th scope="row">Render billing</th><td>—</td><td>Not available</td><td>{{ badge('unsupported') }}</td></tr>
+      <tr><th scope="row">Render invoices</th><td>{{ d.render.invoices[0].entered_at|local if d.render.invoices else '—' }}</td><td>{{ month_label(d.render.invoices[0].month) if d.render.invoices else '—' }}</td><td>{{ badge(d.render.status) }}</td></tr>
       <tr><th scope="row">Render services</th><td>{{ d.states.render.last_success_at|local if d.states.get('render') and d.states.render.last_success_at else '—' }}</td><td>Metadata only</td><td>{{ badge(d.render.metadata_status) }}</td></tr>
       <tr><th scope="row">Exchange rate</th><td>{{ fxs.last_success_at|local if fxs and fxs.last_success_at else '—' }}</td><td>{{ d.fx.rate_date if d.fx else '—' }}</td><td>{{ badge(fxs.status if fxs else 'never') }}</td></tr>
     </tbody></table></div>
@@ -95,8 +108,21 @@
 
 <section class="card ad-card" aria-labelledby="h-render">
   <header class="ad-head"><span class="card-ic">{{ icon('table') }}</span><div><h2 id="h-render">Render infrastructure</h2><p>Shared infrastructure. No per-employee allocation is applied.</p></div></header>
-  <p><b>Monetary billing: unsupported.</b> Render’s public API has service, deploy, metrics and log endpoints, but no billing, invoice or charge endpoints. A confirmed amount can’t be read automatically, so none is shown.</p>
-  <p><a href="{{ d.render.billing_url }}" target="_blank" rel="noopener">Open Render billing {{ icon('arrow-right') }}<span class="sr"> (opens in a new tab)</span></a></p>
+  <p class="small">Render’s public API has no billing endpoint, so invoice totals are entered here by an admin from <a href="{{ d.render.billing_url }}" target="_blank" rel="noopener">Render billing<span class="sr"> (opens in a new tab)</span></a>. Enter the invoice total in USD for each month. Saving a month again replaces it.</p>
+  <form class="rinv-form" id="rinvForm" novalidate>
+    <div class="field"><label for="rinv-month">Invoice month</label><input id="rinv-month" type="month" name="month" required max="{{ this_month }}" value="{{ default_invoice_month }}"></div>
+    <div class="field"><label for="rinv-amt">Total (USD)</label><input id="rinv-amt" name="amount" inputmode="decimal" required placeholder="32.22" autocomplete="off"></div>
+    <div class="field rinv-note"><label for="rinv-note">Note <span class="opt">(optional)</span></label><input id="rinv-note" name="note" maxlength="300" placeholder="Invoice number" autocomplete="off"></div>
+    <button class="btn btn-primary" type="submit">Save invoice</button>
+    <p class="field-err small" id="rinvErr" role="alert" hidden></p>
+  </form>
+  {% if d.render.invoices %}
+  <div class="tbl-wrap"><table class="tbl compact rinv-tbl"><caption class="sr">Render invoices entered by admins</caption>
+    <thead><tr><th scope="col">Month</th><th scope="col" class="num">Total</th><th scope="col"><span class="sr">Actions</span></th></tr></thead><tbody>
+    {% for i in d.render.invoices %}<tr><th scope="row">{{ month_label(i.month) }}{% if i.note %} · <span class="rinv-n">{{ i.note }}</span>{% endif %}<span class="rinv-by">Entered by {{ i.entered_by_name }}, {{ i.entered_at|local }}</span></th><td class="num">{{ usd(i.amount_usd) }}</td>
+      <td><button type="button" class="btn btn-sm" data-rinv-edit="{{ i.month }}" data-amount="{{ i.amount_usd }}" data-note="{{ i.note }}">Edit</button> <button type="button" class="btn btn-sm btn-danger" data-rinv-del="{{ i.month }}">Remove</button></td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}<p class="small muted">No invoices entered yet.</p>{% endif %}
   {% if d.render.services %}
   <ul class="plain small uc-svcs">{% for sv in d.render.services %}<li><b>{{ sv.name }}</b> · {{ sv.type }}{% if sv.plan %} · plan {{ sv.plan }}{% endif %}{% if sv.region %} · {{ sv.region }}{% endif %}{% if sv.suspended == 'suspended' %} · suspended{% endif %}</li>{% endfor %}</ul>
   <p class="small muted">Service details from the Render API. A plan name isn’t a bill.</p>
