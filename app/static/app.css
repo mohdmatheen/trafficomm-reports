@@ -135,3 +135,4 @@ blockquote{margin:6px 0;padding:6px 10px;background:var(--g1);border-left:3px so
 @media (max-width:600px){.row2{grid-template-columns:1fr}.topbar{padding:0 12px}.topbar .who{display:none}.container{padding:0 12px}}
 .topbar a.who{text-decoration:none}.topbar a.who:hover,.topbar a.who.on{color:var(--ink,#0c0c0d)}
 .pw-reset{display:inline-flex;gap:6px;margin-left:6px}.pw-reset input{width:140px;padding:4px 8px;font-size:12px;margin:0}
+.tag.tag-ai{background:#fdecea;border-color:#f3b6b3;color:#c42b27}.ai-steps .tag{margin-right:4px}

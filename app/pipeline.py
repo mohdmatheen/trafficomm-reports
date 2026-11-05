@@ -57,7 +57,8 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     prev_dir = os.path.join(inp.workdir, "previews")
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(prev_dir, exist_ok=True)
-    result: dict = {"status": None, "questions": [], "artifacts": [], "ai_provider": provider.name, "ai_mocked": provider.mocked}
+    result: dict = {"status": None, "questions": [], "artifacts": [], "ai_provider": provider.name, "ai_mocked": provider.mocked,
+                    "ai_steps": getattr(provider, "steps", None) if not provider.mocked else []}
 
     # ---------------- Inspecting files
     stage("inspecting", "Inspecting uploaded files")
@@ -80,6 +81,19 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
 
     # ---------------- Interpret instructions (model may interpret, never calculate)
     headers = sorted({c["original"] for f in raw for s in f["inspection"].get("sheets", []) for c in s.get("columns", [])})
+    # hybrid routing: repeat reports on a known structure use built-in rules; new ones get Claude
+    rule_plan = AI.RuleProvider().interpret_instructions(t.get("instructions") or "", t.get("deliverables") or [], headers).model_dump()
+    fp, fp_desc = AI.structure_fingerprint(raw, deck_file, template_file, t.get("deliverables"), t.get("instructions") or "", rule_plan)
+    known = list(inp.profile.get("known_structures") or [])
+    if fp in known:
+        mode = (False, "Repeat report on a known structure (data update) - built-in rules")
+    elif not known:
+        mode = (True, "First report for this client - Claude reads the request and writes the insights")
+    else:
+        mode = (True, "New report structure for this client (" + "; ".join(fp_desc) + ") - Claude reads the request and writes the insights")
+    result["structure"] = {"fingerprint": fp, "known": fp in known, "reason": mode[1]}
+    if hasattr(provider, "set_mode"):
+        provider.set_mode(*mode)
     plan_obj = provider.interpret_instructions(t.get("instructions") or "", t.get("deliverables") or [], headers)
     plan = plan_obj.model_dump()
     for k, v in (inp.plan_overrides or {}).items():

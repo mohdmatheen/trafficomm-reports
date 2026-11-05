@@ -18,7 +18,7 @@ def fx(name):
 
 
 def run(files, deliverables=("excel",), answers=None, plan_overrides=None, profile=None, workdir=None, instructions="",
-        period=("2026-09-01", "2026-09-30"), comparison=None, currency="AED", fx_usd_aed=None, base_artifacts=None, version=1, stages=None):
+        period=("2026-09-01", "2026-09-30"), comparison=None, currency="AED", fx_usd_aed=None, base_artifacts=None, version=1, stages=None, provider=None):
     profile = GENERIC_PROFILE if profile is None else profile
     fin = []
     for i, (path, role) in enumerate(files):
@@ -34,7 +34,7 @@ def run(files, deliverables=("excel",), answers=None, plan_overrides=None, profi
     inp = VersionInput(task=task, files=fin, profile=profile, answers=answers or {}, plan_overrides=plan_overrides or {},
                        workdir=wd, version_number=version, base_artifacts=base_artifacts or {})
     log = stages if stages is not None else []
-    return run_version(inp, lambda n, dtl: log.append((n, dtl)))
+    return run_version(inp, lambda n, dtl: log.append((n, dtl)), provider=provider)
 
 
 def qkeys(res):

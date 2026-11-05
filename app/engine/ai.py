@@ -96,6 +96,7 @@ Rules you must follow:
 class RuleProvider:
     name = "AI mocked (rule-based) - set ANTHROPIC_API_KEY to enable Claude"
     mocked = True
+    steps: list = []
 
     def interpret_instructions(self, text: str, deliverables: list[str], headers: list[str]) -> Plan:
         t = (text or "").lower()
@@ -328,10 +329,133 @@ class AnthropicProvider:
             return rule_commentary(calc, ctx)
 
 
+# ---------------------------------------------------------------------------
+# Hybrid: built-in rules by default; Claude for new tasks / new report structures
+# ---------------------------------------------------------------------------
+_ROUTINE_WORDS = set("""a an the and or to for of in on by with without per each all please kindly also same as usual
+report reports reporting deck ppt powerpoint excel sheet sheets tab tabs slide slides update updated refresh new figures numbers data
+month monthly september october november december january february march april may june july august previous last this period
+break breakdown split separate by platform platforms campaign campaigns country countries market markets language languages creative creatives
+objective objectives brand brands school schools uae ksa english arabic compare comparison mom vs versus link clicks click all cpa cost
+lead leads form instant website purchase purchases conversion conversions commentary insights insight recommendations summary short brief
+keep retain design order formatting only compile template thumbnails screenshots add missing remove use include show""".split())
+
+
+def _routine_share(text: str) -> float:
+    words = re.findall(r"[a-z]+", (text or "").lower())
+    if not words:
+        return 1.0
+    return sum(w in _ROUTINE_WORDS for w in words) / len(words)
+
+
+def is_freeform(text: str) -> bool:
+    """Instructions the keyword rules can't fully read (long or mostly non-standard wording)."""
+    t = (text or "").strip()
+    return bool(t) and (len(re.findall(r"\w+", t)) > 40 or _routine_share(t) < 0.75)
+
+
+def structure_fingerprint(raw_files: list, deck_file, template_file, deliverables, instructions: str, rule_plan: dict) -> tuple[str, list[str]]:
+    """What makes a report 'the same report' month to month: the raw export layouts, the deck and
+    template structure, the deliverables and the kind of request. Dates and figures are ignored."""
+    import hashlib
+    parts, desc = [], []
+    layouts = sorted({(s.get("platform") or "unknown", tuple(sorted(c["canonical"] for c in s.get("columns", []) if c.get("canonical"))))
+                      for f in raw_files for s in f["inspection"].get("sheets", []) if s.get("is_data_sheet")})
+    parts.append(("raw", layouts))
+    desc.append("raw export layouts: " + ", ".join(sorted({p for p, _ in layouts})))
+    if deck_file and deck_file["inspection"].get("deck"):
+        d = deck_file["inspection"]["deck"]
+        parts.append(("deck", [(sl.get("classification"), sorted({m for t in sl.get("tables", []) for m in (t.get("metric_cols") or {}).values()}))
+                               for sl in d.get("slides", [])]))
+        desc.append(f"deck structure ({d.get('slide_count')} slides)")
+    if template_file:
+        parts.append(("template", [s.get("name") for s in template_file["inspection"].get("sheets", [])]))
+        desc.append("Excel template structure")
+    parts.append(("deliverables", sorted(deliverables or [])))
+    req = {k: rule_plan.get(k) for k in ("breakdowns", "split_tabs_by", "include_commentary", "include_recommendations", "short_summary",
+                                         "compare", "template_only", "remove_sections", "add_missing_slides")}
+    parts.append(("request", req))
+    if is_freeform(instructions):
+        parts.append(("freeform", re.sub(r"\W+", " ", instructions.lower()).strip()))
+        desc.append("free-form instructions")
+    fp = hashlib.sha256(json.dumps(parts, default=str, sort_keys=True).encode()).hexdigest()[:24]
+    return fp, desc
+
+
+class HybridProvider(AnthropicProvider):
+    """Built-in rules by default. When a task is new for the client or its report structure differs
+    from every report completed before, Claude reads the instructions and writes the insights. Repeat
+    reports on a known structure (data updates) use the built-in rules only. Any Claude failure falls
+    back to the rules, and every step records which engine handled it."""
+
+    def __init__(self):
+        super().__init__()
+        self.name = f"Hybrid: built-in rules + Claude ({self.model})"
+        self.steps: list[dict] = []
+        self.use_claude = False
+        self.reason = ""
+
+    def set_mode(self, use_claude: bool, reason: str):
+        self.use_claude, self.reason = use_claude, reason
+
+    def _log(self, step, engine, reason):
+        self.steps.append({"step": step, "engine": engine, "reason": reason})
+
+    def interpret_instructions(self, text, deliverables, headers) -> Plan:
+        if not self.use_claude:
+            self._log("Instructions", "rules", self.reason or "Built-in rules")
+            return self.fallback.interpret_instructions(text, deliverables, headers)
+        p = super().interpret_instructions(text, deliverables, headers)
+        if any("rule-based fallback" in n for n in p.notes):
+            self._log("Instructions", "rules", "Claude unavailable - built-in rules used instead")
+        else:
+            self._log("Instructions", "claude", self.reason)
+        return p
+
+    def interpret_feedback(self, feedback, has_new_files) -> RevisionPlan:
+        rp = self.fallback.interpret_feedback(feedback, has_new_files)
+        if not any(o.op == "unsupported" for o in rp.ops):
+            self._log("Feedback", "rules", "Standard change - applied with built-in rules")
+            return rp
+        try:
+            user = (f"New files uploaded with this feedback: {has_new_files}\nSupported ops: {RevisionOp.model_fields['op'].annotation}\n"
+                    f"Dimension keys: {DIMS}. Section keys: summary, platform, brand, creative, market, comparison, insights, recommendations, methodology.\n"
+                    f"Employee feedback:\n<untrusted>{feedback[:4000]}</untrusted>\nMap it to ops; use 'unsupported' for anything else.")
+            out = self._parse(RevisionPlan, user)
+            self._log("Feedback", "claude", "New kind of change the built-in rules couldn't map - read by Claude")
+            return out
+        except Exception as e:  # noqa: BLE001
+            log.warning("AI feedback parsing failed (%s); using rule result", type(e).__name__)
+            self._log("Feedback", "rules", "Claude unavailable - built-in rules used instead")
+            return rp
+
+    def write_commentary(self, facts, ctx, calc) -> list[dict]:
+        if not self.use_claude:
+            self._log("Insights", "rules", self.reason or "Built-in rules")
+            return rule_commentary(calc, ctx)
+        out = None
+        try:
+            compact = {k: {"value": v["value"], "metric": v["metric"], "scope": v["scope"], "unit": v["unit"]} for k, v in list(facts.items())[:400]}
+            user = (f"Report: {ctx['title']} | period {ctx['period_label']} | data window {ctx['data_window']} | currency {calc.currency}\n"
+                    f"Click metric: {calc.click_metric_label}. Conversion metric: {calc.conversion_label or 'none selected'}.\n"
+                    f"Comparison period available: {bool(calc.comparison)}.\n<facts>{json.dumps(compact, default=str)}</facts>\n"
+                    "Write 4-8 observations, 1-3 interpretations (as hypotheses), 1-3 recommendations. Every number must come from a cited fact, "
+                    "formatted with thousands separators and 2 decimals for rates/money.")
+            c = self._parse(Commentary, user, 6000)
+            out = [{"type": s.type, "text": s.text, "evidence": s.fact_ids} for s in c.statements]
+        except Exception as e:  # noqa: BLE001
+            log.warning("AI commentary failed (%s); using rule fallback", type(e).__name__)
+        if out:
+            self._log("Insights", "claude", "Written by Claude from calculated figures (every number checked)")
+            return out
+        self._log("Insights", "rules", "Claude unavailable - built-in insight rules used instead")
+        return rule_commentary(calc, ctx)
+
+
 def get_provider():
     if settings.ai_enabled:
         try:
-            return AnthropicProvider()
+            return HybridProvider()
         except Exception:  # noqa: BLE001
             log.exception("Anthropic client init failed")
     return RuleProvider()

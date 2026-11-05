@@ -74,6 +74,9 @@
 <section class="card" id="summary">
   <div class="card-head"><h2>Summary{% if shown %} · v{{ shown.number }}{% endif %}</h2>
     {% if R.get('ai_mocked') %}<span class="tag tag-warn">AI mocked (rule-based)</span>{% elif R.get('ai_provider') %}<span class="tag">AI: {{ R.get('ai_provider') }}</span>{% endif %}</div>
+  {% if R.get('ai_steps') %}<p class="muted small ai-steps">{% if R.get('structure') %}{{ R.get('structure').reason }}.<br>{% endif %}How this version was produced:
+    {% for st in R.get('ai_steps') %}<span class="tag{% if st.engine == 'claude' %} tag-ai{% endif %}" title="{{ st.reason }}">{{ st.step }}: {{ 'Claude' if st.engine == 'claude' else 'built-in rules' }}</span> {% endfor %}
+    · all figures are calculated by the engine, never by AI</p>{% endif %}
   {% if S %}
   <p class="muted">{{ S.get('period_label') }} · data window {{ S.get('data_window') }} · {{ S.get('included_rows') }} rows included · clicks = {{ S.get('click_metric') }} · conversions = {{ S.get('conversion') or 'not selected' }}</p>
   <div class="kpis">
