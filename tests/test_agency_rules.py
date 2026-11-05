@@ -98,3 +98,30 @@ def test_screenshot_upload_validation(tmp_path):
     bad = str(tmp_path / "b.png")
     open(bad, "wb").write(b"not an image")
     assert inspect_file(bad, "b.png")["ok"] is False
+
+
+def test_tiktok_views_are_2_second_plays(tmp_path):
+    import openpyxl
+    p = str(tmp_path / "tiktok_sept.xlsx")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Campaign name", "Ad group name", "Ad name", "By Day", "Cost", "Impressions", "Clicks (destination)", "2-second video views", "Video views at 6s"])
+    ws.append(["TT", "AG", "ACME_TT_Video", "2026-09-05", 100.0, 40000, 300, 12000, 5000])
+    ws.append(["TT", "AG", "ACME_TT_Video", "2026-09-06", 50.0, 20000, 100, 6000, 2500])
+    wb.save(p)
+    r = run([(p, "raw")], answers={"conversion_metric": "none"})
+    assert r["status"] == "ready_for_review", qkeys(r)
+    t = r["summary"]["totals"]
+    assert t["views"] == 18000  # 2-second plays, not 6-second views
+    assert t["spend"] == pytest.approx(150 * 3.6725)  # TikTok USD -> AED
+
+
+def test_insights_use_professional_language():
+    from app.engine.ai import validate_commentary
+    facts = {"a": {"value": 1.2}}
+    stmts = [{"type": "observation", "text": "Static ads were cheap while video was expensive!", "facts": []},
+             {"type": "observation", "text": "Snapchat had the cheapest CPC; a huge result, not a flop.", "facts": []}]
+    kept, dropped = validate_commentary(stmts, facts, [])
+    text = " ".join(k["text"] for k in kept)
+    assert not R.unprofessional_terms(text) and "!" not in text
+    assert "cost-efficient" in text and "higher-cost" in text and "lowest CPC" in text

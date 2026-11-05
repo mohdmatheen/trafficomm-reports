@@ -57,7 +57,7 @@ FIELDS: dict[str, Field] = {f.key: f for f in [
     Field("swipe_ups", "Swipe ups", "additive", "count", "Snapchat swipe ups to attachment"),
     Field("landing_page_views", "Landing page views", "additive", "count"),
     Field("video_plays_3s", "3-second video plays", "additive", "count", "Meta: plays of at least 3 seconds"),
-    Field("video_plays_2s", "2-second continuous plays", "additive", "count", "Meta: 2-second continuous plays"),
+    Field("video_plays_2s", "2-second video plays", "additive", "count", "Meta: 2-second continuous plays; TikTok: 2-second video views"),
     Field("video_views_6s", "6-second video views", "additive", "count", "TikTok: plays of at least 6 seconds (focused view)"),
     Field("video_views_tiktok", "Video views (TikTok)", "additive", "count", "TikTok 'Video views' (plays started)"),
     Field("video_views_snap", "Video views (Snapchat)", "additive", "count", "Snapchat: views of 2s+ or swipe up"),
@@ -152,7 +152,8 @@ SYNONYMS: list[tuple[str, str, str | None]] = [
 
 # platform-specific overrides where the same header means something different
 PLATFORM_SYNONYMS: dict[str, list[tuple[str, str]]] = {
-    "tiktok": [(r"^video views$", "video_views_tiktok"), (r"^clicks$", "clicks_unspecified")],
+    "tiktok": [(r"^video views$", "video_views_tiktok"),
+               (r"^(2-second video views|2-second video plays|2 ?s(ec)? video (views|plays)|video views at 2s|video plays at 2s)$", "video_plays_2s"), (r"^clicks$", "clicks_unspecified")],
     "snapchat": [(r"^(video views|2 ?sec(ond)? video views|video views \(2s\)|2s video views|2-second video views)$", "video_views_snap"), (r"^impressions$", "impressions")],
 }
 
