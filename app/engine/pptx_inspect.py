@@ -9,13 +9,15 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu
 
+from . import rules as R
+
 # Deck column label -> metric key (lower-cased, normalised)
 DECK_LABELS = {
     "range": "range", "date range": "range", "period": "range", "dates": "range",
     "audience size": "audience_size",
     "reach": "reach", "impressions": "impressions", "impr": "impressions",
     "frequency": "frequency_calc", "freq": "frequency_calc",
-    "views": "video_plays_3s", "video views": "video_plays_3s", "3s views": "video_plays_3s", "3-second video plays": "video_plays_3s",
+    "views": "views", "video views": "views", "3s views": "video_plays_3s", "3-second video plays": "video_plays_3s",
     "vtr": "vtr", "view rate": "vtr",
     "clicks": "clicks", "link clicks": "link_clicks", "all clicks": "clicks_all",
     "ctr": "ctr", "cpc": "cpc", "cpm": "cpm",
@@ -91,7 +93,11 @@ def inspect_deck(path: str, profile: dict | None = None) -> dict:
     profile = profile or {}
     deck_cfg = profile.get("deck") or {}
     markers = [m.lower() for m in deck_cfg.get("client_content_markers", [])] + DEFAULT_CLIENT_MARKERS
-    overrides = deck_cfg.get("metric_labels") or {}
+    overrides = dict(deck_cfg.get("metric_labels") or {})
+    # agency rules: "Views" is the per-platform views definition; "Clicks" is always link clicks
+    for k in list(overrides):
+        if k.lower() in ("views", "video views"):
+            overrides[k] = "views"
     prs = Presentation(path)
     fonts = Counter()
     slides = []
@@ -109,6 +115,10 @@ def inspect_deck(path: str, profile: dict | None = None) -> dict:
                     header = cells[0] if cells else []
                     mc = {i: label_to_metric(h, overrides) for i, h in enumerate(header)}
                     mc = {i: m for i, m in mc.items() if m}
+                    for row in cells:
+                        for ctext in row:
+                            if ctext and R.is_client_slide_text(ctext):
+                                info["client_markers"].append(ctext[:80])
                     info["tables"].append({"shape_id": sh.shape_id, "name": sh.name, "rows": len(cells), "cols": len(header),
                                            "header": header, "metric_cols": mc, "cells": cells[:25]})
                 elif kind == "chart":
@@ -135,6 +145,8 @@ def inspect_deck(path: str, profile: dict | None = None) -> dict:
                     if t:
                         info["texts"].append({"shape_id": sh.shape_id, "name": sh.name, "text": t[:500]})
                         low = t.lower()
+                        if R.is_client_slide_text(t):
+                            info["client_markers"].append(t[:80])
                         for m in markers:
                             if m in low:
                                 info["client_markers"].append(t[:80])

@@ -161,7 +161,7 @@ def build_excel(path: str, calc, norm, ctx: dict, commentary: list[dict] | None,
     ws["B8"] = calc.conversion_label or "Not selected - CPA not calculated"
     for rr in range(4, 9):
         ws.cell(row=rr, column=1).font = BOLD
-    kpis = [m for m in ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "video_plays_3s", "vtr", "conversions", "cpa", "leads_meta_form", "website_leads", "purchase_value", "roas"] if m in metrics or m in ("leads_meta_form", "website_leads") and t.get(m) is not None]
+    kpis = [m for m in ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "views", "vtr", "conversions", "cpa", "leads_meta_form", "website_leads", "purchase_value", "roas"] if m in metrics or m in ("leads_meta_form", "website_leads") and t.get(m) is not None]
     _header(ws, 10, ["KPI", "Value", "Definition"])
     r = 10
     for m in kpis:
@@ -254,7 +254,7 @@ def build_excel(path: str, calc, norm, ctx: dict, commentary: list[dict] | None,
     d = calc.dataset
     d = d[d["_period"].notna()]
     dim_cols = [c for c in ["_period", "platform", "brand", "market", "country", "language", "campaign_name", "adset_name", "ad_name", "creative", "objective", "format", "date", "report_start", "report_end", "currency"] if c in d.columns and d[c].notna().any()]
-    met_cols = [c for c in ["spend", "impressions", "reach", "frequency", "link_clicks", "clicks_all", "swipe_ups", "clicks", "video_plays_3s", "video_views_6s", "video_views_snap", "thruplays", "leads_meta_form", "website_leads", "leads", "conversions", "purchases", "purchase_value"] if c in d.columns and d[c].notna().any()]
+    met_cols = [c for c in ["spend", "impressions", "reach", "frequency", "link_clicks", "clicks_all", "swipe_ups", "clicks", "views", "video_plays_3s", "video_views_6s", "video_views_snap", "thruplays", "leads_meta_form", "website_leads", "leads", "conversions", "purchases", "purchase_value"] if c in d.columns and d[c].notna().any()]
     prov = ["_file", "_sheet", "_row", "_fx_rate"]
     labels = [{"_period": "Period"}.get(c, DIM_LABEL.get(c, F.FIELDS[c].label if c in F.FIELDS else c)) for c in dim_cols] + \
              [METRIC_LABELS.get(c, c) for c in met_cols] + ["Source file", "Sheet", "Source row", "FX rate applied"]

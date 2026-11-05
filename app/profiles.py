@@ -29,7 +29,7 @@ ATC_PROFILE = {
         "na_text": "-",
         "range_style": "ordinal",  # "1st – 21st Sep 2026"
         "client_content_markers": ["to be shared by the client", "kyra to update", "client to update"],
-        "metric_labels": {"Views": "video_plays_3s", "Clicks": "clicks", "VTR": "vtr"},
+        "metric_labels": {"Views": "views", "Clicks": "clicks", "VTR": "vtr"},
     },
     "file_naming": "{brand}_{title}_{period}_v{version}",
 }

@@ -30,7 +30,11 @@
     </div>
     <p class="muted small">Upload comparison-period exports in area A as well; rows are split by date.</p>
     </details>
-    <label>Reporting currency<input name="currency" maxlength="3" value="{{ draft.currency if draft else 'AED' }}" placeholder="AED"></label>
+    <div class="row2">
+      <label>Reporting currency<input name="currency" maxlength="3" value="{{ draft.currency if draft else 'AED' }}" placeholder="AED"></label>
+      <label>USD → AED rate<input name="fx_usd_aed" inputmode="decimal" value="{{ draft.fx_usd_aed if draft and draft.fx_usd_aed else '3.6725' }}" placeholder="3.6725">
+        <span class="muted small" style="font-weight:400">Snapchat and TikTok spend (USD) is converted at this rate</span></label>
+    </div>
     <fieldset class="deliverables">
       <legend>Deliverables</legend>
       {% set dsel = (draft.deliverables if draft else ['excel']) or [] %}
@@ -59,10 +63,16 @@
         <div class="dz-hint">Drop a template or <button type="button" class="linkbtn dz-pick">browse</button></div>
         <ul class="filelist"></ul>
       </div>
-      <div class="dropzone" data-role="client_deck" data-accept=".pptx,.zip">
-        <input type="file" multiple accept=".pptx,.zip" hidden>
-        <div class="dz-head"><b>C. Client PowerPoint</b><span class="muted small">Optional · PPTX to update · ZIP of creative images (optional)</span></div>
+      <div class="dropzone" data-role="client_deck" data-accept=".pptx">
+        <input type="file" accept=".pptx" hidden>
+        <div class="dz-head"><b>C. Client PowerPoint</b><span class="muted small">Optional · PPTX to update · design and client slides are kept</span></div>
         <div class="dz-hint">Drop the deck or <button type="button" class="linkbtn dz-pick">browse</button></div>
+        <ul class="filelist"></ul>
+      </div>
+      <div class="dropzone" data-role="screenshots" data-accept=".png,.jpg,.jpeg,.zip">
+        <input type="file" multiple accept=".png,.jpg,.jpeg,.zip" hidden>
+        <div class="dz-head"><b>D. Screenshots</b><span class="muted small">Optional · PNG / JPG or a ZIP · name each like the creative on its slide (e.g. BWA-Static-EN.png) or "slide 5.png" · placed with a black border</span></div>
+        <div class="dz-hint">Drop screenshots or <button type="button" class="linkbtn dz-pick">browse</button></div>
         <ul class="filelist"></ul>
       </div>
     </div>

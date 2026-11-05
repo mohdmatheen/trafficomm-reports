@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from . import fields as F
+from . import rules as R
 from .parsing import is_missing, parse_date, parse_number, read_csv, read_xlsx
 
 DEFAULT_LANG_TOKENS = {"EN": "English", "ENG": "English", "ENGLISH": "English", "AR": "Arabic", "ARB": "Arabic", "ARABIC": "Arabic"}
@@ -375,6 +376,19 @@ def _currency_step(df: pd.DataFrame, task, answers, res: NormResult) -> pd.DataF
     df["_orig_currency"] = df["currency"]
     for m in money:
         df[f"_orig_{m}"] = df[m]
+    # agency rule: Snapchat and TikTok raw reports are in USD
+    for plat, src in R.PLATFORM_SOURCE_CURRENCY.items():
+        sel = (df["platform"] == plat)
+        if not sel.any():
+            continue
+        miss = sel & df["currency"].isna()
+        if miss.any():
+            df.loc[miss, "currency"] = src
+            df.loc[miss, "_orig_currency"] = src
+            res.assumptions.append(f"{F.PLATFORM_LABELS.get(plat, plat)} values read as {src} (agency rule: {F.PLATFORM_LABELS.get(plat, plat)} raw reports are in {src})")
+        other = sorted({c for c in df.loc[sel & df["currency"].notna(), "currency"].unique() if c != src})
+        if other:
+            res.warnings.append(f"{F.PLATFORM_LABELS.get(plat, plat)} export states {', '.join(other)}, but the agency rule says {src} - kept the currency stated in the file. Check the export.")
     missing_cur = df[df["currency"].isna()]
     for fname in sorted(missing_cur["_file"].unique()):
         fid = missing_cur[missing_cur["_file"] == fname]["_file_id"].iloc[0]
@@ -398,6 +412,8 @@ def _currency_step(df: pd.DataFrame, task, answers, res: NormResult) -> pd.DataF
             continue
         key = f"fx:{c}->{target}"
         rate = answers.get(key)
+        if not rate and c == "USD" and target == "AED":
+            rate = R.usd_aed_rate(task)
         if rate:
             try:
                 r = float(rate)
@@ -409,7 +425,7 @@ def _currency_step(df: pd.DataFrame, task, answers, res: NormResult) -> pd.DataF
                     df.loc[sel, m] = df.loc[sel, m] * r
                 df.loc[sel, "_fx_rate"] = r
                 df.loc[sel, "currency"] = target
-                res.assumptions.append(f"{c} converted to {target} at employee-approved rate {r} (recorded on each row)")
+                res.assumptions.append(f"{c} converted to {target} at {r} (" + ("rate set on the task" if c == "USD" and target == "AED" and not answers.get(key) else "employee-approved rate") + ", recorded on each row)")
                 continue
         res.questions.append(Question(
             key=key, text=f"Spend is reported in {c} for {', '.join(sorted(df[df['currency']==c]['_file'].unique()))}, but the reporting currency is {target}. Enter the approved exchange rate (1 {c} = ? {target}).",
@@ -554,7 +570,11 @@ def _definition_questions(df: pd.DataFrame, plan: dict, profile: dict, answers: 
     live = df[df["_excluded"].isna()]
     platforms = sorted(live["platform"].dropna().unique())
     approved = set(map(tuple, profile.get("approved_equivalences", []))) | set(map(tuple, plan.get("approved_equivalences", [])))
-    click_metric = plan.get("click_metric") or profile.get("click_metric") or "link_clicks"
+    # agency rule: clicks are always the raw report's link-click metric
+    requested = plan.get("click_metric")
+    click_metric = R.CLICK_METRIC
+    if requested and requested != click_metric:
+        res.warnings.append("The instructions asked for all clicks, but the agency rule is to always report link clicks - kept link clicks.")
     # unspecified "Clicks" columns
     if "clicks_unspecified" in live.columns and live["clicks_unspecified"].notna().any():
         for p in sorted(live[live["clicks_unspecified"].notna()]["platform"].unique()):
@@ -586,8 +606,8 @@ def _definition_questions(df: pd.DataFrame, plan: dict, profile: dict, answers: 
     if "snapchat" in platforms and click_metric == "link_clicks" and "swipe_ups" in live.columns and live["swipe_ups"].notna().any():
         key = "equiv:snapchat:swipe_ups=link_clicks"
         ans = answers.get(key)
-        if ("snapchat", "swipe_ups", "link_clicks") in approved or ans == "yes":
-            res.assumptions.append("Snapchat Swipe Ups treated as link clicks (approved equivalence)")
+        if R.SNAPCHAT_SWIPE_UPS_ARE_LINK_CLICKS or ("snapchat", "swipe_ups", "link_clicks") in approved or ans == "yes":
+            res.assumptions.append("Snapchat Swipe Ups reported as link clicks (agency rule)")
             plan.setdefault("_equivalences", []).append(("snapchat", "swipe_ups", "link_clicks"))
         elif ans == "no":
             res.assumptions.append("Snapchat Swipe Ups kept separate: Snapchat excluded from cross-platform click totals, CTR and CPC")

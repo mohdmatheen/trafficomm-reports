@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from . import fields as F
+from . import rules as R
 
 RATE_DEFS = {
     "ctr": ("clicks", "impressions", 100.0, "CTR = clicks / impressions x 100 (clicks = selected click metric)"),
@@ -23,14 +24,14 @@ RATE_DEFS = {
     "cpm": ("spend", "impressions", 1000.0, "CPM = spend / impressions x 1,000"),
     "cpa": ("spend", "conversions", 1.0, "CPA = spend / selected conversion metric, over rows that report that conversion (rows where it is missing are excluded, not treated as zero)"),
     "roas": ("purchase_value", "spend", 1.0, "ROAS = attributed purchase value / spend (same currency)"),
-    "vtr": ("video_plays_3s", "impressions", 100.0, "VTR = 3-second video plays / impressions x 100"),
+    "vtr": ("views", "impressions", 100.0, "VTR = views / impressions x 100 (views: Meta 3-second plays, Snapchat 2-second views)"),
 }
-SUM_METRICS = ["spend", "impressions", "clicks", "link_clicks", "clicks_all", "swipe_ups", "landing_page_views",
+SUM_METRICS = ["spend", "impressions", "clicks", "views", "link_clicks", "clicks_all", "swipe_ups", "landing_page_views",
                "video_plays_3s", "video_plays_2s", "video_views_6s", "video_views_tiktok", "video_views_snap", "thruplays",
                "video_completions", "conversions", "leads_meta_form", "website_leads", "leads", "purchases", "purchase_value", "installs"]
 
 METRIC_LABELS = {**{k: f.label for k, f in F.FIELDS.items()}, "clicks": "Clicks", "conversions": "Conversions",
-                 "ctr": "CTR", "cpc": "CPC", "cpm": "CPM", "cpa": "CPA", "roas": "ROAS", "vtr": "VTR (3s)",
+                 "ctr": "CTR", "cpc": "CPC", "cpm": "CPM", "cpa": "CPA", "roas": "ROAS", "vtr": "VTR", "views": "Views",
                  "frequency_calc": "Frequency", "reach": "Reach"}
 
 
@@ -100,6 +101,12 @@ def prepare(df: pd.DataFrame, plan: dict, dynamic_fields: dict) -> pd.DataFrame:
             v = r.get("swipe_ups")
         clicks.append(_nn(v))
     d["clicks"] = clicks
+    # agency rule: "Views" = Meta 3-second plays, Snapchat 2-second views
+    views = []
+    for _, r in d.iterrows():
+        fld = R.VIEWS_FIELD.get(r.get("platform") or "")
+        views.append(_nn(r.get(fld)) if fld and fld in d.columns else None)
+    d["views"] = views
     conv = plan.get("_conversion_metric")
     d["conversions"] = d[conv] if conv and conv in d.columns else None
     for m in SUM_METRICS + ["reach", "unique_link_clicks", "frequency"] + list(dynamic_fields):
@@ -156,8 +163,8 @@ def aggregate(d: pd.DataFrame, dims: list[str], dynamic_fields: dict | None = No
 def available_metrics(d: pd.DataFrame, dyn: dict) -> list[str]:
     base = ["spend", "impressions", "reach", "frequency_calc", "clicks", "ctr", "cpc", "cpm"]
     extra = []
-    if d["video_plays_3s"].notna().any():
-        extra += ["video_plays_3s", "vtr"]
+    if d["views"].notna().any():
+        extra += ["views", "vtr"]
     for m in ["video_views_6s", "video_views_tiktok", "video_views_snap", "thruplays", "swipe_ups", "landing_page_views",
               "leads_meta_form", "website_leads", "leads", "purchases", "purchase_value", "installs"]:
         if d[m].notna().any():
@@ -207,7 +214,7 @@ def calculate(norm_df: pd.DataFrame, plan: dict, dynamic_fields: dict, currency:
         ct = aggregate(comp, [], dynamic_fields)
         ct = ct[0] if ct else {}
         comparison = {"current": totals, "previous": ct, "deltas": {}}
-        for m in ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "video_plays_3s", "vtr"]:
+        for m in ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "views", "vtr"]:
             a, b = totals.get(m), ct.get(m)
             comparison["deltas"][m] = {"abs": (a - b) if a is not None and b is not None else None,
                                        "pct": safe_div((a - b) if a is not None and b is not None else None, b, 100.0)}
@@ -245,7 +252,7 @@ def build_facts(totals, tables, comparison, currency) -> dict:
             return
         facts[fid] = {"value": value, "metric": metric, "scope": scope, "unit": unit or _unit(metric), "currency": currency}
 
-    for m in ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "video_plays_3s", "vtr", "roas", "leads_meta_form", "website_leads"]:
+    for m in ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "views", "vtr", "roas", "leads_meta_form", "website_leads"]:
         put(f"total.{m}", totals.get(m), m, "All included data")
     for tkey in ("platform", "brand", "objective", "creative", "country", "language", "market", "campaign"):
         t = tables.get(tkey)
@@ -253,7 +260,7 @@ def build_facts(totals, tables, comparison, currency) -> dict:
             continue
         for r in t.rows:
             label = " / ".join(str(r[d]) for d in t.dims)
-            for m in ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "vtr", "video_plays_3s"]:
+            for m in ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "vtr", "views"]:
                 put(f"{tkey}[{label}].{m}", r.get(m), m, f"{t.title}: {label}")
             if totals.get("spend"):
                 put(f"{tkey}[{label}].spend_share", safe_div(r.get("spend"), totals.get("spend"), 100.0), "share", f"{t.title}: {label}", "percent")

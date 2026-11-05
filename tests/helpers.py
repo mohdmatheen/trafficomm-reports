@@ -18,7 +18,7 @@ def fx(name):
 
 
 def run(files, deliverables=("excel",), answers=None, plan_overrides=None, profile=None, workdir=None, instructions="",
-        period=("2026-09-01", "2026-09-30"), comparison=None, currency="AED", base_artifacts=None, version=1, stages=None):
+        period=("2026-09-01", "2026-09-30"), comparison=None, currency="AED", fx_usd_aed=None, base_artifacts=None, version=1, stages=None):
     profile = GENERIC_PROFILE if profile is None else profile
     fin = []
     for i, (path, role) in enumerate(files):
@@ -29,7 +29,7 @@ def run(files, deliverables=("excel",), answers=None, plan_overrides=None, profi
     d = lambda s: dt.date.fromisoformat(s) if s else None
     task = {"title": "Synthetic test", "client": "Test client", "brand": "Acme Dates", "period_start": d(period[0]), "period_end": d(period[1]),
             "comparison_start": d(comparison[0]) if comparison else None, "comparison_end": d(comparison[1]) if comparison else None,
-            "timezone": "Asia/Dubai", "currency": currency, "deliverables": list(deliverables), "instructions": instructions}
+            "timezone": "Asia/Dubai", "currency": currency, "fx_usd_aed": fx_usd_aed, "deliverables": list(deliverables), "instructions": instructions}
     wd = workdir or tempfile.mkdtemp(prefix="tc_test_")
     inp = VersionInput(task=task, files=fin, profile=profile, answers=answers or {}, plan_overrides=plan_overrides or {},
                        workdir=wd, version_number=version, base_artifacts=base_artifacts or {})

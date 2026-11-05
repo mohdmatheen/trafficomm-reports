@@ -199,7 +199,7 @@
   <ul class="files-ro">
   {% for f in files %}
     <li class="{% if f.excluded %}excluded{% endif %}">
-      <div><b>{{ f.name }}</b> <span class="tag">{{ {'raw':'raw data','template':'template','client_deck':'client deck','creatives':'creatives'}.get(f.role, f.role) }}</span>{% if f.added_in_version > 1 %} <span class="tag">added in v{{ f.added_in_version }}</span>{% endif %}{% if f.excluded %} <span class="tag tag-warn">excluded</span>{% endif %}
+      <div><b>{{ f.name }}</b> <span class="tag">{{ {'raw':'raw data','template':'template','client_deck':'client deck','screenshots':'screenshots','creatives':'screenshots'}.get(f.role, f.role) }}</span>{% if f.added_in_version > 1 %} <span class="tag">added in v{{ f.added_in_version }}</span>{% endif %}{% if f.excluded %} <span class="tag tag-warn">excluded</span>{% endif %}
       <span class="muted small">{{ f.size|mb }}</span></div>
       {% if f.sheets %}<div class="small muted">{% for sh in f.sheets %}{{ sh.name }}: {{ sh.rows }} rows{% if sh.platform %}, {{ sh.platform }}{% endif %}{% if sh.currency %}, {{ sh.currency }}{% endif %}{% if sh.total_rows %}, {{ sh.total_rows }} total row(s){% endif %}{% if sh.summary_blocks %}, {{ sh.summary_blocks }} summary block(s){% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
       {% if f.deck %}<div class="small muted">{{ f.deck.slides }} slides · {{ f.deck.aspect }}{% if f.deck.unsupported %} · {{ f.deck.unsupported }} unsupported element(s){% endif %}</div>{% endif %}
@@ -254,7 +254,7 @@
         <select name="base_version_id">{% for v in versions if v.status in ['ready_for_review','approved','validation_blocked'] or v.result %}<option value="{{ v.id }}">v{{ v.number }}{% if loop.first %} (latest){% endif %}</option>{% endfor %}</select>
       </label>
       <label class="small">Add files (optional)
-        <input type="file" name="extra" multiple accept=".csv,.xlsx,.pptx,.zip">
+        <input type="file" name="extra" multiple accept=".csv,.xlsx,.pptx,.zip,.png,.jpg,.jpeg">
       </label>
     </div>
     <ul class="filelist" id="fbFiles"></ul>

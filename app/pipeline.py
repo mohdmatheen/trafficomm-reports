@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from .engine import ai as AI
 from .engine import fmt as FM
+from .engine import rules as R
 from .engine.calc import calculate
 from .engine.excel_out import build_excel
 from .engine.inspect import inspect_file
@@ -66,7 +67,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     raw = [f for f in inp.files if f["role"] == "raw" and not f.get("excluded")]
     deck_file = next((f for f in inp.files if f["role"] == "client_deck"), None)
     template_file = next((f for f in inp.files if f["role"] == "template"), None)
-    creatives = next((f for f in inp.files if f["role"] == "creatives"), None)
+    shots = [f for f in inp.files if f["role"] in ("screenshots", "creatives") and not f.get("excluded") and f["inspection"].get("ok", True)]
     rejected = [f for f in inp.files if not f["inspection"].get("ok", True)]
     result["inspection"] = [{"file": f["name"], "role": f["role"], "ok": f["inspection"].get("ok", True), "error": f["inspection"].get("error"),
                              "sheets": [{"name": s["name"], "platform": s.get("platform"), "rows": s.get("row_count"), "header_row": s.get("header_row"),
@@ -150,14 +151,14 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     result["summary"] = {"totals": {k: v for k, v in calc.totals.items() if not k.startswith("_") and v is not None and not isinstance(v, list)},
                          "currency": currency, "period_label": period_label, "data_window": ctx["data_window"], "included_rows": calc.included_rows,
                          "click_metric": calc.click_metric_label, "conversion": calc.conversion_label, "definitions": calc.definitions,
-                         "tables": {k: {"title": tb.title, "dims": tb.dims, "rows": [{kk: vv for kk, vv in r.items() if kk in tb.dims or kk in ("spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "reach", "video_plays_3s", "vtr", "_rows")} for r in tb.rows[:50]]} for k, tb in calc.tables.items()},
+                         "tables": {k: {"title": tb.title, "dims": tb.dims, "rows": [{kk: vv for kk, vv in r.items() if kk in tb.dims or kk in ("spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "reach", "views", "video_plays_3s", "vtr", "_rows")} for r in tb.rows[:50]]} for k, tb in calc.tables.items()},
                          "comparison": calc.comparison and {"deltas": calc.comparison["deltas"], "previous": {k: v for k, v in calc.comparison["previous"].items() if not str(k).startswith("_") and not isinstance(v, list)}}}
 
     # deck slide matching may raise its own clarification questions before generating
     updater = None
     if "deck_update" in deliverables and deck_file:
         updater = DeckUpdater(deck_file["path"], calc, norm.period, inp.profile, inp.answers,
-                              {"replace_thumbnails": bool(creatives) and plan.get("replace_thumbnails", False), "creatives_zip": creatives["path"] if creatives else None,
+                              {"screenshots": [{"path": f["path"], "name": f["name"]} for f in shots],
                                "add_missing_slides": plan.get("add_missing_slides", False)})
         updater.match_slides()
         if any(q["blocking"] for q in updater.questions):
@@ -186,7 +187,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     naming = inp.profile.get("file_naming") or "{client}_{title}_{period}_v{version}"
     base = _safe(naming.format(client=t.get("client") or "Report", brand=t.get("brand") or t.get("client") or "Report", title=t.get("title") or "Report",
                                period=period_label.replace(" ", ""), version=inp.version_number))
-    calc_fp = _fp([f["inspection"]["sha256"] for f in raw], str(t.get("period_start")), str(t.get("period_end")), str(t.get("comparison_start")), currency,
+    calc_fp = _fp([f["inspection"]["sha256"] for f in raw], str(t.get("period_start")), str(t.get("period_end")), str(t.get("comparison_start")), currency, R.usd_aed_rate(t), "rules-2026-11",
                   calc.settings, sorted(inp.answers.items()), inp.profile.get("column_overrides"), inp.profile.get("naming"))
     artifacts = []
     excel_info = template_info = upd_info = new_info = None
@@ -219,7 +220,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
         for sl in sorted({int(x) for x in plan.get("remove_slides", [])}, reverse=True):
             _delete_slide(path, sl, res)
         upd_info = {**res, "path": path, "na": updater.na}
-        fpd = _fp(calc_fp, "deck", plan.get("remove_slides"), deck_file["inspection"]["sha256"])
+        fpd = _fp(calc_fp, "deck", plan.get("remove_slides"), deck_file["inspection"]["sha256"], sorted(f["inspection"]["sha256"] for f in shots))
         artifacts.append({"kind": "deck_update", "path": path, "label": "Updated client PowerPoint", "fingerprint": fpd, "reused_from": reuse("deck_update", fpd, path)})
     if "deck_new" in deliverables:
         path = os.path.join(out_dir, f"{base}_new_deck.pptx")
@@ -291,7 +292,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
 
 
 def _key_figures(calc) -> dict:
-    out = {"total": {k: calc.totals.get(k) for k in ("spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "video_plays_3s", "vtr")}}
+    out = {"total": {k: calc.totals.get(k) for k in ("spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "views", "vtr")}}
     for k in ("platform", "brand", "creative", "country", "language"):
         tb = calc.tables.get(k)
         if tb:

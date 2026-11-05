@@ -261,7 +261,7 @@ def rule_commentary(calc, ctx) -> list[dict]:
     else:
         add("observation", "No comparison period was provided, so no trend over time is reported.", [])
     if t.get("vtr") is not None:
-        add("observation", f"Video ads generated {_f('video_plays_3s', t.get('video_plays_3s'), cur)} 3-second plays (VTR {_f('vtr', t['vtr'], cur)} of impressions on rows that report video plays).", ["total.video_plays_3s", "total.vtr"])
+        add("observation", f"Video ads generated {_f('views', t.get('views'), cur)} views (VTR {_f('vtr', t['vtr'], cur)} of impressions on rows that report views; Meta counts 3-second plays, Snapchat 2-second views).", ["total.views", "total.vtr"])
     add("recommendation", "Reach is not additive across ads; request a deduplicated reach export from Ads Manager if a total audience figure is needed.", [])
     return out
 

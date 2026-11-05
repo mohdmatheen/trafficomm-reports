@@ -8,7 +8,7 @@ import re
 from collections import Counter
 
 from . import fields as F
-from .parsing import (FileRejected, RawSheet, check_ooxml, check_zip_of_images, classify_numeric_strings,
+from .parsing import (FileRejected, RawSheet, check_image, check_ooxml, check_zip_of_images, classify_numeric_strings,
                       detect_date_format, is_missing, parse_date, parse_number, read_csv, read_xlsx)
 
 SUMMARY_TOKENS = ("values", "grand total", "row labels", "column labels")
@@ -259,8 +259,8 @@ def suggest_role(name: str, ext: str, sheets_info: list[dict] | None, formula_ce
     lname = name.lower()
     if ext == ".pptx":
         return "client_deck"
-    if ext == ".zip":
-        return "creatives"
+    if ext in (".zip", ".png", ".jpg", ".jpeg"):
+        return "screenshots"
     if ext == ".xlsx" and ("template" in lname or (formula_cells > 0 and not any(s.get("row_count", 0) > 0 for s in sheets_info or []))):
         return "template"
     return "raw"
@@ -290,12 +290,17 @@ def inspect_file(path: str, original_name: str, profile: dict | None = None) -> 
         elif ext == ".zip":
             info["kind"] = "zip"
             info["images"] = check_zip_of_images(path)
-            info["role_suggested"] = "creatives"
+            info["role_suggested"] = "screenshots"
+            return info
+        elif ext in (".png", ".jpg", ".jpeg"):
+            info["kind"] = "image"
+            info["image"] = check_image(path)
+            info["role_suggested"] = "screenshots"
             return info
         elif ext in (".xlsm", ".xls", ".pptm", ".ppt"):
             raise FileRejected(f"{ext} files are not accepted. Save as .xlsx/.pptx (macro-free) and re-upload.")
         else:
-            raise FileRejected(f"Unsupported file type '{ext}'. Accepted: CSV, XLSX, PPTX, ZIP of images.")
+            raise FileRejected(f"Unsupported file type '{ext}'. Accepted: CSV, XLSX, PPTX, PNG/JPG screenshots or a ZIP of them.")
     except FileRejected as e:
         info.update(ok=False, error=str(e))
         return info
