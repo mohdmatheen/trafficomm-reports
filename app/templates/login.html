@@ -6,11 +6,19 @@
   <h1>Sign in</h1>
   <p class="muted">Internal workspace for Trafficomm employees.</p>
   {% if error %}<div class="alert alert-fail">{{ error }}</div>{% endif %}
+  {% if zoho_enabled %}
+  <a class="btn btn-primary btn-block" href="/auth/zoho?next={{ next|urlencode }}">Sign in with Zoho</a>
+  <p class="muted small center">Use your @trafficomm.com Zoho account.</p>
+  {% endif %}
+  {% if password_login %}
+  {% if zoho_enabled %}<details class="pw-login"><summary class="muted small">Sign in with a password instead</summary>{% endif %}
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{ next }}">
-    <label>Email<input type="email" name="email" required autofocus autocomplete="username"></label>
+    <label>Email<input type="email" name="email" required {% if not zoho_enabled %}autofocus {% endif %}autocomplete="username"></label>
     <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
-    <button class="btn btn-primary btn-block">Sign in</button>
+    <button class="btn {{ 'btn-ghost' if zoho_enabled else 'btn-primary' }} btn-block">Sign in</button>
   </form>
+  {% if zoho_enabled %}</details>{% endif %}
+  {% endif %}
 </div>
 {% endblock %}

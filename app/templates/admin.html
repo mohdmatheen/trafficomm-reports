@@ -6,18 +6,27 @@
 {% if msg %}<div class="alert alert-info">{{ msg }}</div>{% endif %}
 <div class="grid-2">
 <section class="card">
-  <h2>Users</h2>
-  <table class="tbl compact"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>
-  {% for u in users %}<tr><td>{{ u.name }}</td><td>{{ u.email }}</td><td>{{ u.role }}</td><td>{{ 'active' if u.active else 'disabled' }}</td>
-    <td>{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/toggle" class="inline"><button class="btn btn-sm">{{ 'Disable' if u.active else 'Enable' }}</button></form>{% endif %}
-      <form method="post" action="/admin/users/{{ u.id }}/password" class="inline pw-reset"><input name="password" type="password" placeholder="New password" minlength="10" required autocomplete="new-password"><button class="btn btn-sm">Set password</button></form></td></tr>{% endfor %}
+  <h2>Users and access</h2>
+  {% if zoho_enabled %}<p class="muted small">People sign in with their Zoho account. Only people listed here as active can get in{% if allowed_domains %}, and only @{{ allowed_domains|join(', @') }} accounts{% endif %}.</p>
+  {% else %}<p class="muted small">Zoho sign-in isn't set up yet, so new users need an initial password.</p>{% endif %}
+  <table class="tbl compact"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th></th></tr></thead><tbody>
+  {% for u in users %}<tr><td>{{ u.name }}</td><td>{{ u.email }}{% if u.password_hash == '!' %} <span class="tag">Zoho</span>{% endif %}</td>
+    <td>{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/role" class="inline"><select name="role">
+        <option value="employee" {{ 'selected' if u.role != 'admin' }}>Employee</option><option value="admin" {{ 'selected' if u.role == 'admin' }}>Admin</option></select>
+        <button class="btn btn-sm">Save</button></form>{% else %}{{ u.role }}{% endif %}</td>
+    <td>{{ 'active' if u.active else 'revoked' }}</td>
+    <td>{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/toggle" class="inline"><button class="btn btn-sm">{{ 'Revoke access' if u.active else 'Restore access' }}</button></form>{% endif %}
+      {% if u.password_hash != '!' %}<form method="post" action="/admin/users/{{ u.id }}/password" class="inline pw-reset"><input name="password" type="password" placeholder="New password" minlength="10" required autocomplete="new-password"><button class="btn btn-sm">Set password</button></form>{% endif %}</td></tr>{% endfor %}
   </tbody></table>
-  <h3>Add user</h3>
+  <h3>Grant access</h3>
   <form method="post" action="/admin/users" class="row-form">
-    <input name="name" placeholder="Name" required><input name="email" type="email" placeholder="Email" required>
+    <input name="email" type="email" placeholder="{{ 'name@' ~ allowed_domains[0] if (zoho_enabled and allowed_domains) else 'Email' }}" required>
+    <input name="name" placeholder="Name (optional)">
     <select name="role"><option value="employee">Employee</option><option value="admin">Admin</option></select>
-    <input name="password" type="password" placeholder="Initial password (10+ chars)" minlength="10" required>
-    <button class="btn btn-primary">Add</button>
+    {% if zoho_enabled %}<details><summary class="muted small">Password account instead</summary>
+      <input name="password" type="password" placeholder="Initial password (10+ chars)" minlength="10" autocomplete="new-password"></details>
+    {% else %}<input name="password" type="password" placeholder="Initial password (10+ chars)" minlength="10" required autocomplete="new-password">{% endif %}
+    <button class="btn btn-primary">Grant access</button>
   </form>
 </section>
 <section class="card">

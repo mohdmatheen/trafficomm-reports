@@ -5,6 +5,12 @@
 <div class="page-head"><div><h1>Your account</h1><p class="muted">{{ user.name }} · {{ user.email }}</p></div></div>
 {% if msg %}<div class="alert alert-info">{{ msg }}</div>{% endif %}
 {% if error %}<div class="alert alert-fail">{{ error }}</div>{% endif %}
+{% if user.password_hash == '!' %}
+<section class="card narrow" style="margin-top:20px">
+  <h2>Sign-in</h2>
+  <p>You sign in with your Zoho account. Your password is managed in Zoho.</p>
+</section>
+{% else %}
 <section class="card narrow" style="margin-top:20px">
   <h2>Change password</h2>
   <form method="post" action="/account/password" class="stack-form">
@@ -14,4 +20,5 @@
     <button class="btn btn-primary">Change password</button>
   </form>
 </section>
+{% endif %}
 {% endblock %}

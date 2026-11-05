@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import secrets
 import tempfile
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -23,6 +24,7 @@ from .engine import fields as F
 from .engine import fmt as FM
 from .engine.calc import METRIC_LABELS
 from .storage import sign_download, storage, verify_download
+from . import zoho as Z
 
 log = logging.getLogger("trafficomm.web")
 app = FastAPI(title="Trafficomm Reporting Workspace", docs_url=None, redoc_url=None)
@@ -102,22 +104,90 @@ def healthz():
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
+def _login_ctx(next: str = "/", error: str | None = None) -> dict:
+    return {"user": None, "next": next, "error": error, "zoho_enabled": settings.zoho_enabled,
+            "password_login": settings.password_login or not settings.zoho_enabled}
+
+
+def _safe_next(next: str | None) -> str:
+    return next if next and next.startswith("/") and not next.startswith("//") else "/"
+
+
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, next: str = "/"):
-    return templates.TemplateResponse(request, "login.html", {"user": None, "next": next, "error": None})
+def login_page(request: Request, next: str = "/", error: str = ""):
+    return templates.TemplateResponse(request, "login.html", _login_ctx(next, error or None))
 
 
 @app.post("/login")
 def login(request: Request, email: str = Form(...), password: str = Form(...), next: str = Form("/")):
+    if not _login_ctx()["password_login"]:
+        return templates.TemplateResponse(request, "login.html", _login_ctx(next, "Password sign-in is turned off. Please sign in with Zoho."), status_code=403)
     with Session() as s:
         u = s.scalar(select(User).where(func.lower(User.email) == email.strip().lower()))
         if not u or not u.active or not check_password(password, u.password_hash):
-            return templates.TemplateResponse(request, "login.html", {"user": None, "next": next, "error": "Invalid email or password"}, status_code=401)
+            return templates.TemplateResponse(request, "login.html", _login_ctx(next, "Invalid email or password"), status_code=401)
         request.session.clear()
         request.session["uid"] = u.id
         S.audit(s, u.id, "login", u.email)
         s.commit()
-    return RedirectResponse(next if next.startswith("/") and not next.startswith("//") else "/", status_code=303)
+    return RedirectResponse(_safe_next(next), status_code=303)
+
+
+@app.get("/auth/zoho")
+def zoho_start(request: Request, next: str = "/"):
+    if not settings.zoho_enabled:
+        raise HTTPException(status_code=404, detail="Zoho sign-in isn't set up")
+    request.session.clear()
+    request.session["zoho_next"] = _safe_next(next)
+    return RedirectResponse(Z.authorize_url(request.session, str(request.base_url)), status_code=303)
+
+
+def _zoho_fail(msg: str) -> RedirectResponse:
+    from urllib.parse import quote
+    return RedirectResponse("/login?error=" + quote(msg), status_code=303)
+
+
+@app.get("/auth/zoho/callback")
+def zoho_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    if not settings.zoho_enabled:
+        raise HTTPException(status_code=404, detail="Zoho sign-in isn't set up")
+    expected, nonce = request.session.pop("zoho_state", None), request.session.pop("zoho_nonce", None)
+    nxt = request.session.pop("zoho_next", "/")
+    if error:
+        return _zoho_fail("Zoho sign-in was cancelled.")
+    if not code or not expected or not secrets.compare_digest(state, expected):
+        return _zoho_fail("The sign-in session expired. Please try again.")
+    try:
+        server = Z.accounts_server(request.query_params.get("accounts-server"))
+        who = Z.identity(Z.exchange_code(code, server, str(request.base_url)), nonce, server)
+    except Z.ZohoError as e:
+        log.info("zoho sign-in rejected: %s", type(e).__name__)
+        return _zoho_fail(str(e))
+    email, is_boot_admin = who["email"], who["email"] in settings.zoho_admin_emails
+    with Session() as s:
+        u = s.scalar(select(User).where(func.lower(User.email) == email))
+        if u is None:
+            if not (is_boot_admin or settings.zoho_auto_provision):
+                S.audit(s, None, "login_denied", email)
+                s.commit()
+                return _zoho_fail("You don't have access yet. Ask your Trafficomm admin to grant access to " + email + ".")
+            u = User(email=email, name=who["name"], role="admin" if is_boot_admin else "employee", password_hash="!")
+            s.add(u)
+            s.flush()
+            S.audit(s, u.id, "create_user_sso", email)
+        if not u.active:
+            S.audit(s, u.id, "login_denied", email)
+            s.commit()
+            return _zoho_fail("Your access to the workspace has been revoked. Ask your Trafficomm admin.")
+        if is_boot_admin and u.role != "admin":
+            u.role = "admin"
+        if u.name in ("", u.email.split("@")[0]) and who["name"]:
+            u.name = who["name"]
+        request.session.clear()
+        request.session["uid"] = u.id
+        S.audit(s, u.id, "login_zoho", u.email)
+        s.commit()
+    return RedirectResponse(_safe_next(nxt), status_code=303)
 
 
 @app.post("/logout")
@@ -550,21 +620,53 @@ def admin_page(request: Request, msg: str = ""):
         rd = S.retention_days(s)
     import json as _json
     return templates.TemplateResponse(request, "admin.html", {"user": user, "users": users, "profiles": profiles, "clients": clients, "jobs": jobs,
-                                                               "retention": rd, "msg": msg, "dumps": lambda o: _json.dumps(o, indent=2)})
+                                                               "retention": rd, "msg": msg, "zoho_enabled": settings.zoho_enabled,
+                                                               "allowed_domains": settings.zoho_allowed_domains, "boot_admins": settings.zoho_admin_emails, "dumps": lambda o: _json.dumps(o, indent=2)})
 
 
 @app.post("/admin/users")
-def admin_add_user(request: Request, email: str = Form(...), name: str = Form(...), role: str = Form("employee"), password: str = Form(...)):
+def admin_add_user(request: Request, email: str = Form(...), name: str = Form(""), role: str = Form("employee"), password: str = Form("")):
+    """Grant access. With Zoho sign-in, no password is needed: the person signs in with their Zoho account."""
     admin = require_admin(request)
-    if len(password) < 10:
+    email = email.strip().lower()
+    if "@" not in email:
+        return RedirectResponse("/admin?msg=Enter a valid email", status_code=303)
+    domain = email.rsplit("@", 1)[-1]
+    if password and len(password) < 10:
         return RedirectResponse("/admin?msg=Password must be at least 10 characters", status_code=303)
+    if not password:
+        if not settings.zoho_enabled:
+            return RedirectResponse("/admin?msg=Set an initial password (Zoho sign-in isn't set up yet)", status_code=303)
+        if settings.zoho_allowed_domains and domain not in settings.zoho_allowed_domains:
+            return RedirectResponse("/admin?msg=Only @" + " / @".join(settings.zoho_allowed_domains) + " emails can be granted Zoho access", status_code=303)
     with Session() as s:
-        if s.scalar(select(User).where(func.lower(User.email) == email.lower())):
-            return RedirectResponse("/admin?msg=User already exists", status_code=303)
-        s.add(User(email=email.strip().lower(), name=name.strip(), role="admin" if role == "admin" else "employee", password_hash=hash_password(password)))
-        S.audit(s, admin.id, "create_user", email)
+        u = s.scalar(select(User).where(func.lower(User.email) == email))
+        if u:
+            if u.active:
+                return RedirectResponse("/admin?msg=" + email + " already has access", status_code=303)
+            u.active = True
+            u.role = "admin" if role == "admin" else "employee"
+            S.audit(s, admin.id, "grant_access", email)
+            s.commit()
+            return RedirectResponse("/admin?msg=Access restored for " + email, status_code=303)
+        s.add(User(email=email, name=(name.strip() or email.split("@")[0])[:120], role="admin" if role == "admin" else "employee",
+                   password_hash=hash_password(password) if password else "!"))
+        S.audit(s, admin.id, "grant_access", email)
         s.commit()
-    return RedirectResponse("/admin?msg=User created", status_code=303)
+    return RedirectResponse("/admin?msg=Access granted to " + email, status_code=303)
+
+
+@app.post("/admin/users/{uid}/role")
+def admin_set_role(request: Request, uid: int, role: str = Form(...)):
+    admin = require_admin(request)
+    with Session() as s:
+        u = s.get(User, uid)
+        if not u or u.id == admin.id:
+            return RedirectResponse("/admin?msg=You can't change your own role", status_code=303)
+        u.role = "admin" if role == "admin" else "employee"
+        S.audit(s, admin.id, "set_role:" + u.role, u.email)
+        s.commit()
+    return RedirectResponse("/admin?msg=Role updated for " + u.email, status_code=303)
 
 
 @app.post("/admin/users/{uid}/password")
@@ -589,6 +691,7 @@ def admin_toggle_user(request: Request, uid: int):
         u = s.get(User, uid)
         if u and u.id != admin.id:
             u.active = not u.active
+            S.audit(s, admin.id, "grant_access" if u.active else "revoke_access", u.email)
             s.commit()
     return RedirectResponse("/admin", status_code=303)
 

@@ -31,10 +31,27 @@ class Settings:
     retention_days_default: int = field(default_factory=lambda: int(_env("RETENTION_DAYS", "180")))
     soffice: str = field(default_factory=lambda: _env("SOFFICE_BIN", "soffice"))
     cookie_secure: bool = field(default_factory=lambda: _env("COOKIE_SECURE", "0") == "1")
+    # Zoho sign-in (OAuth 2.0 / OpenID Connect). Enabled when client id + secret are set.
+    public_base_url: str = field(default_factory=lambda: (_env("PUBLIC_BASE_URL") or "").rstrip("/"))
+    zoho_client_id: str | None = field(default_factory=lambda: _env("ZOHO_CLIENT_ID"))
+    zoho_client_secret: str | None = field(default_factory=lambda: _env("ZOHO_CLIENT_SECRET"))
+    zoho_accounts_url: str = field(default_factory=lambda: (_env("ZOHO_ACCOUNTS_URL") or "https://accounts.zoho.com").rstrip("/"))
+    zoho_allowed_domains: list[str] = field(default_factory=lambda: _csv(_env("ZOHO_ALLOWED_DOMAINS", "trafficomm.com")))
+    zoho_admin_emails: list[str] = field(default_factory=lambda: _csv(_env("ZOHO_ADMIN_EMAILS", "matheen.m@trafficomm.com")))
+    zoho_auto_provision: bool = field(default_factory=lambda: _env("ZOHO_AUTO_PROVISION", "0") == "1")
+    password_login: bool = field(default_factory=lambda: _env("PASSWORD_LOGIN", "1") == "1")
+
+    @property
+    def zoho_enabled(self) -> bool:
+        return bool(self.zoho_client_id and self.zoho_client_secret)
 
     @property
     def ai_enabled(self) -> bool:
         return bool(self.anthropic_api_key)
+
+
+def _csv(v: str | None) -> list[str]:
+    return [x.strip().lower().lstrip("@") for x in (v or "").split(",") if x.strip()]
 
 
 def _db_url(url: str) -> str:
