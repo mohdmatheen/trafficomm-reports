@@ -22,10 +22,11 @@ services:
       - key: SECRET_KEY
         generateValue: true
       # PUBLIC_BASE_URL is deliberately unset: the app uses Render's RENDER_EXTERNAL_URL for the Zoho callback.
+      # Read from the production service so no secret is pasted anywhere. This does not change production.
       - key: ZOHO_CLIENT_ID
-        sync: false
+        fromService: {type: web, name: trafficomm-reports, envVarKey: ZOHO_CLIENT_ID}
       - key: ZOHO_CLIENT_SECRET
-        sync: false
+        fromService: {type: web, name: trafficomm-reports, envVarKey: ZOHO_CLIENT_SECRET}
       - key: ZOHO_ALLOWED_DOMAINS
         value: trafficomm.com
       - key: ZOHO_ADMIN_EMAILS
