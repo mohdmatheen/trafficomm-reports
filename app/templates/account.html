@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block page %}account{% endblock %}
+{% block title %}Account · Trafficomm{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Your account</h1><p class="muted">{{ user.name }} · {{ user.email }}</p></div></div>
+{% if msg %}<div class="alert alert-info">{{ msg }}</div>{% endif %}
+{% if error %}<div class="alert alert-fail">{{ error }}</div>{% endif %}
+<section class="card narrow" style="margin-top:20px">
+  <h2>Change password</h2>
+  <form method="post" action="/account/password" class="stack-form">
+    <label>Current password<input name="current" type="password" required autocomplete="current-password"></label>
+    <label>New password (10+ characters)<input name="new" type="password" minlength="10" required autocomplete="new-password"></label>
+    <label>Confirm new password<input name="confirm" type="password" minlength="10" required autocomplete="new-password"></label>
+    <button class="btn btn-primary">Change password</button>
+  </form>
+</section>
+{% endblock %}
