@@ -66,6 +66,199 @@
     f.addEventListener("submit", () => { const p = $(".task-panel"); if (p) { p.classList.add("loading"); p.setAttribute("aria-busy", "true"); } });
   }
 
+  // ------------------------------------------------------------------ administration
+  function initAdmin() {
+    const live = $("#adminLive");
+    const say = (m, err) => { if (live) live.textContent = m; toast(m, err); };
+    const showErr = (el, m) => { if (!el) return; el.textContent = m || ""; el.hidden = !m; };
+    function openDlg(d, opener) { d._opener = opener || document.activeElement; showErr($("[data-err]", d), ""); d.showModal(); }
+    $$("dialog.dlg").forEach((d) => {
+      d.addEventListener("close", () => { if (d._opener && d._opener.isConnected) d._opener.focus(); });
+      d.addEventListener("click", (e) => { if (e.target === d) d.close("cancel"); }); // backdrop click
+    });
+    $$("[data-open]").forEach((b) => b.addEventListener("click", () => { const d = $("#" + b.dataset.open); d.querySelector("form").reset(); openDlg(d, b); $("input", d).focus(); }));
+
+    // users: client-side filters over the server-rendered table
+    function bindUsers() {
+      const q = $("#auQ"), role = $("#auRole"), acc = $("#auAccess");
+      const apply = () => {
+        const t = (q.value || "").trim().toLowerCase(); let n = 0;
+        $$("[data-au-row]").forEach((r) => {
+          const ok = (!t || r.dataset.name.includes(t) || r.dataset.email.includes(t)) && (!role.value || r.dataset.role === role.value)
+            && (!acc.value || (acc.value === "legacy" ? r.dataset.legacy === "1" : r.dataset.access === acc.value));
+          r.hidden = !ok; if (ok) n++;
+        });
+        $("#auCount").textContent = n + (n === 1 ? " person" : " people");
+        $("#auEmpty").hidden = n !== 0;
+      };
+      $$("[data-au-filter]").forEach((el) => el.addEventListener("input", apply));
+      $("#auClear").addEventListener("click", () => { q.value = ""; role.value = ""; acc.value = ""; apply(); q.focus(); });
+      $$("[data-manage]").forEach((b) => b.addEventListener("click", () => openManage(JSON.parse(b.dataset.manage), b)));
+      return apply;
+    }
+    let applyFilters = bindUsers();
+    async function refreshUsers(focusId) {
+      const keep = { q: $("#auQ").value, role: $("#auRole").value, acc: $("#auAccess").value };
+      const r = await fetch("/admin?partial=users", { credentials: "same-origin" });
+      if (!r.ok) { say("Saved, but the list couldn't refresh. Reload the page to see it.", true); return; }
+      $("#usersBody").innerHTML = await r.text();
+      $("#auQ").value = keep.q; $("#auRole").value = keep.role; $("#auAccess").value = keep.acc;
+      applyFilters = bindUsers(); applyFilters();
+      const b = focusId && $$("[data-manage]").find((x) => JSON.parse(x.dataset.manage).id === focusId);
+      if (b) b.focus();
+    }
+
+    // grant access
+    const gf = $("#grantForm"), gBtn = $("#grantSubmit");
+    gf.addEventListener("submit", async (e) => {
+      if (e.submitter && e.submitter.value === "cancel") return;
+      e.preventDefault();
+      const email = $("#g-email").value.trim();
+      showErr($("#g-email-err"), ""); showErr($("[data-err]", gf), "");
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { showErr($("#g-email-err"), "Enter a company email address."); $("#g-email").setAttribute("aria-invalid", "true"); $("#g-email").focus(); return; }
+      $("#g-email").removeAttribute("aria-invalid");
+      if (gBtn.disabled) return; gBtn.disabled = true; gBtn.textContent = "Granting…";
+      try {
+        const j = await api("POST", "/api/admin/users", { email, name: $("#g-name").value.trim(), role: $("#g-role").value });
+        $("#grantDlg").close("done"); say(j.message); await refreshUsers(j.user.id);
+      } catch (err) { showErr($("[data-err]", gf), err.message); }
+      finally { gBtn.disabled = false; gBtn.textContent = "Grant access"; }
+    });
+
+    // manage role / access
+    const md = $("#manageDlg"), mf = $("#manageForm"); let cur = null;
+    function openManage(u, opener) {
+      cur = u;
+      $("[data-m-name]", md).textContent = u.name; $("[data-m-email]", md).textContent = u.email;
+      $("[data-m-legacy]", md).hidden = !u.legacy;
+      $$("input[name=role]", md).forEach((r) => { r.checked = r.value === u.role; r.disabled = u.lastAdmin; });
+      $("[data-m-lastadmin]", md).hidden = !u.lastAdmin;
+      const tg = $("[data-m-toggle]", md);
+      tg.textContent = u.active ? "Revoke access" : "Restore access"; tg.disabled = u.lastAdmin && u.active;
+      tg.className = "btn " + (u.active ? "btn-danger-quiet" : "");
+      openDlg(md, opener);
+    }
+    async function patch(body, btn) {
+      if (btn.disabled) return; btn.disabled = true; const old = btn.textContent; btn.textContent = "Saving…";
+      try { const j = await api("PATCH", "/api/admin/users/" + cur.id, body); md.close("done"); say(j.message); await refreshUsers(cur.id); }
+      catch (err) { showErr($("[data-err]", md), err.message); }
+      finally { btn.disabled = false; btn.textContent = old; }
+    }
+    mf.addEventListener("submit", (e) => {
+      if (e.submitter && e.submitter.value === "cancel") return;
+      e.preventDefault();
+      const r = $("input[name=role]:checked", md);
+      if (!r || r.value === cur.role) { md.close("cancel"); return; }
+      patch({ role: r.value }, $("[data-m-save]", md));
+    });
+    $("[data-m-toggle]", md).addEventListener("click", (e) => {
+      const b = e.currentTarget;
+      if (cur.active && !b.dataset.confirm) { b.dataset.confirm = "1"; b.textContent = "Confirm revoke"; return; }
+      delete b.dataset.confirm; patch({ active: !cur.active }, b);
+    });
+    md.addEventListener("close", () => { delete $("[data-m-toggle]", md).dataset.confirm; });
+
+    // retention: save policy (never deletes) and a separate, confirmed cleanup
+    const rf = $("#retForm"), rd = $("#ret-days"), rErr = $("#ret-err");
+    const min = +rd.min, max = +rd.max;
+    let saved = rd.value;
+    const valid = () => { const v = rd.value.trim(); return /^\d+$/.test(v) && +v >= min && +v <= max; };
+    rf.addEventListener("submit", async (e) => {
+      e.preventDefault(); const btn = $("#retSave");
+      if (!valid()) { showErr(rErr, `Enter a whole number between ${min} and ${max}.`); rd.setAttribute("aria-invalid", "true"); rd.focus(); return; }
+      showErr(rErr, ""); rd.removeAttribute("aria-invalid");
+      if (btn.disabled) return; btn.disabled = true; btn.textContent = "Saving…";
+      try { const j = await api("PUT", "/api/admin/retention", { days: +rd.value }); saved = String(j.days);
+        $("#ret-hint").textContent = `Between ${min} and ${max} days. Currently ${j.days} days.`; say(j.message); }
+      catch (err) { showErr(rErr, err.message); }
+      finally { btn.disabled = false; btn.textContent = "Save policy"; }
+    });
+    const cd = $("#cleanupDlg"), cBody = $("[data-c-body]", cd), cRun = $("[data-c-run]", cd), cBox = $("[data-c-confirm]", cd);
+    const fmtDate = (s) => new Date(s).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }) + " IST";
+    $("#retReview").addEventListener("click", async (e) => {
+      if (rd.value !== saved) { showErr(rErr, "Save the policy first. Cleanup uses the saved policy."); rd.focus(); return; }
+      cBody.innerHTML = '<p class="muted">Checking which tasks are past the retention period…</p>';
+      cBox.checked = false; cRun.disabled = true; $("[data-c-confirm-wrap]", cd).hidden = true; openDlg(cd, e.currentTarget);
+      try {
+        const j = await api("GET", "/api/admin/retention/preview");
+        if (!j.count) { cBody.innerHTML = `<p>No tasks are older than the ${j.days}-day policy. There’s nothing to clean up.</p>`; return; }
+        cBody.innerHTML = `<p><b>${j.count} task${j.count === 1 ? "" : "s"}</b> haven’t been updated since ${esc(fmtDate(j.cutoff))} (the ${j.days}-day policy). The oldest was last updated ${esc(fmtDate(j.oldest))}.</p><p class="muted small">Their uploaded files, outputs and previews are deleted too. The daily check would delete the same tasks.</p>`;
+        $("[data-c-confirm-wrap]", cd).hidden = false;
+      } catch (err) { cBody.innerHTML = ""; showErr($("[data-err]", cd), err.message); }
+    });
+    cBox.addEventListener("change", () => { cRun.disabled = !cBox.checked; });
+    cRun.addEventListener("click", async () => {
+      if (cRun.disabled) return; cRun.disabled = true; cRun.textContent = "Running…";
+      try { const j = await api("POST", "/api/admin/retention/run", { confirm: true }); cd.close("done"); say(j.message); }
+      catch (err) { showErr($("[data-err]", cd), err.message); cRun.disabled = false; }
+      finally { cRun.textContent = "Run cleanup"; }
+    });
+
+    // client rules: structured editor, advanced JSON behind an expander
+    const setPath = (o, path, v) => { const ks = path.split("/"); let t = o; ks.slice(0, -1).forEach((k) => { if (typeof t[k] !== "object" || t[k] === null) t[k] = {}; t = t[k]; }); t[ks[ks.length - 1]] = v; };
+    function collect(form) {
+      const out = JSON.parse($("[data-orig]", form).textContent); const errs = [];
+      $$("[data-path]", form).forEach((el) => {
+        const k = el.dataset.kind, p = el.dataset.path;
+        if (k === "bool") setPath(out, p, el.checked);
+        else if (k === "number") { if (el.value.trim() === "" || isNaN(+el.value)) errs.push(el); else setPath(out, p, +el.value); }
+        else if (k === "nullable") setPath(out, p, el.value.trim() === "" ? null : el.value);
+        else if (k === "text") setPath(out, p, el.value);
+        else if (k === "lines") setPath(out, p, el.value.split("\n").map((s) => s.trim()).filter(Boolean));
+        else if (k === "map") {
+          const m = {};
+          $$(".rf-map-row", el).forEach((r) => { const kk = $("[data-k]", r).value.trim(), vi = $("[data-v]", r);
+            if (!kk && !vi.value.trim()) return; if (!kk) { errs.push($("[data-k]", r)); return; }
+            if (kk in m) { errs.push($("[data-k]", r)); return; }
+            m[kk] = vi.dataset.type === "number" && vi.value.trim() !== "" && !isNaN(+vi.value) ? +vi.value : vi.value; });
+          setPath(out, p, m);
+        }
+      });
+      return { out, errs };
+    }
+    $$(".rule").forEach((li) => {
+      const form = $(".rule-form", li), tog = $("[data-rule-toggle]", li), state = $("[data-state]", form), err = $("[data-err]", form);
+      let dirty = false, busy = false;
+      const open = (on) => { form.hidden = !on; tog.setAttribute("aria-expanded", String(on)); tog.firstChild.textContent = on ? "Hide rules" : "View rules"; };
+      tog.addEventListener("click", () => {
+        if (!form.hidden && dirty && !confirm("Close without saving your changes?")) return;
+        open(form.hidden);
+        if (!form.hidden) $("[data-json]", form).value = JSON.stringify(JSON.parse($("[data-orig]", form).textContent), null, 2);
+      });
+      $("[data-cancel]", form).addEventListener("click", () => { if (dirty && !confirm("Close without saving your changes?")) return; open(false); tog.focus(); });
+      form.addEventListener("input", () => { dirty = true; state.textContent = "Unsaved changes"; });
+      form.addEventListener("click", (e) => {
+        const add = e.target.closest("[data-add]"), rm = e.target.closest("[data-rm]");
+        if (add) { const rows = $(".rf-map-rows", add.parentElement); const r = document.createElement("div"); r.className = "rf-map-row";
+          r.innerHTML = '<input aria-label="Name" data-k><span aria-hidden="true">→</span><input aria-label="Value" data-v data-type="text"><button type="button" class="icon-btn" data-rm aria-label="Remove entry"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>';
+          rows.appendChild(r); $("input", r).focus(); dirty = true; state.textContent = "Unsaved changes"; }
+        if (rm) { rm.closest(".rf-map-row").remove(); dirty = true; state.textContent = "Unsaved changes"; }
+      });
+      async function save(settingsObj, btn) {
+        if (busy) return; busy = true; btn.disabled = true; state.textContent = "Saving…"; showErr(err, "");
+        try {
+          const j = await api("PUT", "/api/admin/profiles/" + form.dataset.pid, { settings: settingsObj, updated_at: form.dataset.updated });
+          form.dataset.updated = j.updated_at; $("[data-orig]", form).textContent = JSON.stringify(settingsObj);
+          $("[data-upd]", li).textContent = "just now"; dirty = false; state.textContent = "Saved"; say(j.message);
+        } catch (e2) { state.textContent = "Save failed"; showErr(err, e2.message); }
+        finally { busy = false; btn.disabled = false; }
+      }
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const { out, errs } = collect(form);
+        $$("[aria-invalid]", form).forEach((x) => x.removeAttribute("aria-invalid"));
+        if (errs.length) { errs.forEach((x) => x.setAttribute("aria-invalid", "true")); showErr(err, "Fix the highlighted fields: numbers must be numbers, and every entry needs a unique name."); errs[0].focus(); return; }
+        save(out, e.submitter || $("button[type=submit]", form));
+      });
+      $("[data-save-json]", form).addEventListener("click", (e) => {
+        let obj; try { obj = JSON.parse($("[data-json]", form).value); } catch (x) { showErr(err, "The JSON isn’t valid: " + x.message); $("[data-json]", form).focus(); return; }
+        if (!obj || typeof obj !== "object" || Array.isArray(obj)) { showErr(err, "Rules must be a JSON object."); return; }
+        save(obj, e.currentTarget).then(() => { if (state.textContent === "Saved") location.reload(); });
+      });
+    });
+    window.addEventListener("beforeunload", (e) => { if ($$(".rule-form").some((f) => !f.hidden && $("[data-state]", f).textContent === "Unsaved changes")) { e.preventDefault(); e.returnValue = ""; } });
+  }
+
   // ------------------------------------------------------------------ report builder
   function initNewTask() {
     const form = $("#taskForm"); if (!form) return;
@@ -452,5 +645,6 @@
     if (p === "dashboard") initDashboard();
     if (p === "new_task") initNewTask();
     if (p === "workspace") initWorkspace();
+    if (p === "admin") initAdmin();
   });
 })();

@@ -36,6 +36,9 @@ def zoho_login(app, monkeypatch, email, **kw):
     return zoho_fake.sign_in(app, monkeypatch, email, **kw)
 
 
+H = {"X-Requested-With": "fetch"}
+
+
 def _err(r):
     return parse_qs(urlparse(r.headers["location"]).query).get("error", [""])[0]
 
@@ -92,10 +95,10 @@ def test_unlisted_employee_denied_until_admin_grants(app, monkeypatch):
         assert s.scalar(select(User).where(User.email == "sara@trafficomm.com")) is None
 
     admin, _, _ = zoho_login(app, monkeypatch, "matheen.m@trafficomm.com")
-    r = admin.post("/admin/users", data={"email": "Sara@trafficomm.com", "role": "employee"}, follow_redirects=False)
-    assert "Access granted" in r.headers["location"].replace("%20", " ")
-    r = admin.post("/admin/users", data={"email": "x@gmail.com", "role": "employee"}, follow_redirects=False)
-    assert "can%20be%20granted" in r.headers["location"] or "can be granted" in r.headers["location"]
+    r = admin.post("/api/admin/users", headers=H, json={"email": "Sara@trafficomm.com", "role": "employee"})
+    assert r.status_code == 200 and "Access granted" in r.json()["message"] and "No email was sent" in r.json()["message"]
+    r = admin.post("/api/admin/users", headers=H, json={"email": "x@gmail.com", "role": "employee"})
+    assert r.status_code == 400 and "can be granted" in r.json()["detail"]
 
     c, r, _ = zoho_login(app, monkeypatch, "sara@trafficomm.com")
     assert r.headers["location"] == "/tasks"
@@ -103,10 +106,10 @@ def test_unlisted_employee_denied_until_admin_grants(app, monkeypatch):
 
     with Session() as s:
         sid = s.scalar(select(User.id).where(User.email == "sara@trafficomm.com"))
-    admin.post(f"/admin/users/{sid}/role", data={"role": "admin"})
+    assert admin.patch(f"/api/admin/users/{sid}", headers=H, json={"role": "admin"}).status_code == 200
     assert c.get("/admin").status_code == 200  # role is read from the DB on each request
 
-    admin.post(f"/admin/users/{sid}/toggle")  # revoke
+    assert admin.patch(f"/api/admin/users/{sid}", headers=H, json={"active": False}).status_code == 200  # revoke
     assert c.get("/", follow_redirects=False).status_code == 303  # existing session no longer valid
     _, r, _ = zoho_login(app, monkeypatch, "sara@trafficomm.com")
     assert _err(r) == "revoked"

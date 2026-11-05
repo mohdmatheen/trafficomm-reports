@@ -1,63 +1,169 @@
 {% extends "base.html" %}
-{% from "partials/ui.html" import icon, avatar %}
+{% from "partials/ui.html" import icon, status_badge %}
 {% block page %}admin{% endblock %}
-{% block title %}Administration · Trafficomm{% endblock %}
+{% block title %}Workspace administration · Trafficomm{% endblock %}
+
+{% macro human(k) %}{{ k|replace('_',' ')|capitalize }}{% endmacro %}
+{% macro rule_field(path, key, value, depth=0) %}
+  {% set id = 'rf' ~ (path|replace('/','-')|replace(' ','_')|replace('.','_')) %}
+  {% if value is mapping %}
+    {% if value.values()|select('mapping')|list or value.values()|select('sequence')|reject('string')|list %}
+    <fieldset class="rf-group"><legend>{{ human(key) }}</legend>
+      {% for k2, v2 in value.items() %}{{ rule_field(path ~ '/' ~ k2, k2, v2, depth + 1) }}{% else %}<p class="muted small">Empty</p>{% endfor %}
+    </fieldset>
+    {% else %}
+    <fieldset class="rf-map" data-path="{{ path }}" data-kind="map"><legend>{{ human(key) }} <span class="muted small">({{ value|length }})</span></legend>
+      <div class="rf-map-rows">
+      {% for k2, v2 in value.items() %}<div class="rf-map-row"><input aria-label="{{ human(key) }}: name" value="{{ k2 }}" data-k><span aria-hidden="true">→</span><input aria-label="{{ human(key) }}: value for {{ k2 }}" value="{{ v2 if v2 is not none else '' }}" data-v data-type="{{ 'number' if v2 is number else 'text' }}"><button type="button" class="icon-btn" data-rm aria-label="Remove {{ k2 }}">{{ icon('x') }}</button></div>{% endfor %}
+      </div>
+      <button type="button" class="link-btn" data-add>{{ icon('plus') }}Add entry</button>
+    </fieldset>
+    {% endif %}
+  {% elif value is sameas true or value is sameas false %}
+    <div class="rf-row rf-bool"><input type="checkbox" id="{{ id }}" data-path="{{ path }}" data-kind="bool" {{ 'checked' if value }}><label for="{{ id }}">{{ human(key) }}</label></div>
+  {% elif value is number %}
+    <div class="rf-row"><label for="{{ id }}">{{ human(key) }}</label><input id="{{ id }}" type="number" step="any" value="{{ value }}" data-path="{{ path }}" data-kind="number" required></div>
+  {% elif value is string or value is none %}
+    {% set lock = locked.get(key) if depth == 0 else none %}
+    <div class="rf-row"><label for="{{ id }}">{{ human(key) }}</label>
+      {% if lock %}<select id="{{ id }}" data-path="{{ path }}" data-kind="text">{% for o in lock %}<option {{ 'selected' if o == value }}>{{ o }}</option>{% endfor %}</select><span class="muted small rf-note">{{ icon('lock') }}Fixed by agency rules</span>
+      {% elif value is string and value|length > 70 %}<textarea id="{{ id }}" rows="2" data-path="{{ path }}" data-kind="text">{{ value }}</textarea>
+      {% else %}<input id="{{ id }}" value="{{ value if value is not none else '' }}" placeholder="{{ 'Not set' if value is none }}" data-path="{{ path }}" data-kind="{{ 'nullable' if value is none else 'text' }}">{% endif %}
+    </div>
+  {% elif value is sequence and (value|reject('string')|list|length == 0) %}
+    <div class="rf-row"><label for="{{ id }}">{{ human(key) }} <span class="muted small">(one per line)</span></label><textarea id="{{ id }}" rows="{{ [[value|length, 2]|max, 8]|min }}" data-path="{{ path }}" data-kind="lines">{{ value|join('\n') }}</textarea></div>
+  {% else %}
+    <div class="rf-row"><span class="rf-label">{{ human(key) }}</span><span class="muted small">{{ value|length }} structured item{{ 's' if value|length != 1 }} · edit in Advanced JSON</span></div>
+  {% endif %}
+{% endmacro %}
+
 {% block content %}
-<div class="page-head"><div><h1>Administration</h1><p class="page-sub">Workspace access, client reporting rules, retention and job health.</p></div></div>
-{% if msg %}<div class="notice notice-info" role="status">{{ icon('info') }}<div><p>{{ msg }}</p></div></div>{% endif %}
-{% if not zoho_enabled %}<div class="notice notice-error" role="alert">{{ icon('alert') }}<div><b>Zoho sign-in isn't configured</b><p>Set ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET on the server. Zoho is the only sign-in method, so nobody can sign in until it is configured.</p></div></div>{% endif %}
-<div class="admin-grid">
-<section class="card" aria-labelledby="h-users">
-  <header class="card-h"><span class="card-ic">{{ icon('user') }}</span><div><h2 id="h-users">People and access</h2>
-    <p>Everyone signs in with Zoho. Only active people listed here can get in{% if allowed_domains %}, and only with @{{ allowed_domains|join(', @') }} accounts{% endif %}.</p></div></header>
-  <div class="tbl-wrap">
-  <table class="tbl">
-    <thead><tr><th scope="col">Person</th><th scope="col">Role</th><th scope="col">Access</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
-    <tbody>
-    {% for u in users %}<tr>
-      <td data-label="Person"><span class="owner">{{ avatar(u.name, 'sm') }}<span><b>{{ u.name }}</b><br><span class="muted small">{{ u.email }}</span></span></span></td>
-      <td data-label="Role">{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/role" class="inline-form"><label class="sr" for="role-{{ u.id }}">Role for {{ u.email }}</label><select id="role-{{ u.id }}" name="role" class="sm">
-          <option value="employee" {{ 'selected' if u.role != 'admin' }}>Employee</option><option value="admin" {{ 'selected' if u.role == 'admin' }}>Admin</option></select>
-          <button class="btn btn-sm">Save</button></form>{% else %}{{ 'Admin' if u.role == 'admin' else 'Employee' }} <span class="muted small">(you)</span>{% endif %}</td>
-      <td data-label="Access"><span class="badge-st tone-{{ 'ok' if u.active else 'neutral' }}"><span class="bdot" aria-hidden="true"></span>{{ 'Active' if u.active else 'Revoked' }}</span></td>
-      <td class="c-act">{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/toggle" class="inline-form"><button class="btn btn-sm">{{ 'Revoke access' if u.active else 'Restore access' }}<span class="sr"> for {{ u.email }}</span></button></form>{% endif %}</td>
-    </tr>{% endfor %}
-    </tbody>
-  </table>
-  </div>
-  <h3>Grant access</h3>
-  <form method="post" action="/admin/users" class="row-form">
-    <div class="field"><label for="ga-email">Work email</label><input id="ga-email" name="email" type="email" placeholder="{{ 'name@' ~ allowed_domains[0] if allowed_domains else 'name@company.com' }}" required></div>
-    <div class="field"><label for="ga-name">Name <span class="opt">(optional)</span></label><input id="ga-name" name="name"></div>
-    <div class="field"><label for="ga-role">Role</label><select id="ga-role" name="role"><option value="employee">Employee</option><option value="admin">Admin</option></select></div>
-    <button class="btn btn-primary">Grant access</button>
-  </form>
-  <p class="f-hint">They can then sign in with their Zoho account. No password is set in this workspace.</p>
+<div class="page-head">
+  <div><h1>Workspace administration</h1><p class="page-sub">Manage access, reporting rules and workspace operations.</p></div>
+  <span class="chip-ind">{{ icon('shield') }}Zoho-only sign-in</span>
+</div>
+{% if not zoho_enabled %}<div class="notice notice-error" role="alert">{{ icon('alert') }}<div><b>Zoho sign-in isn’t configured</b><p>Set ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET on the server. Zoho is the only sign-in method, so nobody can sign in until it is configured.</p></div></div>{% endif %}
+<div class="sr" id="adminLive" role="status" aria-live="polite"></div>
+
+<section class="card ad-card" aria-labelledby="h-users">
+  <header class="ad-head"><span class="card-ic">{{ icon('user') }}</span>
+    <div><h2 id="h-users">Users &amp; access</h2><p>Only people listed here as active can sign in{% if allowed_domains %}, and only with an @{{ allowed_domains|join(', @') }} Zoho account{% endif %}. A matching domain alone doesn’t grant access.</p></div>
+    <button type="button" class="btn btn-primary" data-open="grantDlg">{{ icon('plus') }}Grant access</button>
+  </header>
+  <div id="usersBody">{% include "partials/admin_users.html" %}</div>
 </section>
-<section class="card" aria-labelledby="h-ret">
-  <header class="card-h"><span class="card-ic">{{ icon('clock') }}</span><div><h2 id="h-ret">Retention</h2><p>Retention runs daily in the worker. Deleted tasks are removed from storage.</p></div></header>
-  <form method="post" action="/admin/retention" class="row-form">
-    <div class="field"><label for="ret-days">Delete tasks not updated for (days)</label><input id="ret-days" type="number" name="days" min="1" value="{{ retention }}"></div>
-    <button class="btn" name="run" value="">Save</button>
-    <button class="btn btn-quiet" name="run" value="1">Save and run now</button>
+
+<div class="ad-grid">
+<section class="card ad-card" aria-labelledby="h-ret">
+  <header class="ad-head"><span class="card-ic">{{ icon('clock') }}</span><div><h2 id="h-ret">Data retention</h2>
+    <p>Tasks not updated for this many days are deleted, together with their uploaded files and generated outputs. The worker checks once a day. Deleted tasks can’t be recovered.</p></div></header>
+  <form id="retForm" class="ret-form" novalidate>
+    <div class="field"><label for="ret-days">Keep tasks for</label>
+      <div class="input-suffix"><input id="ret-days" name="days" type="number" inputmode="numeric" min="{{ retention_min }}" max="{{ retention_max }}" step="1" value="{{ retention }}" required aria-describedby="ret-hint ret-err"><span>days</span></div>
+      <p class="f-hint" id="ret-hint">Between {{ retention_min }} and {{ retention_max }} days. Currently {{ retention }} days.</p>
+      <p class="f-err" id="ret-err" hidden></p></div>
+    <div class="ret-actions">
+      <button class="btn btn-primary" id="retSave" type="submit">Save policy</button>
+      <button class="btn" type="button" id="retReview">Review cleanup…</button>
+    </div>
+    <p class="muted small">Saving changes the policy only. Nothing is deleted until the next daily check, or until you run a cleanup yourself.</p>
   </form>
-  <h3>Recent jobs</h3>
-  <div class="tbl-wrap"><table class="tbl compact"><thead><tr><th scope="col">Job</th><th scope="col">Task</th><th scope="col">Status</th><th scope="col">Attempts</th><th scope="col">Error (type/location only)</th></tr></thead><tbody>
-  {% for j in jobs %}<tr><td>#{{ j.id }}</td><td><a href="/tasks/{{ j.task_id }}">{{ j.task_id }}</a></td><td>{{ j.status }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td><td class="small muted">{{ (j.error or '')[:120] }}</td></tr>{% else %}<tr><td colspan="5" class="muted">No jobs yet.</td></tr>{% endfor %}
-  </tbody></table></div>
+</section>
+
+<section class="card ad-card" aria-labelledby="h-jobs">
+  <header class="ad-head"><span class="card-ic">{{ icon('gear') }}</span><div><h2 id="h-jobs">Recent jobs</h2><p>The latest {{ jobs|length }} processing jobs. Errors show the error type and location only.</p></div></header>
+  {% if jobs %}
+  <ul class="jobs">
+  {% for j in jobs %}
+    <li class="job">
+      <details>
+        <summary>
+          <span class="job-id">#{{ j.id }}</span>
+          <span class="job-main"><a href="/tasks/{{ j.task_id }}">{{ job_titles.get(j.task_id) or ('Task ' ~ j.task_id) }}</a>
+            <span class="muted small"><time datetime="{{ (j.finished_at or j.created_at).isoformat() }}">{{ (j.finished_at or j.created_at)|local }}</time> · attempt {{ j.attempts }} of {{ j.max_attempts }}</span></span>
+          {% set jt = {'succeeded':'ok','failed':'bad','running':'info','queued':'neutral','cancelled':'neutral'}.get(j.status, 'neutral') %}
+          <span class="badge-st tone-{{ jt }}"><span class="bdot" aria-hidden="true"></span>{{ j.status|capitalize }}</span>
+          {{ icon('chevron-down') }}
+        </summary>
+        <dl class="job-dl">
+          <dt>Task</dt><dd><a href="/tasks/{{ j.task_id }}">#{{ j.task_id }}</a> · version id {{ j.version_id }}</dd>
+          <dt>Created</dt><dd>{{ j.created_at|local }}</dd>
+          {% if j.finished_at %}<dt>Finished</dt><dd>{{ j.finished_at|local }}</dd>{% endif %}
+          {% if j.error %}<dt>Error</dt><dd class="mono small break">{{ (j.error.splitlines()|first)[:240] }}</dd>{% endif %}
+        </dl>
+      </details>
+    </li>
+  {% endfor %}
+  </ul>
+  {% else %}<p class="muted">No jobs yet.</p>{% endif %}
 </section>
 </div>
-<section class="card" aria-labelledby="h-rules">
-  <header class="card-h"><span class="card-ic">{{ icon('gear') }}</span><div><h2 id="h-rules">Client reporting rules</h2>
-    <p>Client-specific naming rules, column overrides, metric choices and deck labels. Answers employees choose to remember are saved here. They're applied automatically from the task's client.</p></div></header>
+
+<section class="card ad-card" aria-labelledby="h-rules">
+  <header class="ad-head"><span class="card-ic">{{ icon('layers') }}</span><div><h2 id="h-rules">Client reporting rules</h2>
+    <p>Naming rules, column overrides, metric choices and deck labels for each client. They’re applied automatically from a task’s client, to new reports and revisions. Agency-wide rules (USD to AED, view and click definitions, Kyra slides) always apply and can’t be changed here.</p></div></header>
+  <ul class="rules">
   {% for p in profiles %}
-  <details class="profile"><summary><b>{{ p.name }}</b> <span class="muted small">{{ clients.get(p.client_id, 'Any client') }} · updated {{ p.updated_at|ago }}</span></summary>
-    <form method="post" action="/admin/profiles/{{ p.id }}">
-      <label class="sr" for="pj-{{ p.id }}">Rules JSON for {{ p.name }}</label>
-      <textarea id="pj-{{ p.id }}" name="settings_json" rows="18" class="mono">{{ dumps(p.settings) }}</textarea>
-      <button class="btn btn-primary">Save rules</button>
-    </form>
-  </details>
+    <li class="rule" id="rule-{{ p.id }}">
+      <div class="rule-row">
+        <div><b>{{ p.name }}</b><span class="muted small">{{ clients.get(p.client_id, 'Any client') }} · updated <time datetime="{{ p.updated_at.isoformat() if p.updated_at }}" data-upd>{{ p.updated_at|local }}</time></span></div>
+        <button type="button" class="btn btn-sm" aria-expanded="false" aria-controls="rf-{{ p.id }}" data-rule-toggle>View rules<span class="sr"> for {{ p.name }}</span></button>
+      </div>
+      <form class="rule-form" id="rf-{{ p.id }}" data-pid="{{ p.id }}" data-updated="{{ p.updated_at.isoformat() if p.updated_at }}" hidden novalidate>
+        <script type="application/json" data-orig>{{ p.settings|tojson }}</script>
+        <div class="rf-fields">{% for k, v in p.settings.items() %}{{ rule_field(k, k, v) }}{% endfor %}</div>
+        <details class="rf-adv"><summary>Advanced JSON</summary>
+          <p class="muted small">For structured settings the form can’t edit. Saving from here replaces all rules for this client, so check it carefully.</p>
+          <label class="sr" for="rj-{{ p.id }}">Rules JSON for {{ p.name }}</label>
+          <textarea id="rj-{{ p.id }}" rows="14" class="mono" data-json spellcheck="false"></textarea>
+          <button type="button" class="btn btn-sm" data-save-json>Validate and save JSON</button>
+        </details>
+        <p class="f-err" data-err role="alert" hidden></p>
+        <div class="rule-actions"><span class="muted small" data-state></span><button type="button" class="btn" data-cancel>Close</button><button type="submit" class="btn btn-primary">Save rules</button></div>
+      </form>
+    </li>
   {% endfor %}
+  </ul>
 </section>
+
+{# ---- dialogs ---- #}
+<dialog class="dlg" id="grantDlg" aria-labelledby="gTitle">
+  <form method="dialog" id="grantForm" novalidate>
+    <header class="dlg-h"><h2 id="gTitle">Grant access</h2><button class="icon-btn" value="cancel" formnovalidate aria-label="Close">{{ icon('x') }}</button></header>
+    <p class="muted">This authorizes the person’s existing Zoho account to sign in. No email or invitation is sent, and no password is created.</p>
+    <div class="field"><label for="g-email">Company email</label><input id="g-email" name="email" type="email" required autocomplete="off" placeholder="name@{{ allowed_domains[0] if allowed_domains else 'company.com' }}" aria-describedby="g-email-err"><p class="f-err" id="g-email-err" hidden></p></div>
+    <div class="field"><label for="g-name">Name <span class="opt">(optional)</span></label><input id="g-name" name="name" maxlength="120" autocomplete="off"></div>
+    <div class="field"><label for="g-role">Role</label><select id="g-role" name="role"><option value="employee">Employee: works on their own tasks</option><option value="admin">Admin: manages access, rules and all tasks</option></select></div>
+    <p class="f-err" data-err role="alert" hidden></p>
+    <footer class="dlg-f"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn btn-primary" id="grantSubmit" value="default">Grant access</button></footer>
+  </form>
+</dialog>
+
+<dialog class="dlg" id="manageDlg" aria-labelledby="mTitle">
+  <form method="dialog" id="manageForm">
+    <header class="dlg-h"><h2 id="mTitle">Manage access</h2><button class="icon-btn" value="cancel" formnovalidate aria-label="Close">{{ icon('x') }}</button></header>
+    <p class="m-who"><b data-m-name></b><br><span class="muted small" data-m-email></span></p>
+    <div class="notice notice-warn" data-m-legacy hidden>{{ icon('alert') }}<div><p>This is a legacy account. It can’t sign in with Zoho whatever its access setting. Grant the person’s company email instead.</p></div></div>
+    <fieldset class="field"><legend>Role</legend>
+      <label class="radio"><input type="radio" name="role" value="employee"> Employee</label>
+      <label class="radio"><input type="radio" name="role" value="admin"> Admin</label>
+    </fieldset>
+    <p class="muted small" data-m-lastadmin hidden>{{ icon('shield') }} This is the only active admin, so their role and access can’t be removed.</p>
+    <p class="f-err" data-err role="alert" hidden></p>
+    <footer class="dlg-f dlg-f-split">
+      <button class="btn btn-danger-quiet" type="button" data-m-toggle></button>
+      <span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn btn-primary" value="default" data-m-save>Save role</button></span>
+    </footer>
+  </form>
+</dialog>
+
+<dialog class="dlg" id="cleanupDlg" aria-labelledby="cTitle">
+  <form method="dialog" id="cleanupForm">
+    <header class="dlg-h"><h2 id="cTitle">Review cleanup</h2><button class="icon-btn" value="cancel" formnovalidate aria-label="Close">{{ icon('x') }}</button></header>
+    <div data-c-body><p class="muted">Checking which tasks are past the retention period…</p></div>
+    <label class="check" data-c-confirm-wrap hidden><input type="checkbox" data-c-confirm> I understand these tasks, their files and outputs will be permanently deleted.</label>
+    <p class="f-err" data-err role="alert" hidden></p>
+    <footer class="dlg-f"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn btn-danger" type="button" data-c-run disabled>Run cleanup</button></footer>
+  </form>
+</dialog>
 {% endblock %}

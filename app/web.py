@@ -18,7 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import service as S
 from .auth import current_user, get_task_checked, require_admin, require_user
 from .config import BASE_DIR, settings
-from .db import (AppSetting, Artifact, Client, Job, Message, Profile, Question, Session, StageEvent, Task, TaskFile, TaskVersion,
+from .db import (AppSetting, Artifact, AuditLog, Client, Job, Message, Profile, Question, Session, StageEvent, Task, TaskFile, TaskVersion,
                  User, init_db, now)
 from .engine import fields as F
 from .engine import fmt as FM
@@ -55,6 +55,21 @@ def _ago(t: dt.datetime | None) -> str:
 
 
 templates.env.filters["ago"] = _ago
+DISPLAY_TZ = os.environ.get("DISPLAY_TZ", "Asia/Kolkata")
+
+
+def _local(t, fmt="%d %b %Y, %H:%M"):
+    """Timestamps are stored in UTC; show them in the workspace display zone (IST by default)."""
+    if not t:
+        return ""
+    from zoneinfo import ZoneInfo
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.timezone.utc)
+    z = ZoneInfo(DISPLAY_TZ)
+    return t.astimezone(z).strftime(fmt) + (" IST" if DISPLAY_TZ == "Asia/Kolkata" else " " + t.astimezone(z).tzname())
+
+
+templates.env.filters["local"] = _local
 templates.env.filters["fmt_metric"] = lambda v, m, cur="": FM.fmt_metric(m, v, cur)
 templates.env.filters["mb"] = lambda n: f"{(n or 0) / 1024:.0f} KB" if (n or 0) < 1024 * 1024 else f"{n / 1024 / 1024:.1f} MB"
 templates.env.globals.update(STATUS_LABEL=S.STATUS_LABEL, PLATFORM_LABELS=F.PLATFORM_LABELS, METRIC_LABELS=METRIC_LABELS,
@@ -865,97 +880,147 @@ def preview(request: Request, artifact_id: int):
 # ---------------------------------------------------------------------------
 # Admin
 # ---------------------------------------------------------------------------
+ROLE_LABEL = {"admin": "Admin", "employee": "Employee"}
+PROFILE_LOCKED = {"click_metric": ("link_clicks",)}  # agency rule: clicks are always link clicks
+
+
+def _admin_users(s, me):
+    users = s.scalars(select(User).order_by(User.active.desc(), func.lower(User.name))).all()
+    last = dict(s.execute(select(AuditLog.user_id, func.max(AuditLog.at)).where(AuditLog.action == "login_zoho").group_by(AuditLog.user_id)).all())
+    rows = []
+    for u in users:
+        st = S.sign_in_status(u, last.get(u.id), settings.zoho_allowed_domains)
+        rows.append({"u": u, "me": u.id == me.id, "status": st, "last_login": last.get(u.id)})
+    return rows
+
+
+def _admin_ctx(s, user):
+    rows = _admin_users(s, user)
+    profiles = s.scalars(select(Profile).order_by(Profile.id)).all()
+    clients = {c.id: c.name for c in s.scalars(select(Client)).all()}
+    jobs = s.scalars(select(Job).order_by(Job.id.desc()).limit(20)).all()
+    titles = dict(s.execute(select(Task.id, Task.title).where(Task.id.in_({j.task_id for j in jobs} or {0}))).all())
+    active_admins = sum(1 for r in rows if r["u"].role == "admin" and r["u"].active)
+    return {"user": user, "rows": rows, "profiles": profiles, "clients": clients, "jobs": jobs, "job_titles": titles,
+            "retention": S.retention_days(s), "retention_min": S.RETENTION_MIN, "retention_max": S.RETENTION_MAX,
+            "zoho_enabled": settings.zoho_enabled, "allowed_domains": settings.zoho_allowed_domains,
+            "boot_admins": settings.zoho_admin_emails, "active_admins": active_admins, "ROLE_LABEL": ROLE_LABEL,
+            "locked": PROFILE_LOCKED, "nav": "admin", "crumbs": [("Administration", None)]}
+
+
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page(request: Request, msg: str = ""):
+def admin_page(request: Request, partial: str = ""):
     user = require_admin(request)
     with Session() as s:
-        users = s.scalars(select(User).order_by(User.id)).all()
-        profiles = s.scalars(select(Profile).order_by(Profile.id)).all()
-        clients = {c.id: c.name for c in s.scalars(select(Client)).all()}
-        jobs = s.scalars(select(Job).order_by(Job.id.desc()).limit(15)).all()
-        rd = S.retention_days(s)
-    import json as _json
-    return templates.TemplateResponse(request, "admin.html", {"user": user, "users": users, "profiles": profiles, "clients": clients, "jobs": jobs,
-                                                               "retention": rd, "msg": msg, "zoho_enabled": settings.zoho_enabled,
-                                                               "allowed_domains": settings.zoho_allowed_domains, "boot_admins": settings.zoho_admin_emails,
-                                                               "nav": "admin", "crumbs": [("Administration", None)], "dumps": lambda o: _json.dumps(o, indent=2)})
+        ctx = _admin_ctx(s, user)
+    if partial == "users":
+        return templates.TemplateResponse(request, "partials/admin_users.html", ctx)
+    return templates.TemplateResponse(request, "admin.html", ctx)
 
 
-@app.post("/admin/users")
-def admin_add_user(request: Request, email: str = Form(...), name: str = Form(""), role: str = Form("employee")):
-    """Grant access. The person then signs in with their Zoho account; no password is ever set."""
+def _user_json(u):
+    return {"id": u.id, "email": u.email, "name": u.name, "role": u.role, "active": u.active}
+
+
+@app.post("/api/admin/users")
+async def api_admin_grant(request: Request):
     admin = require_admin(request)
-    email = email.strip().lower()
-    if "@" not in email:
-        return RedirectResponse("/admin?msg=Enter a valid email", status_code=303)
-    domain = email.rsplit("@", 1)[-1]
-    if settings.zoho_allowed_domains and domain not in settings.zoho_allowed_domains:
-        return RedirectResponse("/admin?msg=Only @" + " / @".join(settings.zoho_allowed_domains) + " emails can be granted access", status_code=303)
+    body = await request.json()
     with Session() as s:
-        u = s.scalar(select(User).where(func.lower(User.email) == email))
-        if u:
-            if u.active:
-                return RedirectResponse("/admin?msg=" + email + " already has access", status_code=303)
-            u.active = True
-            u.role = "admin" if role == "admin" else "employee"
-            S.audit(s, admin.id, "grant_access", email)
-            s.commit()
-            return RedirectResponse("/admin?msg=Access restored for " + email, status_code=303)
-        s.add(User(email=email, name=(name.strip() or email.split("@")[0])[:120], role="admin" if role == "admin" else "employee", password_hash="!"))
-        S.audit(s, admin.id, "grant_access", email)
+        u, how = S.grant_access(s, admin, str(body.get("email") or ""), str(body.get("name") or ""), str(body.get("role") or "employee"))
         s.commit()
-    return RedirectResponse("/admin?msg=Access granted to " + email, status_code=303)
+        return {"ok": True, "user": _user_json(u), "result": how,
+                "message": ("Access restored for " if how == "restored" else "Access granted to ") + u.email + ". No email was sent."}
 
 
-@app.post("/admin/users/{uid}/role")
-def admin_set_role(request: Request, uid: int, role: str = Form(...)):
+@app.patch("/api/admin/users/{uid}")
+async def api_admin_update_user(request: Request, uid: int):
     admin = require_admin(request)
+    body = await request.json()
+    role = body.get("role")
+    if role is not None and role not in ROLE_LABEL:
+        raise S.UserError("Unknown role")
+    active = body.get("active")
+    if active is not None and not isinstance(active, bool):
+        raise S.UserError("Access must be true or false")
     with Session() as s:
-        u = s.get(User, uid)
-        if not u or u.id == admin.id:
-            return RedirectResponse("/admin?msg=You can't change your own role", status_code=303)
-        u.role = "admin" if role == "admin" else "employee"
-        S.audit(s, admin.id, "set_role:" + u.role, u.email)
+        u, changes = S.update_user_access(s, admin, uid, role, active)
         s.commit()
-    return RedirectResponse("/admin?msg=Role updated for " + u.email, status_code=303)
+        return {"ok": True, "user": _user_json(u), "changes": changes,
+                "message": (u.email + ": " + ", ".join(changes)) if changes else "No changes"}
 
 
-@app.post("/admin/users/{uid}/toggle")
-def admin_toggle_user(request: Request, uid: int):
+@app.put("/api/admin/retention")
+async def api_admin_retention(request: Request):
     admin = require_admin(request)
+    body = await request.json()
     with Session() as s:
-        u = s.get(User, uid)
-        if u and u.id != admin.id:
-            u.active = not u.active
-            S.audit(s, admin.id, "grant_access" if u.active else "revoke_access", u.email)
-            s.commit()
-    return RedirectResponse("/admin", status_code=303)
-
-
-@app.post("/admin/profiles/{pid}")
-def admin_profile(request: Request, pid: int, settings_json: str = Form(...)):
-    admin = require_admin(request)
-    import json as _json
-    try:
-        data = _json.loads(settings_json)
-        assert isinstance(data, dict)
-    except Exception:  # noqa: BLE001
-        return RedirectResponse("/admin?msg=Profile JSON is invalid", status_code=303)
-    with Session() as s:
-        p = s.get(Profile, pid)
-        p.settings = data
-        S.audit(s, admin.id, "edit_profile", p.name)
+        d = S.set_retention_days(s, admin.id, body.get("days"))
         s.commit()
-    return RedirectResponse("/admin?msg=Profile saved", status_code=303)
+        p = S.retention_preview(s)
+    return {"ok": True, "days": d, "message": f"Retention policy saved: {d} days. Nothing was deleted.", "eligible": p["count"]}
 
 
-@app.post("/admin/retention")
-def admin_retention(request: Request, days: int = Form(...), run: str = Form("")):
+@app.get("/api/admin/retention/preview")
+def api_admin_retention_preview(request: Request):
     require_admin(request)
     with Session() as s:
-        r = s.get(AppSetting, "retention_days") or AppSetting(key="retention_days", value=str(days))
-        r.value = str(max(1, days))
-        s.merge(r)
-        n = S.run_retention(s) if run else None
+        p = S.retention_preview(s)
+        d = S.retention_days(s)
+    return {"days": d, "count": p["count"], "cutoff": p["cutoff"].isoformat(), "oldest": p["oldest"].isoformat() if p["oldest"] else None}
+
+
+@app.post("/api/admin/retention/run")
+async def api_admin_retention_run(request: Request):
+    admin = require_admin(request)
+    body = await request.json()
+    if body.get("confirm") is not True:
+        raise S.UserError("Confirm the cleanup before running it")
+    with Session() as s:
+        n = S.run_retention(s)
+        S.audit(s, admin.id, "retention_run", f"{n} task(s) deleted")
         s.commit()
-    return RedirectResponse(f"/admin?msg=Retention set to {days} days" + (f"; {n} task(s) deleted" if n is not None else ""), status_code=303)
+    return {"ok": True, "deleted": n, "message": f"Cleanup finished: {n} task{'s' if n != 1 else ''} deleted."}
+
+
+def _validate_profile(old: dict, new) -> dict:
+    import json as _json
+    if not isinstance(new, dict):
+        raise S.UserError("Rules must be an object of settings")
+    if len(_json.dumps(new)) > 200_000:
+        raise S.UserError("Rules are too large")
+    for k in new:
+        if not isinstance(k, str) or not k.strip():
+            raise S.UserError("Every setting needs a name")
+    for k, v in new.items():
+        if k in old and old[k] is not None and v is not None:
+            ot, nt = type(old[k]), type(v)
+            if ot in (int, float) and nt in (int, float):
+                continue
+            if ot is not nt:
+                raise S.UserError(f"“{k}” must stay a {dict(str='text', int='number', float='number', bool='yes/no', dict='group', list='list').get(ot.__name__, ot.__name__)}")
+        if k in PROFILE_LOCKED and v not in PROFILE_LOCKED[k]:
+            raise S.UserError(f"“{k}” is fixed by agency rules ({' / '.join(PROFILE_LOCKED[k])})")
+    if "default_currency" in new and new["default_currency"] is not None:
+        c = new["default_currency"]
+        if not (isinstance(c, str) and len(c) == 3 and c.isalpha()):
+            raise S.UserError("Default currency must be a 3-letter code such as AED")
+        new["default_currency"] = c.upper()
+    return new
+
+
+@app.put("/api/admin/profiles/{pid}")
+async def api_admin_profile(request: Request, pid: int):
+    admin = require_admin(request)
+    body = await request.json()
+    with Session() as s:
+        p = s.get(Profile, pid, with_for_update=True)
+        if not p:
+            raise HTTPException(404, "Not found")
+        if body.get("updated_at") and p.updated_at and body["updated_at"] != p.updated_at.isoformat():
+            raise S.UserError("These rules were changed by someone else. Reload to see the latest version before saving.")
+        p.settings = _validate_profile(dict(p.settings or {}), body.get("settings"))
+        p.updated_at = dt.datetime.now(dt.timezone.utc)
+        S.audit(s, admin.id, "edit_profile", p.name)
+        s.commit()
+        return {"ok": True, "updated_at": p.updated_at.isoformat(), "message": f"Rules saved for {p.name}. They apply to new and revised reports."}

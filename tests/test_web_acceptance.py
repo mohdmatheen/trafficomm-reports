@@ -339,8 +339,18 @@ def test_retention_deletes_old_tasks(admin, emp):
         t = s.get(Task, tid)
         t.updated_at = now() - dt.timedelta(days=400)
         s.commit()
-    r = admin.post("/admin/retention", data={"days": "180", "run": "1"}, follow_redirects=False)
-    assert r.status_code == 303
+    # saving the policy never deletes anything
+    r = admin.put("/api/admin/retention", headers=H, json={"days": 180})
+    assert r.status_code == 200 and r.json()["days"] == 180
+    with Session() as s:
+        assert s.get(Task, tid).deleted_at is None
+    for bad in (0, 3, 99999, "abc", None):
+        assert admin.put("/api/admin/retention", headers=H, json={"days": bad}).status_code == 400
+    p = admin.get("/api/admin/retention/preview").json()
+    assert p["days"] == 180 and p["count"] >= 1
+    # cleanup needs an explicit confirmation
+    assert admin.post("/api/admin/retention/run", headers=H, json={}).status_code == 400
+    assert admin.post("/api/admin/retention/run", headers=H, json={"confirm": True}).json()["deleted"] >= 1
     with Session() as s:
         assert s.get(Task, tid).deleted_at is not None
     assert emp.get(f"/tasks/{tid}").status_code == 404
@@ -361,7 +371,8 @@ def test_no_password_sign_in_paths(app_client, admin):
     assert 'type="password"' not in admin.get("/admin").text
     assert 'type="password"' not in admin.get("/account").text
     # granting access never takes a password
-    r = admin.post("/admin/users", data={"email": "new.person@trafficomm.local", "role": "employee", "password": "ignored-password"}, follow_redirects=False)
+    r = admin.post("/api/admin/users", headers=H, json={"email": "new.person@trafficomm.local", "role": "employee", "password": "ignored-password"})
+    assert r.status_code == 200, r.text
     with Session() as s:
         assert s.scalar(select(User.password_hash).where(User.email == "new.person@trafficomm.local")) == "!"
 
