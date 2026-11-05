@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block page %}new_task{% endblock %}
+{% block title %}{% if draft %}Edit draft{% else %}New task{% endif %} · Trafficomm{% endblock %}
+{% block bodyattrs %}data-task-id="{{ draft.id if draft else '' }}"{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{% if draft %}Draft task{% else %}New reporting task{% endif %}</h1>
+  <p class="muted">Changes save automatically as a draft. Raw files are stored unchanged; outputs are always new files.</p></div>
+  <div class="save-state muted small" id="saveState">Not saved yet</div>
+</div>
+<form id="taskForm" class="grid-2" autocomplete="off">
+  <section class="card">
+    <h2>1. Report details</h2>
+    <label>Client
+      <select name="client_id">{% for c in clients %}<option value="{{ c.id }}" {% if default_client and c.id == default_client.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select>
+    </label>
+    <div hidden>{# the client's reporting rules are picked automatically from the selected client #}
+        <select name="profile_id" aria-hidden="true" tabindex="-1">{% for p in profiles %}<option value="{{ p.id }}" data-client="{{ p.client_id }}" {% if draft and draft.profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select>
+    </div>
+    <label>Task title<input name="title" required maxlength="300" placeholder="e.g. Brighton College – September 2026 performance" value="{{ draft.title if draft else '' }}"></label>
+    <label>Brand / campaign <span class="muted">(optional)</span><input name="brand" maxlength="300" placeholder="e.g. Brighton College Abu Dhabi" value="{{ draft.brand if draft else '' }}"></label>
+    <div class="row2">
+      <label>Reporting period start<input type="date" name="period_start" value="{{ p_start or '' }}"></label>
+      <label>Reporting period end<input type="date" name="period_end" value="{{ p_end or '' }}"></label>
+    </div>
+    <details {% if draft and draft.comparison_start %}open{% endif %}><summary>Comparison period (optional)</summary>
+    <div class="row2">
+      <label>Comparison start<input type="date" name="comparison_start" value="{{ draft.comparison_start if draft and draft.comparison_start else '' }}"></label>
+      <label>Comparison end<input type="date" name="comparison_end" value="{{ draft.comparison_end if draft and draft.comparison_end else '' }}"></label>
+    </div>
+    <p class="muted small">Upload comparison-period exports in area A as well; rows are split by date.</p>
+    </details>
+    <label>Reporting currency<input name="currency" maxlength="3" value="{{ draft.currency if draft else 'AED' }}" placeholder="AED"></label>
+    <fieldset class="deliverables">
+      <legend>Deliverables</legend>
+      {% set dsel = (draft.deliverables if draft else ['excel']) or [] %}
+      {% for k, v in DELIVERABLE_LABELS.items() if k in ['excel', 'deck_update'] %}
+      <label class="check"><input type="checkbox" name="deliverables" value="{{ k }}" {% if k in dsel %}checked{% endif %}> {{ v }}
+        <span class="muted small">{{ {'excel':'Structured tabs; or your template populated (area B)','deck_update':'Your deck (area C) with figures updated, design kept','deck_new':'','pdf':''}[k] }}</span></label>
+      {% endfor %}
+    </fieldset>
+  </section>
+  <section class="card">
+    <h2>2. Instructions</h2>
+    <label class="sr">Instructions</label>
+    <textarea name="instructions" rows="9" placeholder="Paste the client brief or your instructions. e.g.&#10;Update the September deck with the new figures. Use link clicks. Break down by school and creative. Add short commentary.">{{ draft.instructions if draft else '' }}</textarea>
+    <p class="muted small">Instructions are interpreted into a plan you can see in the workspace. Text inside uploaded files is never treated as instructions.</p>
+    <h2>3. Files</h2>
+    <div class="dropzones">
+      <div class="dropzone" data-role="raw" data-accept=".csv,.xlsx">
+        <input type="file" multiple accept=".csv,.xlsx" hidden>
+        <div class="dz-head"><b>A. Raw data</b><span class="muted small">CSV / XLSX exports · multiple files · Meta, TikTok, Snapchat, Google, LinkedIn…</span></div>
+        <div class="dz-hint">Drop files here or <button type="button" class="linkbtn dz-pick">browse</button></div>
+        <ul class="filelist"></ul>
+      </div>
+      <div class="dropzone" data-role="template" data-accept=".xlsx">
+        <input type="file" accept=".xlsx" hidden>
+        <div class="dz-head"><b>B. Excel template</b><span class="muted small">Optional · XLSX · formulas are preserved</span></div>
+        <div class="dz-hint">Drop a template or <button type="button" class="linkbtn dz-pick">browse</button></div>
+        <ul class="filelist"></ul>
+      </div>
+      <div class="dropzone" data-role="client_deck" data-accept=".pptx,.zip">
+        <input type="file" multiple accept=".pptx,.zip" hidden>
+        <div class="dz-head"><b>C. Client PowerPoint</b><span class="muted small">Optional · PPTX to update · ZIP of creative images (optional)</span></div>
+        <div class="dz-hint">Drop the deck or <button type="button" class="linkbtn dz-pick">browse</button></div>
+        <ul class="filelist"></ul>
+      </div>
+    </div>
+    <div id="deckMissing" class="alert alert-warn" hidden>You chose <b>Updated client PowerPoint</b> but no PPTX is in area C. Upload the client deck, or untick that deliverable.</div>
+    <div id="formError" class="alert alert-fail" hidden></div>
+    <div class="submit-row">
+      {% if draft %}<button type="button" class="btn btn-ghost" id="deleteDraft">Delete draft</button>{% endif %}
+      <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">Submit for processing</button>
+    </div>
+  </section>
+</form>
+<script type="application/json" id="draftFiles">{{ (draft_files or [])|tojson }}</script>
+{% endblock %}

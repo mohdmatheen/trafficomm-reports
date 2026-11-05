@@ -1,0 +1,34 @@
+# Render Blueprint: one Docker web service (web app + worker) with a persistent disk, plus managed Postgres.
+services:
+  - type: web
+    name: trafficomm-reports
+    runtime: docker
+    dockerfilePath: ./deploy/Dockerfile
+    plan: standard   # 2 GB RAM: LibreOffice + pandas need more than the 512 MB starter plan
+    region: frankfurt
+    healthCheckPath: /healthz
+    disk:
+      name: storage
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: {name: trafficomm-db, property: connectionString}
+      - key: STORAGE_DIR
+        value: /data/storage
+      - key: COOKIE_SECURE
+        value: "1"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SEED_ADMIN_PASSWORD
+        sync: false
+      - key: SEED_EMPLOYEE_PASSWORD
+        sync: false
+      - key: SEED_EMPLOYEE2_PASSWORD
+        sync: false
+databases:
+  - name: trafficomm-db
+    plan: basic-256mb
+    region: frankfurt

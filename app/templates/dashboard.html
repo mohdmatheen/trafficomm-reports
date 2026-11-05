@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block page %}dashboard{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Reporting tasks</h1><p class="muted">{% if user.role == 'admin' %}All employees' tasks{% else %}Your tasks{% endif %}</p></div>
+  <a class="btn btn-primary" href="/tasks/new">+ New reporting task</a>
+</div>
+<div class="stat-row">
+  {% set proc = namespace(n=0) %}{% for k in ['queued','inspecting','mapping','calculating','generating','validating'] %}{% set proc.n = proc.n + counts.get(k, 0) %}{% endfor %}
+  <a class="stat" href="/?status=processing"><b>{{ proc.n }}</b><span>Processing</span></a>
+  <a class="stat warn" href="/?status=awaiting_clarification"><b>{{ counts.get('awaiting_clarification', 0) }}</b><span>Need your answer</span></a>
+  <a class="stat ok" href="/?status=ready_for_review"><b>{{ counts.get('ready_for_review', 0) }}</b><span>Ready for review</span></a>
+  <a class="stat" href="/?status=approved"><b>{{ counts.get('approved', 0) }}</b><span>Approved</span></a>
+  <a class="stat bad" href="/?status=validation_blocked"><b>{{ counts.get('validation_blocked', 0) + counts.get('failed', 0) }}</b><span>Blocked / failed</span></a>
+</div>
+<form class="filters card" method="get" action="/">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search title, brand or client">
+  <select name="status">
+    <option value="">Any status</option>
+    <option value="processing" {% if status == 'processing' %}selected{% endif %}>Processing</option>
+    {% for k, v in STATUS_LABEL.items() %}<option value="{{ k }}" {% if status == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
+  </select>
+  <select name="client"><option value="">Any client</option>{% for c in clients %}<option value="{{ c.id }}" {% if client == c.id|string %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select>
+  {% if owners %}<select name="owner"><option value="">Any owner</option>{% for o in owners %}<option value="{{ o.id }}" {% if owner == o.id|string %}selected{% endif %}>{{ o.name }}</option>{% endfor %}</select>{% endif %}
+  <button class="btn">Filter</button>
+  {% if q or status or client or owner %}<a href="/" class="linkbtn">Clear</a>{% endif %}
+</form>
+{% if not rows %}
+<div class="card empty"><h3>No tasks yet</h3><p class="muted">Create a task, upload the raw exports and describe the report you need.</p><a class="btn btn-primary" href="/tasks/new">Create your first task</a></div>
+{% else %}
+<div class="card flush">
+<table class="tbl">
+<thead><tr><th>Task</th><th>Client</th>{% if user.role == 'admin' %}<th>Owner</th>{% endif %}<th>Status</th><th>Version</th><th>Latest downloads</th><th>Updated</th><th></th></tr></thead>
+<tbody>
+{% for r in rows %}{% set t = r.t %}
+<tr>
+  <td><a href="{% if t.status == 'draft' %}/tasks/{{ t.id }}/edit{% else %}/tasks/{{ t.id }}{% endif %}" class="strong">{{ t.title or 'Untitled task' }}</a>{% if t.brand %}<div class="muted small">{{ t.brand }}</div>{% endif %}</td>
+  <td>{{ r.client }}</td>
+  {% if user.role == 'admin' %}<td>{{ r.owner }}</td>{% endif %}
+  <td><span class="pill st-{{ t.status }}">{{ STATUS_LABEL.get(t.status, t.status) }}</span></td>
+  <td>{% if r.version %}v{{ r.version.number }}{% else %}–{% endif %}</td>
+  <td class="dl">{% if r.latest_ready %}<span class="muted small">v{{ r.latest_ready.number }}:</span> {% for a in r.arts %}<a href="/artifacts/{{ a.id }}/download" title="{{ a.label }}" class="chip">{{ {'excel':'Excel','excel_consolidated':'Excel','deck_update':'PPTX','deck_new':'New PPTX','pdf':'PDF'}.get(a.kind, a.kind) }}</a>{% endfor %}{% else %}<span class="muted">–</span>{% endif %}</td>
+  <td class="muted small">{{ t.updated_at|ago }}</td>
+  <td>{% if t.status in ['ready_for_review','approved','validation_blocked'] %}<a class="btn btn-sm" href="/tasks/{{ t.id }}#feedback">Give feedback</a>{% elif t.status == 'awaiting_clarification' %}<a class="btn btn-sm btn-warn" href="/tasks/{{ t.id }}#questions">Answer</a>{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody></table></div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,31 @@
+# Private deployment: Postgres + web + worker + Caddy (automatic HTTPS) on one small server.
+# Usage on the server:  cp .env.example .env (fill in) ; docker compose up -d --build
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment: {POSTGRES_DB: trafficomm, POSTGRES_USER: trafficomm, POSTGRES_PASSWORD: "${DB_PASSWORD}"}
+    volumes: [pgdata:/var/lib/postgresql/data]
+  web:
+    build: {context: .., dockerfile: deploy/Dockerfile}
+    restart: unless-stopped
+    env_file: .env
+    environment: {DATABASE_URL: "postgresql+psycopg://trafficomm:${DB_PASSWORD}@db/trafficomm", STORAGE_DIR: /data/storage, COOKIE_SECURE: "1"}
+    volumes: [storage:/data]
+    depends_on: [db]
+  worker:
+    build: {context: .., dockerfile: deploy/Dockerfile}
+    restart: unless-stopped
+    env_file: .env
+    command: ["python", "-m", "app.worker"]
+    environment: {DATABASE_URL: "postgresql+psycopg://trafficomm:${DB_PASSWORD}@db/trafficomm", STORAGE_DIR: /data/storage}
+    volumes: [storage:/data]
+    depends_on: [db]
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes: [./Caddyfile:/etc/caddy/Caddyfile:ro, caddydata:/data]
+    environment: {SITE_DOMAIN: "${SITE_DOMAIN}"}
+    depends_on: [web]
+volumes: {pgdata: {}, storage: {}, caddydata: {}}

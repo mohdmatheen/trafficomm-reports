@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block page %}admin{% endblock %}
+{% block title %}Admin · Trafficomm{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Admin</h1><p class="muted">Users, client profiles, retention and job health.</p></div></div>
+{% if msg %}<div class="alert alert-info">{{ msg }}</div>{% endif %}
+<div class="grid-2">
+<section class="card">
+  <h2>Users</h2>
+  <table class="tbl compact"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>
+  {% for u in users %}<tr><td>{{ u.name }}</td><td>{{ u.email }}</td><td>{{ u.role }}</td><td>{{ 'active' if u.active else 'disabled' }}</td>
+    <td>{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/toggle" class="inline"><button class="btn btn-sm">{{ 'Disable' if u.active else 'Enable' }}</button></form>{% endif %}</td></tr>{% endfor %}
+  </tbody></table>
+  <h3>Add user</h3>
+  <form method="post" action="/admin/users" class="row-form">
+    <input name="name" placeholder="Name" required><input name="email" type="email" placeholder="Email" required>
+    <select name="role"><option value="employee">Employee</option><option value="admin">Admin</option></select>
+    <input name="password" type="password" placeholder="Initial password (10+ chars)" minlength="10" required>
+    <button class="btn btn-primary">Add</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Retention</h2>
+  <form method="post" action="/admin/retention" class="row-form">
+    <label>Delete tasks (uploads and outputs) not updated for <input type="number" name="days" min="1" value="{{ retention }}" class="w-num"> days</label>
+    <button class="btn" name="run" value="">Save</button>
+    <button class="btn btn-ghost" name="run" value="1">Save and run now</button>
+  </form>
+  <p class="muted small">Retention runs daily in the worker. Approved versions are kept for the same period; deleted tasks are removed from storage.</p>
+  <h2>Recent jobs</h2>
+  <table class="tbl compact"><thead><tr><th>Job</th><th>Task</th><th>Status</th><th>Attempts</th><th>Error (type/location only)</th></tr></thead><tbody>
+  {% for j in jobs %}<tr><td>#{{ j.id }}</td><td><a href="/tasks/{{ j.task_id }}">{{ j.task_id }}</a></td><td>{{ j.status }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td><td class="small muted">{{ (j.error or '')[:120] }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+</div>
+<section class="card">
+  <h2>Client reporting rules</h2>
+  <p class="muted small">These hold client-specific naming rules, column overrides, metric choices and deck labels. Answers employees choose to remember are saved here. Employees don't see or choose these; they're applied from the task's client.</p>
+  {% for p in profiles %}
+  <details class="profile"><summary><b>{{ p.name }}</b> <span class="muted small">{{ clients.get(p.client_id, 'Any client') }} · updated {{ p.updated_at|ago }}</span></summary>
+    <form method="post" action="/admin/profiles/{{ p.id }}">
+      <textarea name="settings_json" rows="18" class="mono">{{ dumps(p.settings) }}</textarea>
+      <button class="btn btn-primary">Save rules</button>
+    </form>
+  </details>
+  {% endfor %}
+</section>
+{% endblock %}

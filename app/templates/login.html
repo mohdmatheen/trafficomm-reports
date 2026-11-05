@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block page %}login{% endblock %}
+{% block title %}Sign in · Trafficomm{% endblock %}
+{% block content %}
+<div class="login-card card">
+  <h1>Sign in</h1>
+  <p class="muted">Internal workspace for Trafficomm employees.</p>
+  {% if error %}<div class="alert alert-fail">{{ error }}</div>{% endif %}
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>Email<input type="email" name="email" required autofocus autocomplete="username"></label>
+    <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
+    <button class="btn btn-primary btn-block">Sign in</button>
+  </form>
+</div>
+{% endblock %}

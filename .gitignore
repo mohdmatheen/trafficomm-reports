@@ -1,0 +1,7 @@
+var/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+tests/fixtures/synthetic/
+.venv/

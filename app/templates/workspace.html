@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+{% block page %}workspace{% endblock %}
+{% block title %}{{ t.title or 'Task' }} · Trafficomm{% endblock %}
+{% block bodyattrs %}data-task-id="{{ t.id }}" data-state-token="{{ state.token }}" data-processing="{{ '1' if processing else '0' }}"{% endblock %}
+{% block mainclass %}container wide{% endblock %}
+{% block content %}
+{% set R = shown_result or {} %}
+{% set S = R.get('summary') or {} %}
+{% set cur_code = S.get('currency') or t.currency %}
+<div class="ws-head">
+  <div>
+    <div class="crumbs"><a href="/">Dashboard</a> / {{ client }}</div>
+    <h1>{{ t.title or 'Untitled task' }}</h1>
+    <div class="muted">{% if t.brand %}{{ t.brand }} · {% endif %}{% if t.period_start %}{{ t.period_start.strftime('%d %b %Y') }} – {{ t.period_end.strftime('%d %b %Y') if t.period_end else '' }}{% endif %} · {{ t.currency }} · {{ owner }}</div>
+  </div>
+  <div class="ws-actions">
+    <span class="pill pill-lg st-{{ t.status }}" id="statusPill">{{ STATUS_LABEL.get(t.status, t.status) }}{% if cur %} · v{{ cur.number }}{% endif %}</span>
+    {% if processing or t.status == 'awaiting_clarification' %}<button class="btn btn-ghost" data-action="cancel">Cancel processing</button>{% endif %}
+    {% if cur and cur.status in ['failed','cancelled'] %}<button class="btn" data-action="retry">Retry v{{ cur.number }}</button>{% endif %}
+    {% if cur and cur.status == 'ready_for_review' and t.approved_version_id != cur.id %}<button class="btn btn-primary" data-action="approve" data-version="{{ cur.id }}">Approve v{{ cur.number }}</button>{% endif %}
+    <button class="btn btn-ghost btn-sm" data-action="delete">Delete task</button>
+  </div>
+</div>
+<nav class="ws-nav">
+  <a href="#progress">Progress</a>{% if open_questions %}<a href="#questions" class="hot">Questions ({{ open_questions|length }})</a>{% endif %}<a href="#summary">Summary</a><a href="#outputs">Outputs</a><a href="#validation">Validation</a><a href="#findings">Findings</a>{% if R.get('deck') or R.get('template') or R.get('new_deck') %}<a href="#deck">Deck &amp; template</a>{% endif %}<a href="#files">Files</a><a href="#versions">Versions</a><a href="#feedback">Feedback</a>
+</nav>
+
+<div class="ws-grid">
+<div class="ws-main">
+
+<section class="card" id="progress">
+  <div class="card-head"><h2>Processing{% if cur %} · v{{ cur.number }}{% endif %}</h2>{% if processing %}<span class="spinner"></span><span class="muted small">This page updates automatically. You can leave and come back.</span>{% endif %}</div>
+  <ol class="stages">
+    {% for st in stage_rows %}
+    <li class="stage {{ st.state }}"><span class="dot"></span><div><b>{{ st.label }}</b>{% if st.at %}<span class="muted small"> · {{ st.at.strftime('%H:%M:%S') }}</span>{% endif %}{% if st.detail %}<div class="muted small">{{ st.detail }}</div>{% endif %}</div></li>
+    {% endfor %}
+    {% if t.status == 'approved' %}<li class="stage done approved"><span class="dot"></span><div><b>Approved by employee</b></div></li>{% endif %}
+  </ol>
+  {% if cur and cur.status in ['failed','cancelled','validation_blocked','blocked'] %}
+  <div class="alert {% if cur.status == 'cancelled' %}alert-warn{% else %}alert-fail{% endif %}">
+    <b>{{ STATUS_LABEL.get(cur.status, cur.status) }}.</b> {{ cur.error or (job.error if job and cur.status == 'failed' else '') or ('Some validation checks failed - outputs are kept for inspection but should not be sent. See the validation panel.' if cur.status == 'validation_blocked' else '') }}
+  </div>
+  {% endif %}
+  {% if job and job.attempts > 1 and processing %}<p class="muted small">Attempt {{ job.attempts }} of {{ job.max_attempts }}.</p>{% endif %}
+  {% if shown and cur and shown.id != cur.id %}<div class="alert alert-info">v{{ cur.number }} is {{ STATUS_LABEL.get(cur.status, cur.status)|lower }}. Outputs below are from <b>v{{ shown.number }}</b>, which is unchanged.</div>{% endif %}
+</section>
+
+{% if open_questions %}
+<section class="card card-attn" id="questions">
+  <h2>Questions before I can continue</h2>
+  <p class="muted">I don't guess when the data is ambiguous. Inspection and mapping are saved; answering resumes processing.</p>
+  <form id="questionsForm">
+  {% for q in open_questions %}
+    <div class="question">
+      <p class="q-text"><b>{{ loop.index }}.</b> {{ q.text }}</p>
+      {% if q.context %}<p class="muted small">{{ q.context }}</p>{% endif %}
+      {% if q.allow_free_text %}
+        <input name="q{{ q.id }}" data-qid="{{ q.id }}" placeholder="Enter a value" inputmode="decimal">
+      {% else %}
+        {% for o in q.options %}
+        <label class="radio"><input type="radio" name="q{{ q.id }}" data-qid="{{ q.id }}" value="{{ o.value }}" {% if q.default == o.value %}checked{% endif %}> {{ o.label }}{% if q.default == o.value %} <span class="tag">suggested</span>{% endif %}</label>
+        {% endfor %}
+      {% endif %}
+      {% if q.key.startswith('conversion_metric') or q.key.startswith('equiv:') or q.key.startswith('clicks_def:') or q.key.startswith('deckslide:') %}
+      <label class="check small"><input type="checkbox" data-save="{{ q.id }}" {% if q.key.startswith('deckslide:') %}checked{% endif %}> Remember for this client</label>
+      {% endif %}
+    </div>
+  {% endfor %}
+  <button class="btn btn-primary">Submit answers and continue</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card" id="summary">
+  <div class="card-head"><h2>Summary{% if shown %} · v{{ shown.number }}{% endif %}</h2>
+    {% if R.get('ai_mocked') %}<span class="tag tag-warn">AI mocked (rule-based)</span>{% elif R.get('ai_provider') %}<span class="tag">AI: {{ R.get('ai_provider') }}</span>{% endif %}</div>
+  {% if S %}
+  <p class="muted">{{ S.get('period_label') }} · data window {{ S.get('data_window') }} · {{ S.get('included_rows') }} rows included · clicks = {{ S.get('click_metric') }} · conversions = {{ S.get('conversion') or 'not selected' }}</p>
+  <div class="kpis">
+    {% set T = S.get('totals', {}) %}
+    {% for m in ['spend','impressions','clicks','ctr','cpc','cpm','conversions','cpa','video_plays_3s','vtr'] %}
+      {% if m in T %}<div class="kpi"><span>{{ METRIC_LABELS.get(m, m) }}</span><b>{{ T[m]|fmt_metric(m, cur_code) }}</b></div>{% endif %}
+    {% endfor %}
+  </div>
+  {% if S.get('comparison') %}
+  <h3>Period comparison</h3>
+  <table class="tbl compact"><thead><tr><th>Metric</th><th>Current</th><th>Previous</th><th>Change</th></tr></thead><tbody>
+  {% for m, d in S.comparison.deltas.items() %}<tr><td>{{ METRIC_LABELS.get(m, m) }}</td><td>{{ T.get(m)|fmt_metric(m, cur_code) }}</td><td>{{ (S.comparison.get('previous') or {}).get(m)|fmt_metric(m, cur_code) }}</td><td>{% if d.get('pct') is not none %}{{ '%+.1f'|format(d.pct) }}%{% else %}N/A{% endif %}</td></tr>{% endfor %}
+  </tbody></table>
+  {% endif %}
+  {% if R.get('commentary') %}
+  <h3>Commentary <span class="muted small">(every figure traced to a calculated value)</span></h3>
+  <ul class="commentary">{% for c in R.commentary %}<li><span class="tag">{{ c.type }}</span> {{ c.text }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if R.get('commentary_dropped') %}<p class="muted small">{{ R.commentary_dropped|length }} AI statement(s) were dropped because a number could not be traced.</p>{% endif %}
+  {% set P = R.get('plan') or {} %}
+  {% if P %}
+  <details><summary>Interpreted plan</summary>
+    <ul class="plain small">
+      {% for k, v in P.items() if not k.startswith('_') and v not in [None, [], '', False] %}<li><b>{{ k.replace('_',' ') }}</b>: {{ v if v is string else v|tojson }}</li>{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  {% elif processing or t.status == 'awaiting_clarification' %}
+  <p class="muted">Figures appear here once calculation finishes.</p>
+  {% else %}
+  <p class="muted">No figures yet.</p>
+  {% endif %}
+</section>
+
+<section class="card" id="outputs">
+  <h2>Outputs{% if shown %} · v{{ shown.number }}{% endif %}</h2>
+  {% if deliverables %}
+  <div class="outputs">
+    {% for a in deliverables %}
+    <div class="output">
+      <div class="out-icon k-{{ a.kind }}">{{ {'excel':'XLSX','excel_consolidated':'XLSX','deck_update':'PPTX','deck_new':'PPTX','pdf':'PDF'}.get(a.kind, a.kind) }}</div>
+      <div class="out-body"><b>{{ a.label }}</b><div class="muted small">{{ a.filename }} · {{ a.size|mb }}{% if a.reused_from_id %} · <span class="tag">unchanged from previous version</span>{% endif %}</div></div>
+      <a class="btn btn-sm" href="/artifacts/{{ a.id }}/download">Download</a>
+    </div>
+    {% endfor %}
+  </div>
+  {% for kind, pv in previews.items() %}
+  <h3>{{ {'deck_update':'Updated client deck','deck_new':'New deck','excel':'Excel report','template':'Populated template'}.get(kind, kind) }} preview <span class="muted small">({{ pv|length }} page{{ 's' if pv|length != 1 }}, rendered with LibreOffice)</span></h3>
+  <div class="previews">{% for p in pv|sort(attribute='meta.page') %}<a href="/artifacts/{{ p.id }}/preview" target="_blank" rel="noopener"><img loading="lazy" src="/artifacts/{{ p.id }}/preview" alt="{{ p.label }}"><span>{{ p.meta.page }}</span></a>{% endfor %}</div>
+  {% endfor %}
+  {% if records %}<h3>Records</h3><ul class="plain">{% for a in records %}<li><a href="/artifacts/{{ a.id }}/download">{{ a.label }}</a> <span class="muted small">{{ a.size|mb }}</span></li>{% endfor %}</ul>{% endif %}
+  <p class="muted small">Download links are private and expire after a few minutes. Nothing is sent to the client automatically.</p>
+  {% else %}
+  <p class="muted">No outputs yet.</p>
+  {% endif %}
+</section>
+
+<section class="card" id="validation">
+  {% set V = R.get('validation') %}
+  <div class="card-head"><h2>Validation</h2>{% if V %}<span class="pill v-{{ V.overall }}">{{ {'passed':'All checks passed','warnings':'Passed with warnings','blocked':'Blocked'}[V.overall] }}</span><span class="muted small">{{ V.counts.pass }} passed · {{ V.counts.warn }} warnings · {{ V.counts.fail }} failed{% if V.counts.not_run %} · {{ V.counts.not_run }} not run{% endif %}</span>{% endif %}</div>
+  {% if V %}
+  <ul class="checks">
+    {% for c in V.checks %}
+    <li class="check-item c-{{ c.status }}">
+      <details {% if c.status == 'fail' %}open{% endif %}><summary><span class="badge b-{{ c.status }}">{{ {'pass':'Pass','warn':'Warning','fail':'Failed','not_run':'Not run'}[c.status] }}</span> <b>{{ c.title }}</b> <span class="muted">– {{ c.message }}</span></summary>
+      {% if c.details %}<ul class="small details">{% for d in c.details[:40] %}<li>{{ d if d is string else d|tojson }}</li>{% endfor %}{% if c.details|length > 40 %}<li class="muted">… {{ c.details|length - 40 }} more in the validation record</li>{% endif %}</ul>{% endif %}
+      </details>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="muted">Checks run after files are generated. A check is only shown as passed if it actually ran.</p>{% endif %}
+</section>
+
+<section class="card" id="findings">
+  <h2>Findings</h2>
+  {% set RR = result if result.get('mapping') else R %}
+  {% if RR.get('inspection') %}
+  <h3>Files inspected</h3>
+  <ul class="plain small">{% for i in RR.inspection %}<li>{% if i.ok %}✓{% else %}<span class="bad">✗</span>{% endif %} {{ i.file }} <span class="muted">({{ i.role }})</span>{% if i.error %} – <span class="bad">{{ i.error }}</span>{% endif %}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if RR.get('mapping') %}
+  <h3>Column mapping</h3>
+  <div class="scroll-x"><table class="tbl compact">
+    <thead><tr><th>File / sheet</th><th>Platform</th><th>Rows</th><th>Currency</th><th>Mapped columns</th><th>Ignored</th></tr></thead><tbody>
+    {% for m in RR.mapping %}<tr><td>{{ m.file }}<div class="muted small">{{ m.sheet }}</div></td><td>{{ PLATFORM_LABELS.get(m.platform, m.platform) }}</td><td>{{ m.rows }}</td><td>{{ m.currency or '–' }}</td>
+      <td><details><summary>{{ m.mapped|length }} columns</summary><ul class="small plain">{% for c in m.mapped %}<li>{{ c.original }} → <b>{{ METRIC_LABELS.get(c.canonical, c.canonical) }}</b>{% if c.source and c.source != 'synonym' %} <span class="tag">{{ c.source }}</span>{% endif %}</li>{% endfor %}</ul></details></td>
+      <td class="small muted">{{ m.ignored|length }}</td></tr>{% endfor %}
+    </tbody></table></div>
+  {% endif %}
+  {% for title, key in [('Assumptions', 'assumptions'), ('Warnings', 'warnings')] %}
+    {% if RR.get(key) %}<h3>{{ title }}</h3><ul class="small">{% for a in RR[key][:30] %}<li>{{ a }}</li>{% endfor %}{% if RR[key]|length > 30 %}<li class="muted">… {{ RR[key]|length - 30 }} more</li>{% endif %}</ul>{% endif %}
+  {% endfor %}
+  {% if RR.get('overlaps') %}<h3>Duplicates and overlaps</h3><ul class="small">{% for o in RR.overlaps %}<li><b>{{ o.type.replace('_',' ') }}</b>: {{ o.files|join(' ↔ ') }}{% if o.rows %} · {{ o.rows }} rows{% endif %}{% if o.resolution %} · resolved: {{ o.resolution }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+  {% if RR.get('exclusions') %}<h3>Excluded rows ({{ RR.exclusions|length }})</h3>
+    <details><summary>Show exclusions</summary><table class="tbl compact"><thead><tr><th>File</th><th>Scope</th><th>Reason</th></tr></thead><tbody>{% for e in RR.exclusions[:80] %}<tr><td>{{ e.file }}{% if e.sheet %} <span class="muted small">{{ e.sheet }}</span>{% endif %}</td><td>{{ e.scope }}</td><td>{{ e.reason }}</td></tr>{% endfor %}</tbody></table></details>{% endif %}
+  {% if S.get('definitions') %}<h3>Metric definitions used</h3><ul class="small">{% for k, d in S.definitions.items() %}<li><b>{{ METRIC_LABELS.get(k, k) }}</b>: {{ d }}</li>{% endfor %}</ul>{% endif %}
+  {% if not RR.get('mapping') and not RR.get('inspection') %}<p class="muted">Findings appear after inspection.</p>{% endif %}
+</section>
+
+{% if R.get('deck') or R.get('template') or R.get('new_deck') %}
+<section class="card" id="deck">
+  <h2>Deck &amp; template</h2>
+  {% if R.deck %}
+  <h3>Client deck slide map</h3>
+  <p class="muted small">{{ R.deck.changes|length }} cells changed · {{ R.deck.unchanged_cells }} already correct{% if R.deck.range_text %} · range label "{{ R.deck.range_text }}"{% endif %}</p>
+  <div class="scroll-x"><table class="tbl compact"><thead><tr><th>#</th><th>Slide</th><th>Type</th><th>Matched to</th><th>Status</th></tr></thead><tbody>
+  {% for m in R.deck.slide_map %}<tr class="sm-{{ m.status }}"><td>{{ m.slide }}</td><td>{{ m.title }}</td><td class="small muted">{{ (m.classification or '').replace('_',' ') }}</td><td class="small">{{ m.entity or '–' }}</td><td><span class="tag">{{ m.status }}{% if m.changes %} · {{ m.changes }} cells{% endif %}</span></td></tr>{% endfor %}
+  </tbody></table></div>
+  {% if R.deck.flags %}<h3>Needs review</h3><ul class="small">{% for f in R.deck.flags %}<li class="sev-{{ f.severity }}">{% if f.slide %}Slide {{ f.slide }}: {% endif %}{{ f.message }}</li>{% endfor %}</ul>{% endif %}
+  {% endif %}
+  {% if R.template %}
+  <h3>Excel template</h3>
+  <ul class="small">{% for w in R.template.written[:20] %}<li>{{ w if w is string else w|tojson }}</li>{% endfor %}</ul>
+  {% if R.template.unsupported %}<p><b>Unsupported template features</b></p><ul class="small">{% for u in R.template.unsupported %}<li>{{ u }}</li>{% endfor %}</ul>{% endif %}
+  {% if R.template.skipped_formula_cells %}<p class="small muted">{{ R.template.skipped_formula_cells }} formula cells left untouched.</p>{% endif %}
+  {% endif %}
+  {% if R.new_deck %}<h3>New deck</h3><p class="small">{{ R.new_deck.slides }} slides: {{ R.new_deck.sections|join(', ') }}</p>{% endif %}
+</section>
+{% endif %}
+
+<section class="card" id="files">
+  <h2>Files ({{ files|length }})</h2>
+  <ul class="files-ro">
+  {% for f in files %}
+    <li class="{% if f.excluded %}excluded{% endif %}">
+      <div><b>{{ f.name }}</b> <span class="tag">{{ {'raw':'raw data','template':'template','client_deck':'client deck','creatives':'creatives'}.get(f.role, f.role) }}</span>{% if f.added_in_version > 1 %} <span class="tag">added in v{{ f.added_in_version }}</span>{% endif %}{% if f.excluded %} <span class="tag tag-warn">excluded</span>{% endif %}
+      <span class="muted small">{{ f.size|mb }}</span></div>
+      {% if f.sheets %}<div class="small muted">{% for sh in f.sheets %}{{ sh.name }}: {{ sh.rows }} rows{% if sh.platform %}, {{ sh.platform }}{% endif %}{% if sh.currency %}, {{ sh.currency }}{% endif %}{% if sh.total_rows %}, {{ sh.total_rows }} total row(s){% endif %}{% if sh.summary_blocks %}, {{ sh.summary_blocks }} summary block(s){% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+      {% if f.deck %}<div class="small muted">{{ f.deck.slides }} slides · {{ f.deck.aspect }}{% if f.deck.unsupported %} · {{ f.deck.unsupported }} unsupported element(s){% endif %}</div>{% endif %}
+      {% if f.warnings %}<ul class="small warnlist">{% for w in f.warnings[:5] %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+  <p class="muted small">Originals are stored read-only and never modified.</p>
+</section>
+
+<section class="card" id="versions">
+  <h2>Version history</h2>
+  <ul class="versions">
+  {% for v in versions %}
+    <li class="ver {% if t.approved_version_id == v.id %}approved{% endif %}">
+      <div class="ver-head"><b>v{{ v.number }}</b> <span class="pill st-{{ v.status }}">{{ STATUS_LABEL.get(v.status, v.status) }}</span>{% if t.approved_version_id == v.id %} <span class="pill st-approved">Approved by employee{% if v.approved_at %} · {{ v.approved_at|ago }}{% endif %}</span>{% endif %}
+        <span class="muted small">{{ v.kind }}{% if v.base_version_id %} from v{{ (versions|selectattr('id','equalto',v.base_version_id)|first).number }}{% endif %} · {{ users.get(v.created_by) }} · {{ v.created_at|ago }}</span>
+        {% if v.status == 'ready_for_review' and t.approved_version_id != v.id %}<button class="btn btn-sm" data-action="approve" data-version="{{ v.id }}">Approve</button>{% endif %}</div>
+      {% if v.feedback %}<blockquote class="small">{{ v.feedback }}</blockquote>{% endif %}
+      {% set cs = v.change_summary %}
+      {% if cs %}<div class="small changes">
+        {% if cs.ops %}<div><b>Changes:</b> {% for o in cs.ops %}{{ o.note or (o.op.replace('_',' ') ~ (': ' ~ o.value if o.value else '')) }}{% if not loop.last %}; {% endif %}{% endfor %}</div>{% endif %}
+        {% if cs.figures %}<div><b>Figures:</b> {{ cs.figures|join('; ') }}</div>{% else %}<div class="muted">Headline figures unchanged.</div>{% endif %}
+        {% if cs.new_files %}<div><b>New files:</b> {{ cs.new_files|join(', ') }}</div>{% endif %}
+        {% if cs.artifacts %}<div>{{ cs.artifacts|join(' · ') }}</div>{% endif %}
+      </div>{% endif %}
+      {% set va = art_by_v.get(v.id, []) | rejectattr('kind', 'in', ['preview','record']) | list %}
+      {% if va %}<div class="ver-dl">{% for a in va %}<a href="/artifacts/{{ a.id }}/download" class="chip">{{ a.label }}</a>{% endfor %}</div>{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+</section>
+</div>
+
+<aside class="ws-side">
+<section class="card convo" id="feedback">
+  <h2>Conversation</h2>
+  <div class="msgs" id="msgs">
+  {% for m in msgs %}
+    <div class="msg m-{{ m.kind }}">
+      <div class="msg-meta">{% if m.author_id %}{{ users.get(m.author_id) }}{% else %}Workspace assistant{% endif %} · {{ m.kind }} · {{ m.created_at|ago }}</div>
+      <div class="msg-text">{{ m.text }}</div>
+    </div>
+  {% endfor %}
+  </div>
+  {% if not processing and t.status != 'awaiting_clarification' %}
+  <form id="feedbackForm" class="feedback">
+    <label><b>What would you like to change?</b>
+    <textarea name="text" rows="4" required placeholder="e.g. Use all clicks instead of link clicks · Split tabs by country · Add a breakdown by language · Remove slide 4 · Use the new file I uploaded"></textarea></label>
+    <div class="row2">
+      <label class="small">Base it on
+        <select name="base_version_id">{% for v in versions if v.status in ['ready_for_review','approved','validation_blocked'] or v.result %}<option value="{{ v.id }}">v{{ v.number }}{% if loop.first %} (latest){% endif %}</option>{% endfor %}</select>
+      </label>
+      <label class="small">Add files (optional)
+        <input type="file" name="extra" multiple accept=".csv,.xlsx,.pptx,.zip">
+      </label>
+    </div>
+    <ul class="filelist" id="fbFiles"></ul>
+    <button class="btn btn-primary btn-block">Create revision</button>
+    <p class="muted small">A revision is a new version. Earlier versions and their files stay available.</p>
+  </form>
+  {% else %}
+  <p class="muted small">Feedback opens once the current version finishes (answer any open questions first).</p>
+  {% endif %}
+</section>
+</aside>
+</div>
+{% endblock %}

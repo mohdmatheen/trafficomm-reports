@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block page %}error{% endblock %}
+{% block content %}
+<div class="card narrow">
+  <h1>{{ code }}</h1>
+  <p>{{ detail }}</p>
+  <a class="btn" href="/">Back to dashboard</a>
+</div>
+{% endblock %}

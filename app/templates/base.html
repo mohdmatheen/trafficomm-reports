@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Trafficomm Reporting Workspace{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<script src="/static/app.js" defer></script>
+</head>
+<body data-page="{% block page %}{% endblock %}" {% block bodyattrs %}{% endblock %}>
+<header class="topbar">
+  <a class="brand" href="/"><img src="/static/logo.svg" alt=""><span><span class="wm">Trafficomm</span><span class="brand-tag">Reporting Workspace</span></span></a>
+  {% if user %}
+  <nav>
+    <a href="/" class="{% if self.page() == 'dashboard' %}on{% endif %}">Dashboard</a>
+    <a href="/tasks/new" class="btn btn-primary btn-sm">+ New task</a>
+    {% if user.role == 'admin' %}<a href="/admin" class="{% if self.page() == 'admin' %}on{% endif %}">Admin</a>{% endif %}
+    <span class="who">{{ user.name }}{% if user.role == 'admin' %} · admin{% endif %}</span>
+    <form method="post" action="/logout" class="inline"><button class="linkbtn">Sign out</button></form>
+  </nav>
+  {% endif %}
+</header>
+{% if user and ai_mocked %}
+<div class="banner-mock">AI mocked (rule-based): no ANTHROPIC_API_KEY is configured, so instruction interpretation and commentary use deterministic rules. All figures are calculated by the engine either way.</div>
+{% endif %}
+<main class="{% block mainclass %}container{% endblock %}">
+{% block content %}{% endblock %}
+</main>
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>
