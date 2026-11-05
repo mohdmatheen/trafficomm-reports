@@ -1,27 +1,27 @@
 {% extends "base.html" %}
+{% from "partials/ui.html" import icon, status_badge %}
 {% block page %}workspace{% endblock %}
 {% block title %}{{ t.title or 'Task' }} · Trafficomm{% endblock %}
 {% block bodyattrs %}data-task-id="{{ t.id }}" data-state-token="{{ state.token }}" data-processing="{{ '1' if processing else '0' }}"{% endblock %}
-{% block mainclass %}container wide{% endblock %}
+{% block mainclass %}page page-wide{% endblock %}
 {% block content %}
 {% set R = shown_result or {} %}
 {% set S = R.get('summary') or {} %}
 {% set cur_code = S.get('currency') or t.currency %}
-<div class="ws-head">
+<div class="page-head ws-head">
   <div>
-    <div class="crumbs"><a href="/">Dashboard</a> / {{ client }}</div>
     <h1>{{ t.title or 'Untitled task' }}</h1>
-    <div class="muted">{% if t.brand %}{{ t.brand }} · {% endif %}{% if t.period_start %}{{ t.period_start.strftime('%d %b %Y') }} – {{ t.period_end.strftime('%d %b %Y') if t.period_end else '' }}{% endif %} · {{ t.currency }} · {{ owner }}</div>
+    <p class="page-sub">{{ client }}{% if t.brand %} · {{ t.brand }}{% endif %}{% if t.period_start %} · {{ t.period_start.strftime('%d %b %Y') }} – {{ t.period_end.strftime('%d %b %Y') if t.period_end else '' }}{% endif %} · {{ t.currency }} · {{ owner }}</p>
   </div>
   <div class="ws-actions">
-    <span class="pill pill-lg st-{{ t.status }}" id="statusPill">{{ STATUS_LABEL.get(t.status, t.status) }}{% if cur %} · v{{ cur.number }}{% endif %}</span>
-    {% if processing or t.status == 'awaiting_clarification' %}<button class="btn btn-ghost" data-action="cancel">Cancel processing</button>{% endif %}
-    {% if cur and cur.status in ['failed','cancelled'] %}<button class="btn" data-action="retry">Retry v{{ cur.number }}</button>{% endif %}
-    {% if cur and cur.status == 'ready_for_review' and t.approved_version_id != cur.id %}<button class="btn btn-primary" data-action="approve" data-version="{{ cur.id }}">Approve v{{ cur.number }}</button>{% endif %}
-    <button class="btn btn-ghost btn-sm" data-action="delete">Delete task</button>
+    <span id="statusPill">{{ status_badge(t.status, STATUS_LABEL.get(t.status, t.status) ~ (' · v' ~ cur.number if cur else '')) }}</span>
+    {% if processing or t.status == 'awaiting_clarification' %}<button class="btn" data-action="cancel">Cancel processing</button>{% endif %}
+    {% if cur and cur.status in ['failed','cancelled'] %}<button class="btn" data-action="retry">{{ icon('refresh') }}Retry v{{ cur.number }}</button>{% endif %}
+    {% if cur and cur.status == 'ready_for_review' and t.approved_version_id != cur.id %}<button class="btn btn-primary" data-action="approve" data-version="{{ cur.id }}">{{ icon('check') }}Approve v{{ cur.number }}</button>{% endif %}
+    <button class="btn btn-quiet btn-sm" data-action="delete">{{ icon('trash') }}Delete task</button>
   </div>
 </div>
-<nav class="ws-nav">
+<nav class="ws-nav" aria-label="Task sections">
   <a href="#progress">Progress</a>{% if open_questions %}<a href="#questions" class="hot">Questions ({{ open_questions|length }})</a>{% endif %}<a href="#summary">Summary</a><a href="#outputs">Outputs</a><a href="#validation">Validation</a><a href="#findings">Findings</a>{% if R.get('deck') or R.get('template') or R.get('new_deck') %}<a href="#deck">Deck &amp; template</a>{% endif %}<a href="#files">Files</a><a href="#versions">Versions</a><a href="#feedback">Feedback</a>
 </nav>
 
@@ -37,7 +37,7 @@
     {% if t.status == 'approved' %}<li class="stage done approved"><span class="dot"></span><div><b>Approved by employee</b></div></li>{% endif %}
   </ol>
   {% if cur and cur.status in ['failed','cancelled','validation_blocked','blocked'] %}
-  <div class="alert {% if cur.status == 'cancelled' %}alert-warn{% else %}alert-fail{% endif %}">
+  <div class="alert {% if cur.status == 'cancelled' %}alert-warn{% else %}alert-fail{% endif %}" role="alert">
     <b>{{ STATUS_LABEL.get(cur.status, cur.status) }}.</b> {{ cur.error or (job.error if job and cur.status == 'failed' else '') or ('Some validation checks failed - outputs are kept for inspection but should not be sent. See the validation panel.' if cur.status == 'validation_blocked' else '') }}
   </div>
   {% endif %}
@@ -119,7 +119,7 @@
     <div class="output">
       <div class="out-icon k-{{ a.kind }}">{{ {'excel':'XLSX','excel_consolidated':'XLSX','deck_update':'PPTX','deck_new':'PPTX','pdf':'PDF'}.get(a.kind, a.kind) }}</div>
       <div class="out-body"><b>{{ a.label }}</b><div class="muted small">{{ a.filename }} · {{ a.size|mb }}{% if a.reused_from_id %} · <span class="tag">unchanged from previous version</span>{% endif %}</div></div>
-      <a class="btn btn-sm" href="/artifacts/{{ a.id }}/download">Download</a>
+      <a class="btn btn-sm" href="/artifacts/{{ a.id }}/download">{{ icon('download') }}Download<span class="sr"> {{ a.label }}</span></a>
     </div>
     {% endfor %}
   </div>
@@ -218,7 +218,7 @@
   <ul class="versions">
   {% for v in versions %}
     <li class="ver {% if t.approved_version_id == v.id %}approved{% endif %}">
-      <div class="ver-head"><b>v{{ v.number }}</b> <span class="pill st-{{ v.status }}">{{ STATUS_LABEL.get(v.status, v.status) }}</span>{% if t.approved_version_id == v.id %} <span class="pill st-approved">Approved by employee{% if v.approved_at %} · {{ v.approved_at|ago }}{% endif %}</span>{% endif %}
+      <div class="ver-head"><b>v{{ v.number }}</b> {{ status_badge(v.status) }}{% if t.approved_version_id == v.id %} {{ status_badge('approved', 'Approved by employee' ~ (' · ' ~ (v.approved_at|ago) if v.approved_at else '')) }}{% endif %}
         <span class="muted small">{{ v.kind }}{% if v.base_version_id %} from v{{ (versions|selectattr('id','equalto',v.base_version_id)|first).number }}{% endif %} · {{ users.get(v.created_by) }} · {{ v.created_at|ago }}</span>
         {% if v.status == 'ready_for_review' and t.approved_version_id != v.id %}<button class="btn btn-sm" data-action="approve" data-version="{{ v.id }}">Approve</button>{% endif %}</div>
       {% if v.feedback %}<blockquote class="small">{{ v.feedback }}</blockquote>{% endif %}
@@ -250,8 +250,8 @@
   </div>
   {% if not processing and t.status != 'awaiting_clarification' %}
   <form id="feedbackForm" class="feedback">
-    <label><b>What would you like to change?</b>
-    <textarea name="text" rows="4" required placeholder="e.g. Use all clicks instead of link clicks · Split tabs by country · Add a breakdown by language · Remove slide 4 · Use the new file I uploaded"></textarea></label>
+    <label for="fb-text"><b>What would you like to change?</b></label>
+    <textarea id="fb-text" name="text" rows="4" required placeholder="e.g. Use all clicks instead of link clicks · Split tabs by country · Add a breakdown by language · Remove slide 4 · Use the new file I uploaded"></textarea>
     <div class="row2">
       <label class="small">Base it on
         <select name="base_version_id">{% for v in versions if v.status in ['ready_for_review','approved','validation_blocked'] or v.result %}<option value="{{ v.id }}">v{{ v.number }}{% if loop.first %} (latest){% endif %}</option>{% endfor %}</select>

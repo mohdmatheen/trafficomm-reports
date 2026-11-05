@@ -16,7 +16,7 @@ from sqlalchemy import func, or_, select
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import service as S
-from .auth import check_password, current_user, get_task_checked, hash_password, require_admin, require_user
+from .auth import current_user, get_task_checked, require_admin, require_user
 from .config import BASE_DIR, settings
 from .db import (AppSetting, Artifact, Client, Job, Message, Profile, Question, Session, StageEvent, Task, TaskFile, TaskVersion,
                  User, init_db, now)
@@ -82,10 +82,14 @@ async def csrf_and_headers(request: Request, call_next):
 @app.exception_handler(HTTPException)
 async def http_exc(request: Request, exc: HTTPException):
     if exc.status_code == 401 and not request.url.path.startswith("/api/"):
-        return RedirectResponse("/login?next=" + request.url.path, status_code=303)
+        from urllib.parse import quote
+        had_session = bool(request.session.get("uid"))  # signed in before, but the session is no longer valid
+        request.session.clear()
+        return RedirectResponse("/login?next=" + quote(request.url.path, safe="/") + ("&error=session_expired" if had_session else ""), status_code=303)
     if request.url.path.startswith("/api/") or request.url.path.startswith("/d/"):
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
-    return templates.TemplateResponse(request, "error.html", {"user": current_user(request), "code": exc.status_code, "detail": exc.detail}, status_code=exc.status_code)
+    return templates.TemplateResponse(request, "error.html", {"user": current_user(request), "code": exc.status_code, "detail": exc.detail,
+                                                              "crumbs": [("Error", None)]}, status_code=exc.status_code)
 
 
 @app.exception_handler(S.UserError)
@@ -102,89 +106,103 @@ def healthz():
 
 
 # ---------------------------------------------------------------------------
-# Auth
+# Auth: Zoho is the only sign-in method. There is no password endpoint; POST /login is not routed
+# (405), so credentials sent to it can never create a session.
 # ---------------------------------------------------------------------------
-def _login_ctx(next: str = "/", error: str | None = None) -> dict:
-    return {"user": None, "next": next, "error": error, "zoho_enabled": settings.zoho_enabled,
-            "password_login": settings.password_login or not settings.zoho_enabled}
+LOGIN_NOTICES = {
+    # code -> (tone, title, message). Codes, never free text, travel in the URL.
+    "cancelled": ("info", "Sign-in cancelled", "You cancelled signing in with Zoho. You can try again whenever you’re ready."),
+    "failed": ("error", "Zoho sign-in didn’t complete", "We couldn’t finish signing you in with Zoho. Please try again in a moment."),
+    "unauthorized": ("error", "This account can’t access the workspace", "Sign in with your @trafficomm.com Zoho account. If you already did, ask your workspace administrator to grant you access."),
+    "no_access": ("error", "You don’t have access yet", "Your Zoho account is valid, but it hasn’t been granted access to this workspace. Ask your workspace administrator to add you."),
+    "revoked": ("error", "Your access has been removed", "Your access to the workspace was revoked. Contact your workspace administrator if this is unexpected."),
+    "expired": ("warn", "Your sign-in timed out", "The sign-in attempt expired before it finished. Please sign in again."),
+    "session_expired": ("warn", "Your session has expired", "For your security you’ve been signed out. Sign in again to continue where you left off."),
+    "signed_out": ("info", "You’re signed out", "You have signed out of the reporting workspace."),
+    "not_configured": ("error", "Sign-in isn’t available", "Zoho sign-in hasn’t been configured for this workspace. Contact your workspace administrator."),
+}
+
+
+def _login_ctx(request: Request, next: str = "/", error: str = "") -> dict:
+    code = error if error in LOGIN_NOTICES else ("failed" if error else "")
+    if not settings.zoho_enabled:
+        code = "not_configured"
+    notice = None
+    if code:
+        tone, title, msg = LOGIN_NOTICES[code]
+        notice = {"code": code, "tone": tone, "title": title, "message": msg, "email": request.session.pop("login_email", None)}
+    return {"user": None, "next": _safe_next(next), "notice": notice, "zoho_enabled": settings.zoho_enabled,
+            "domains": settings.zoho_allowed_domains}
 
 
 def _safe_next(next: str | None) -> str:
-    return next if next and next.startswith("/") and not next.startswith("//") else "/"
+    return next if next and next.startswith("/") and not next.startswith("//") and "\\" not in next else "/"
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, next: str = "/", error: str = ""):
-    return templates.TemplateResponse(request, "login.html", _login_ctx(next, error or None))
-
-
-@app.post("/login")
-def login(request: Request, email: str = Form(...), password: str = Form(...), next: str = Form("/")):
-    if not _login_ctx()["password_login"]:
-        return templates.TemplateResponse(request, "login.html", _login_ctx(next, "Password sign-in is turned off. Please sign in with Zoho."), status_code=403)
-    with Session() as s:
-        u = s.scalar(select(User).where(func.lower(User.email) == email.strip().lower()))
-        if not u or not u.active or not check_password(password, u.password_hash):
-            return templates.TemplateResponse(request, "login.html", _login_ctx(next, "Invalid email or password"), status_code=401)
-        request.session.clear()
-        request.session["uid"] = u.id
-        S.audit(s, u.id, "login", u.email)
-        s.commit()
-    return RedirectResponse(_safe_next(next), status_code=303)
+    if current_user(request):
+        return RedirectResponse(_safe_next(next), status_code=303)
+    return templates.TemplateResponse(request, "login.html", _login_ctx(request, next, error))
 
 
 @app.get("/auth/zoho")
 def zoho_start(request: Request, next: str = "/"):
     if not settings.zoho_enabled:
-        raise HTTPException(status_code=404, detail="Zoho sign-in isn't set up")
+        return RedirectResponse("/login?error=not_configured", status_code=303)
     request.session.clear()
     request.session["zoho_next"] = _safe_next(next)
     return RedirectResponse(Z.authorize_url(request.session, str(request.base_url)), status_code=303)
 
 
-def _zoho_fail(msg: str) -> RedirectResponse:
-    from urllib.parse import quote
-    return RedirectResponse("/login?error=" + quote(msg), status_code=303)
+def _zoho_fail(request: Request, code: str, email: str | None = None) -> RedirectResponse:
+    request.session.clear()
+    if email:
+        request.session["login_email"] = email  # shown once on the sign-in page, never put in the URL
+    return RedirectResponse("/login?error=" + code, status_code=303)
 
 
 @app.get("/auth/zoho/callback")
 def zoho_callback(request: Request, code: str = "", state: str = "", error: str = ""):
     if not settings.zoho_enabled:
-        raise HTTPException(status_code=404, detail="Zoho sign-in isn't set up")
+        return RedirectResponse("/login?error=not_configured", status_code=303)
     expected, nonce = request.session.pop("zoho_state", None), request.session.pop("zoho_nonce", None)
     nxt = request.session.pop("zoho_next", "/")
     if error:
-        return _zoho_fail("Zoho sign-in was cancelled.")
+        return _zoho_fail(request, "cancelled" if error == "access_denied" else "failed")
     if not code or not expected or not secrets.compare_digest(state, expected):
-        return _zoho_fail("The sign-in session expired. Please try again.")
+        return _zoho_fail(request, "expired")
     try:
         server = Z.accounts_server(request.query_params.get("accounts-server"))
         who = Z.identity(Z.exchange_code(code, server, str(request.base_url)), nonce, server)
     except Z.ZohoError as e:
-        log.info("zoho sign-in rejected: %s", type(e).__name__)
-        return _zoho_fail(str(e))
+        log.info("zoho sign-in rejected: %s (%s)", type(e).__name__, e.code)
+        return _zoho_fail(request, e.code)
     email, is_boot_admin = who["email"], who["email"] in settings.zoho_admin_emails
     with Session() as s:
+        # Existing accounts are linked by their (unique, case-insensitive) email. Nobody is created
+        # from a matching domain alone: only people an admin granted, or ZOHO_ADMIN_EMAILS.
         u = s.scalar(select(User).where(func.lower(User.email) == email))
         if u is None:
-            if not (is_boot_admin or settings.zoho_auto_provision):
+            if not is_boot_admin:
                 S.audit(s, None, "login_denied", email)
                 s.commit()
-                return _zoho_fail("You don't have access yet. Ask your Trafficomm admin to grant access to " + email + ".")
-            u = User(email=email, name=who["name"], role="admin" if is_boot_admin else "employee", password_hash="!")
+                return _zoho_fail(request, "no_access", email)
+            u = User(email=email, name=who["name"], role="admin", password_hash="!")
             s.add(u)
             s.flush()
             S.audit(s, u.id, "create_user_sso", email)
         if not u.active:
             S.audit(s, u.id, "login_denied", email)
             s.commit()
-            return _zoho_fail("Your access to the workspace has been revoked. Ask your Trafficomm admin.")
+            return _zoho_fail(request, "revoked", email)
         if is_boot_admin and u.role != "admin":
             u.role = "admin"
         if u.name in ("", u.email.split("@")[0]) and who["name"]:
             u.name = who["name"]
         request.session.clear()
         request.session["uid"] = u.id
+        request.session["via"] = "zoho"
         S.audit(s, u.id, "login_zoho", u.email)
         s.commit()
     return RedirectResponse(_safe_next(nxt), status_code=303)
@@ -193,52 +211,69 @@ def zoho_callback(request: Request, code: str = "", state: str = "", error: str 
 @app.post("/logout")
 def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/login", status_code=303)
+    return RedirectResponse("/login?error=signed_out", status_code=303)
 
 
 @app.get("/account", response_class=HTMLResponse)
-def account_page(request: Request, msg: str = "", error: str = ""):
+def account_page(request: Request):
     user = require_user(request)
-    return templates.TemplateResponse(request, "account.html", {"user": user, "msg": msg, "error": error})
-
-
-@app.post("/account/password")
-def account_password(request: Request, current: str = Form(...), new: str = Form(...), confirm: str = Form(...)):
-    user = require_user(request)
-    with Session() as s:
-        u = s.get(User, user.id)
-        if not check_password(current, u.password_hash):
-            return RedirectResponse("/account?error=Current password is incorrect", status_code=303)
-        if len(new) < 10:
-            return RedirectResponse("/account?error=New password must be at least 10 characters", status_code=303)
-        if new != confirm:
-            return RedirectResponse("/account?error=The new passwords don't match", status_code=303)
-        u.password_hash = hash_password(new)
-        S.audit(s, u.id, "change_password", u.email)
-        s.commit()
-    return RedirectResponse("/account?msg=Password changed", status_code=303)
+    return templates.TemplateResponse(request, "account.html", {"user": user, "nav": "account", "crumbs": [("Your account", None)]})
 
 
 # ---------------------------------------------------------------------------
-# Dashboard
+# Overview and task list
 # ---------------------------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, q: str = "", status: str = "", client: str = "", owner: str = ""):
-    user = require_user(request)
+# Overview status cards -> existing task statuses (meanings unchanged).
+STATUS_GROUPS = {
+    "processing": sorted(S.PROCESSING),
+    "needs_answer": ["awaiting_clarification"],
+    "ready_for_review": ["ready_for_review"],
+    "approved": ["approved"],
+    "blocked": ["validation_blocked", "failed"],
+}
+ARTIFACT_SHORT = {"excel": "Excel", "excel_consolidated": "Excel", "deck_update": "PPTX", "deck_new": "New PPTX", "pdf": "PDF"}
+
+
+def task_action(t: Task) -> dict:
+    """The next step for a task, from its real status."""
+    st = t.status
+    if st == "draft":
+        return {"label": "Continue", "href": f"/tasks/{t.id}/edit", "primary": False}
+    if st == "awaiting_clarification":
+        return {"label": "Answer questions", "href": f"/tasks/{t.id}#questions", "primary": True}
+    if st == "validation_blocked":
+        return {"label": "Review issue", "href": f"/tasks/{t.id}#validation", "primary": True}
+    if st == "failed":
+        return {"label": "Review issue", "href": f"/tasks/{t.id}#progress", "primary": True}
+    if st == "ready_for_review":
+        return {"label": "Review report", "href": f"/tasks/{t.id}#outputs", "primary": False}
+    return {"label": "Open workspace", "href": f"/tasks/{t.id}", "primary": False}
+
+
+def _initials(name: str) -> str:
+    parts = [p for p in (name or "").replace("(", " ").replace(")", " ").split() if p[:1].isalpha()]
+    return ((parts[0][0] + (parts[1][0] if len(parts) > 1 else "")) if parts else "?").upper()
+
+
+templates.env.filters["initials"] = _initials
+
+
+def _task_list(request: Request, user: User, view: str, q: str, status: str, client: str, owner: str, mine: str):
     with Session() as s:
-        stmt = select(Task).where(Task.deleted_at.is_(None))
-        if user.role != "admin":
-            stmt = stmt.where(Task.owner_id == user.id)
-        elif owner:
+        scope = [Task.deleted_at.is_(None)]
+        if user.role != "admin" or mine == "1":
+            scope.append(Task.owner_id == user.id)
+        stmt = select(Task).where(*scope)
+        if user.role == "admin" and owner and owner.isdigit() and mine != "1":
             stmt = stmt.where(Task.owner_id == int(owner))
-        if q:
+        if q.strip():
             like = f"%{q.strip()}%"
             stmt = stmt.join(Client, Client.id == Task.client_id).where(or_(Task.title.ilike(like), Task.brand.ilike(like), Client.name.ilike(like)))
-        if status == "processing":
-            stmt = stmt.where(Task.status.in_(list(S.PROCESSING)))
-        elif status:
+        if status in STATUS_GROUPS:
+            stmt = stmt.where(Task.status.in_(STATUS_GROUPS[status]))
+        elif status in S.STATUS_LABEL:
             stmt = stmt.where(Task.status == status)
-        if client:
+        if client.isdigit():
             stmt = stmt.where(Task.client_id == int(client))
         tasks = s.scalars(stmt.order_by(Task.updated_at.desc()).limit(200)).all()
         rows = []
@@ -247,14 +282,64 @@ def dashboard(request: Request, q: str = "", status: str = "", client: str = "",
                                     .order_by(TaskVersion.number.desc()).limit(1))
             arts = []
             if latest_ready:
-                arts = s.scalars(select(Artifact).where(Artifact.version_id == latest_ready.id, Artifact.kind.in_(["excel", "excel_consolidated", "deck_update", "deck_new", "pdf"]))).all()
+                arts = s.scalars(select(Artifact).where(Artifact.version_id == latest_ready.id, Artifact.kind.in_(list(ARTIFACT_SHORT)))).all()
             cur = s.get(TaskVersion, t.current_version_id) if t.current_version_id else None
-            rows.append({"t": t, "client": t.client.name, "owner": t.owner.name, "latest_ready": latest_ready, "arts": arts, "version": cur})
-        counts = dict(s.execute(select(Task.status, func.count()).where(Task.deleted_at.is_(None), *( [Task.owner_id == user.id] if user.role != "admin" else [])).group_by(Task.status)).all())
+            rows.append({"t": t, "client": t.client.name, "owner": t.owner.name, "latest_ready": latest_ready, "arts": arts, "version": cur,
+                         "action": task_action(t), "deck": "deck_update" in (t.deliverables or [])})
+        raw_counts = dict(s.execute(select(Task.status, func.count()).where(*scope).group_by(Task.status)).all())
+        counts = {k: sum(raw_counts.get(x, 0) for x in v) for k, v in STATUS_GROUPS.items()}
+        total = sum(raw_counts.values())
+        # tasks that need someone to act: questions to answer, validation blocked, failed
+        attn_tasks = s.scalars(select(Task).where(*scope, Task.status.in_(["awaiting_clarification", "validation_blocked", "failed"]))
+                               .order_by(Task.updated_at.desc()).limit(50)).all()
+        attention = None
+        if attn_tasks:
+            n_q = sum(1 for t in attn_tasks if t.status == "awaiting_clarification")
+            n_b = sum(1 for t in attn_tasks if t.status == "validation_blocked")
+            n_f = sum(1 for t in attn_tasks if t.status == "failed")
+            parts = []
+            if n_q:
+                parts.append(f"{n_q} waiting for answers to questions")
+            if n_b:
+                parts.append(f"{n_b} blocked by validation checks")
+            if n_f:
+                parts.append(f"{n_f} failed during processing")
+            if len(attn_tasks) == 1:
+                a = task_action(attn_tasks[0])
+                attention = {"count": 1, "detail": {"awaiting_clarification": "Answer the open questions so processing can continue.",
+                                                    "validation_blocked": "Some validation checks failed. Review them before the report can be used.",
+                                                    "failed": "Processing stopped with an error. Review it and retry."}[attn_tasks[0].status],
+                             "title_task": attn_tasks[0].title or "Untitled task", "label": a["label"], "href": a["href"]}
+            else:
+                only = {t.status for t in attn_tasks}
+                href = "/tasks?status=" + ("needs_answer" if only == {"awaiting_clarification"} else "blocked" if only <= {"validation_blocked", "failed"} else "attention")
+                detail = {"awaiting_clarification": "Answer the open questions so processing can continue.",
+                          "validation_blocked": "Validation checks failed. Review them before the reports can be used.",
+                          "failed": "Processing stopped with an error. Review each task and retry."}[attn_tasks[0].status] if len(only) == 1 else (", ".join(parts).capitalize() + ".")
+                attention = {"count": len(attn_tasks), "detail": detail, "label": "Review tasks", "href": href}
+        if status == "attention":
+            rows = [r for r in rows if r["t"].status in ("awaiting_clarification", "validation_blocked", "failed")]
         clients = s.scalars(select(Client).order_by(Client.name)).all()
         owners = s.scalars(select(User).order_by(User.name)).all() if user.role == "admin" else []
-    return templates.TemplateResponse(request, "dashboard.html", {"user": user, "rows": rows, "q": q, "status": status, "client": client, "owner": owner,
-                                                                   "clients": clients, "owners": owners, "counts": counts})
+    filtered = bool(q.strip() or status or client or (owner and mine != "1"))
+    ctx = {"user": user, "view": view, "rows": rows, "q": q, "status": status, "client": client, "owner": owner, "mine": mine,
+           "clients": clients, "owners": owners, "counts": counts, "total": total, "attention": attention, "filtered": filtered,
+           "STATUS_GROUPS": STATUS_GROUPS, "ARTIFACT_SHORT": ARTIFACT_SHORT,
+           "nav": "overview" if view == "overview" else "tasks",
+           "crumbs": [("Overview", None)] if view == "overview" else [("Reporting tasks", None)]}
+    return templates.TemplateResponse(request, "dashboard.html", ctx)
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request, q: str = "", status: str = "", client: str = "", owner: str = "", mine: str = ""):
+    user = require_user(request)
+    return _task_list(request, user, "overview", q, status, client, owner, mine)
+
+
+@app.get("/tasks", response_class=HTMLResponse)
+def task_list(request: Request, q: str = "", status: str = "", client: str = "", owner: str = "", mine: str = ""):
+    user = require_user(request)
+    return _task_list(request, user, "tasks", q, status, client, owner, mine)
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +355,19 @@ def new_task_page(request: Request):
     today = dt.date.today()
     first_this = today.replace(day=1)
     last_prev = first_this - dt.timedelta(days=1)
-    return templates.TemplateResponse(request, "new_task.html", {"user": user, "clients": clients, "profiles": profiles, "default_client": default_client,
-                                                                  "p_start": last_prev.replace(day=1), "p_end": last_prev})
+    return templates.TemplateResponse(request, "new_task.html", _builder_ctx(user, clients, profiles, default_client, None, [],
+                                                                            last_prev.replace(day=1), last_prev))
+
+
+CURRENCIES = ["AED", "USD", "SAR", "QAR", "KWD", "BHD", "OMR", "EGP", "EUR", "GBP", "INR"]
+
+
+def _builder_ctx(user, clients, profiles, default_client, draft, files, p_start, p_end) -> dict:
+    cur = (draft.currency if draft else "") or "AED"
+    return {"user": user, "clients": clients, "profiles": profiles, "default_client": default_client, "draft": draft, "draft_files": files,
+            "p_start": p_start, "p_end": p_end, "currencies": CURRENCIES if cur in CURRENCIES else [cur] + CURRENCIES, "currency": cur,
+            "max_upload_mb": settings.max_upload_bytes // (1024 * 1024), "nav": "tasks",
+            "crumbs": [("Reporting tasks", "/tasks"), ("Edit draft" if draft else "New report", None)]}
 
 
 def _date(v):
@@ -396,9 +492,12 @@ def submit(request: Request, task_id: int):
     user = require_user(request)
     with Session() as s:
         t = get_task_checked(s, user, task_id)
+        s.refresh(t, with_for_update=True)  # row lock: a double click / second tab can't queue a second job
+        if t.status != "draft":
+            raise S.UserError("This task was already submitted")
         files = s.scalars(select(TaskFile).where(TaskFile.task_id == t.id, TaskFile.removed.is_(False))).all()
         if "deck_update" in (t.deliverables or []) and not any(f.role == "client_deck" for f in files):
-            raise S.UserError("You selected 'Updated client PowerPoint' but no client PPTX is uploaded. Upload the deck in area C, or untick that deliverable.")
+            raise S.UserError("You selected 'Updated client PowerPoint' but no client PPTX is uploaded. Upload the deck under Client PowerPoint, or deselect that output.")
         v = S.submit_task(s, t, user)
         s.commit()
         return {"ok": True, "version": v.number, "url": f"/tasks/{t.id}"}
@@ -462,7 +561,8 @@ def workspace_ctx(s, user: User, t: Task) -> dict:
             "events": events, "stage_rows": stage_rows, "questions": questions, "open_questions": [q for q in questions if q.status == "open"],
             "msgs": msgs, "users": users, "art_by_v": art_by_v, "job": job, "result": result, "shown": shown, "shown_result": shown_result,
             "deliverables": deliverables, "records": records, "previews": previews, "state": _state_token(s, t),
-            "processing": t.status in S.PROCESSING, "profile_name": t.profile.name if t.profile else None}
+            "processing": t.status in S.PROCESSING, "profile_name": t.profile.name if t.profile else None,
+            "nav": "tasks", "crumbs": [("Reporting tasks", "/tasks"), (t.title or "Untitled task", None)]}
 
 
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)
@@ -484,8 +584,7 @@ def edit_draft(request: Request, task_id: int):
         clients = s.scalars(select(Client).order_by(Client.id)).all()
         profiles = s.scalars(select(Profile).order_by(Profile.id)).all()
         files = [S.file_summary(f) for f in s.scalars(select(TaskFile).where(TaskFile.task_id == t.id, TaskFile.removed.is_(False))).all()]
-        return templates.TemplateResponse(request, "new_task.html", {"user": user, "clients": clients, "profiles": profiles, "default_client": t.client,
-                                                                      "draft": t, "draft_files": files, "p_start": t.period_start, "p_end": t.period_end})
+        return templates.TemplateResponse(request, "new_task.html", _builder_ctx(user, clients, profiles, t.client, t, files, t.period_start, t.period_end))
 
 
 @app.post("/api/tasks/{task_id}/answers")
@@ -621,24 +720,20 @@ def admin_page(request: Request, msg: str = ""):
     import json as _json
     return templates.TemplateResponse(request, "admin.html", {"user": user, "users": users, "profiles": profiles, "clients": clients, "jobs": jobs,
                                                                "retention": rd, "msg": msg, "zoho_enabled": settings.zoho_enabled,
-                                                               "allowed_domains": settings.zoho_allowed_domains, "boot_admins": settings.zoho_admin_emails, "dumps": lambda o: _json.dumps(o, indent=2)})
+                                                               "allowed_domains": settings.zoho_allowed_domains, "boot_admins": settings.zoho_admin_emails,
+                                                               "nav": "admin", "crumbs": [("Administration", None)], "dumps": lambda o: _json.dumps(o, indent=2)})
 
 
 @app.post("/admin/users")
-def admin_add_user(request: Request, email: str = Form(...), name: str = Form(""), role: str = Form("employee"), password: str = Form("")):
-    """Grant access. With Zoho sign-in, no password is needed: the person signs in with their Zoho account."""
+def admin_add_user(request: Request, email: str = Form(...), name: str = Form(""), role: str = Form("employee")):
+    """Grant access. The person then signs in with their Zoho account; no password is ever set."""
     admin = require_admin(request)
     email = email.strip().lower()
     if "@" not in email:
         return RedirectResponse("/admin?msg=Enter a valid email", status_code=303)
     domain = email.rsplit("@", 1)[-1]
-    if password and len(password) < 10:
-        return RedirectResponse("/admin?msg=Password must be at least 10 characters", status_code=303)
-    if not password:
-        if not settings.zoho_enabled:
-            return RedirectResponse("/admin?msg=Set an initial password (Zoho sign-in isn't set up yet)", status_code=303)
-        if settings.zoho_allowed_domains and domain not in settings.zoho_allowed_domains:
-            return RedirectResponse("/admin?msg=Only @" + " / @".join(settings.zoho_allowed_domains) + " emails can be granted Zoho access", status_code=303)
+    if settings.zoho_allowed_domains and domain not in settings.zoho_allowed_domains:
+        return RedirectResponse("/admin?msg=Only @" + " / @".join(settings.zoho_allowed_domains) + " emails can be granted access", status_code=303)
     with Session() as s:
         u = s.scalar(select(User).where(func.lower(User.email) == email))
         if u:
@@ -649,8 +744,7 @@ def admin_add_user(request: Request, email: str = Form(...), name: str = Form(""
             S.audit(s, admin.id, "grant_access", email)
             s.commit()
             return RedirectResponse("/admin?msg=Access restored for " + email, status_code=303)
-        s.add(User(email=email, name=(name.strip() or email.split("@")[0])[:120], role="admin" if role == "admin" else "employee",
-                   password_hash=hash_password(password) if password else "!"))
+        s.add(User(email=email, name=(name.strip() or email.split("@")[0])[:120], role="admin" if role == "admin" else "employee", password_hash="!"))
         S.audit(s, admin.id, "grant_access", email)
         s.commit()
     return RedirectResponse("/admin?msg=Access granted to " + email, status_code=303)
@@ -667,21 +761,6 @@ def admin_set_role(request: Request, uid: int, role: str = Form(...)):
         S.audit(s, admin.id, "set_role:" + u.role, u.email)
         s.commit()
     return RedirectResponse("/admin?msg=Role updated for " + u.email, status_code=303)
-
-
-@app.post("/admin/users/{uid}/password")
-def admin_set_password(request: Request, uid: int, password: str = Form(...)):
-    admin = require_admin(request)
-    if len(password) < 10:
-        return RedirectResponse("/admin?msg=Password must be at least 10 characters", status_code=303)
-    with Session() as s:
-        u = s.get(User, uid)
-        if not u:
-            return RedirectResponse("/admin?msg=User not found", status_code=303)
-        u.password_hash = hash_password(password)
-        S.audit(s, admin.id, "reset_password", u.email)
-        s.commit()
-    return RedirectResponse("/admin?msg=Password updated", status_code=303)
 
 
 @app.post("/admin/users/{uid}/toggle")

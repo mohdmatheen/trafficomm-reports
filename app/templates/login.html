@@ -1,24 +1,78 @@
 {% extends "base.html" %}
+{% from "partials/ui.html" import icon, logo %}
 {% block page %}login{% endblock %}
-{% block title %}Sign in · Trafficomm{% endblock %}
-{% block content %}
-<div class="login-card card">
-  <h1>Sign in</h1>
-  <p class="muted">Internal workspace for Trafficomm employees.</p>
-  {% if error %}<div class="alert alert-fail">{{ error }}</div>{% endif %}
-  {% if zoho_enabled %}
-  <a class="btn btn-primary btn-block" href="/auth/zoho?next={{ next|urlencode }}">Sign in with Zoho</a>
-  <p class="muted small center">Use your @trafficomm.com Zoho account.</p>
-  {% endif %}
-  {% if password_login %}
-  {% if zoho_enabled %}<details class="pw-login"><summary class="muted small">Sign in with a password instead</summary>{% endif %}
-  <form method="post" action="/login">
-    <input type="hidden" name="next" value="{{ next }}">
-    <label>Email<input type="email" name="email" required {% if not zoho_enabled %}autofocus {% endif %}autocomplete="username"></label>
-    <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
-    <button class="btn {{ 'btn-ghost' if zoho_enabled else 'btn-primary' }} btn-block">Sign in</button>
-  </form>
-  {% if zoho_enabled %}</details>{% endif %}
-  {% endif %}
+{% block bodyclass %}login-body{% endblock %}
+{% block title %}Sign in · Trafficomm Reporting Workspace{% endblock %}
+{% block body %}
+<div class="login">
+  <section class="login-brand" aria-labelledby="brandHeading">
+    <div class="lb-grid" aria-hidden="true"></div>
+    <div class="lb-inner">
+      {{ logo(True) }}
+      <span class="lb-rule" aria-hidden="true"></span>
+      <h1 id="brandHeading" class="lb-title">From raw reports.<br>To client-ready.</h1>
+      <p class="lb-copy">One workspace to compile data, build presentations and refine every report.</p>
+
+      <div class="lb-art" aria-hidden="true">
+        <div class="art-sheet">
+          <div class="as-head"><i></i><i></i><i></i><i></i><i></i></div>
+          {% for r in range(7) %}<div class="as-row"><i></i><i></i><i></i><i></i><i></i></div>{% endfor %}
+        </div>
+        <div class="art-slide">
+          <div class="sl-top"><b>Monthly performance</b><svg class="ic"><use href="#i-present"/></svg></div>
+          <div class="sl-body">
+            <svg class="sl-chart" viewBox="0 0 170 100" preserveAspectRatio="xMinYMax meet">
+              <path d="M2 2v96h166" fill="none" stroke="#d9d8d4" stroke-width="1.5"/>
+              <rect x="20" y="66" width="20" height="28" rx="1.5" fill="#E32F2C"/>
+              <rect x="56" y="50" width="20" height="44" rx="1.5" fill="#E32F2C"/>
+              <rect x="92" y="36" width="20" height="58" rx="1.5" fill="#E32F2C"/>
+              <rect x="128" y="14" width="20" height="80" rx="1.5" fill="#E32F2C"/>
+            </svg>
+            <div class="sl-lines"><i></i><i></i><i></i></div>
+          </div>
+        </div>
+        <div class="art-note"><svg class="ic"><use href="#i-chat"/></svg><div><i></i><i></i></div></div>
+      </div>
+
+      <ul class="lb-caps">
+        <li>{{ icon('layers') }}<span>Compile reports</span></li>
+        <li>{{ icon('present') }}<span>Build presentations</span></li>
+        <li>{{ icon('pencil') }}<span>Review together</span></li>
+      </ul>
+      <p class="lb-foot">Built for the Trafficomm team.</p>
+    </div>
+  </section>
+
+  <main class="login-panel" id="main">
+    <div class="lp-inner">
+      <span class="lp-lock">{{ icon('lock') }}</span>
+      <h2 class="lp-title">Welcome back.</h2>
+      <p class="lp-sub">Sign in to your reporting workspace.</p>
+
+      {% if notice %}
+      <div class="notice notice-{{ notice.tone }}" role="{{ 'alert' if notice.tone == 'error' else 'status' }}" data-notice="{{ notice.code }}">
+        {{ icon('alert' if notice.tone in ['error','warn'] else 'info') }}
+        <div><b>{{ notice.title }}</b><p>{{ notice.message }}{% if notice.email %} You signed in as <span class="nowrap">{{ notice.email }}</span>.{% endif %}</p></div>
+      </div>
+      {% endif %}
+
+      <p class="lp-eyebrow" id="acctLabel">Your work account</p>
+      {% if zoho_enabled %}
+      <a class="btn btn-primary btn-xl btn-block" id="zohoBtn" href="/auth/zoho?next={{ next|urlencode }}" aria-describedby="acctLabel acctHint">
+        <span class="btn-label">Sign in with Zoho</span>{{ icon('arrow-right') }}
+      </a>
+      <p class="lp-status" id="zohoStatus" role="status" aria-live="polite"></p>
+      {% else %}
+      <button class="btn btn-primary btn-xl btn-block" type="button" disabled aria-describedby="acctHint">Sign in with Zoho</button>
+      {% endif %}
+      <p class="lp-hint" id="acctHint">Use your @{{ (domains or ['trafficomm.com'])[0] }} Zoho account.</p>
+      <p class="lp-hint2">You’ll continue to Zoho to sign in.</p>
+
+      <div class="lp-sep"></div>
+      <p class="lp-auth">{{ icon('lock') }}Authorized Trafficomm employees only.</p>
+      <p class="lp-help">Need access? Contact your workspace administrator.</p>
+    </div>
+    <p class="lp-footer">Trafficomm Reporting Workspace</p>
+  </main>
 </div>
 {% endblock %}

@@ -1,55 +1,60 @@
 {% extends "base.html" %}
+{% from "partials/ui.html" import icon, avatar %}
 {% block page %}admin{% endblock %}
-{% block title %}Admin · Trafficomm{% endblock %}
+{% block title %}Administration · Trafficomm{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>Admin</h1><p class="muted">Users, client profiles, retention and job health.</p></div></div>
-{% if msg %}<div class="alert alert-info">{{ msg }}</div>{% endif %}
-<div class="grid-2">
-<section class="card">
-  <h2>Users and access</h2>
-  {% if zoho_enabled %}<p class="muted small">People sign in with their Zoho account. Only people listed here as active can get in{% if allowed_domains %}, and only @{{ allowed_domains|join(', @') }} accounts{% endif %}.</p>
-  {% else %}<p class="muted small">Zoho sign-in isn't set up yet, so new users need an initial password.</p>{% endif %}
-  <table class="tbl compact"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th></th></tr></thead><tbody>
-  {% for u in users %}<tr><td>{{ u.name }}</td><td>{{ u.email }}{% if u.password_hash == '!' %} <span class="tag">Zoho</span>{% endif %}</td>
-    <td>{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/role" class="inline"><select name="role">
-        <option value="employee" {{ 'selected' if u.role != 'admin' }}>Employee</option><option value="admin" {{ 'selected' if u.role == 'admin' }}>Admin</option></select>
-        <button class="btn btn-sm">Save</button></form>{% else %}{{ u.role }}{% endif %}</td>
-    <td>{{ 'active' if u.active else 'revoked' }}</td>
-    <td>{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/toggle" class="inline"><button class="btn btn-sm">{{ 'Revoke access' if u.active else 'Restore access' }}</button></form>{% endif %}
-      {% if u.password_hash != '!' %}<form method="post" action="/admin/users/{{ u.id }}/password" class="inline pw-reset"><input name="password" type="password" placeholder="New password" minlength="10" required autocomplete="new-password"><button class="btn btn-sm">Set password</button></form>{% endif %}</td></tr>{% endfor %}
-  </tbody></table>
+<div class="page-head"><div><h1>Administration</h1><p class="page-sub">Workspace access, client reporting rules, retention and job health.</p></div></div>
+{% if msg %}<div class="notice notice-info" role="status">{{ icon('info') }}<div><p>{{ msg }}</p></div></div>{% endif %}
+{% if not zoho_enabled %}<div class="notice notice-error" role="alert">{{ icon('alert') }}<div><b>Zoho sign-in isn't configured</b><p>Set ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET on the server. Zoho is the only sign-in method, so nobody can sign in until it is configured.</p></div></div>{% endif %}
+<div class="admin-grid">
+<section class="card" aria-labelledby="h-users">
+  <header class="card-h"><span class="card-ic">{{ icon('user') }}</span><div><h2 id="h-users">People and access</h2>
+    <p>Everyone signs in with Zoho. Only active people listed here can get in{% if allowed_domains %}, and only with @{{ allowed_domains|join(', @') }} accounts{% endif %}.</p></div></header>
+  <div class="tbl-wrap">
+  <table class="tbl">
+    <thead><tr><th scope="col">Person</th><th scope="col">Role</th><th scope="col">Access</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+    <tbody>
+    {% for u in users %}<tr>
+      <td data-label="Person"><span class="owner">{{ avatar(u.name, 'sm') }}<span><b>{{ u.name }}</b><br><span class="muted small">{{ u.email }}</span></span></span></td>
+      <td data-label="Role">{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/role" class="inline-form"><label class="sr" for="role-{{ u.id }}">Role for {{ u.email }}</label><select id="role-{{ u.id }}" name="role" class="sm">
+          <option value="employee" {{ 'selected' if u.role != 'admin' }}>Employee</option><option value="admin" {{ 'selected' if u.role == 'admin' }}>Admin</option></select>
+          <button class="btn btn-sm">Save</button></form>{% else %}{{ 'Admin' if u.role == 'admin' else 'Employee' }} <span class="muted small">(you)</span>{% endif %}</td>
+      <td data-label="Access"><span class="badge-st tone-{{ 'ok' if u.active else 'neutral' }}"><span class="bdot" aria-hidden="true"></span>{{ 'Active' if u.active else 'Revoked' }}</span></td>
+      <td class="c-act">{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/toggle" class="inline-form"><button class="btn btn-sm">{{ 'Revoke access' if u.active else 'Restore access' }}<span class="sr"> for {{ u.email }}</span></button></form>{% endif %}</td>
+    </tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
   <h3>Grant access</h3>
   <form method="post" action="/admin/users" class="row-form">
-    <input name="email" type="email" placeholder="{{ 'name@' ~ allowed_domains[0] if (zoho_enabled and allowed_domains) else 'Email' }}" required>
-    <input name="name" placeholder="Name (optional)">
-    <select name="role"><option value="employee">Employee</option><option value="admin">Admin</option></select>
-    {% if zoho_enabled %}<details><summary class="muted small">Password account instead</summary>
-      <input name="password" type="password" placeholder="Initial password (10+ chars)" minlength="10" autocomplete="new-password"></details>
-    {% else %}<input name="password" type="password" placeholder="Initial password (10+ chars)" minlength="10" required autocomplete="new-password">{% endif %}
+    <div class="field"><label for="ga-email">Work email</label><input id="ga-email" name="email" type="email" placeholder="{{ 'name@' ~ allowed_domains[0] if allowed_domains else 'name@company.com' }}" required></div>
+    <div class="field"><label for="ga-name">Name <span class="opt">(optional)</span></label><input id="ga-name" name="name"></div>
+    <div class="field"><label for="ga-role">Role</label><select id="ga-role" name="role"><option value="employee">Employee</option><option value="admin">Admin</option></select></div>
     <button class="btn btn-primary">Grant access</button>
   </form>
+  <p class="f-hint">They can then sign in with their Zoho account. No password is set in this workspace.</p>
 </section>
-<section class="card">
-  <h2>Retention</h2>
+<section class="card" aria-labelledby="h-ret">
+  <header class="card-h"><span class="card-ic">{{ icon('clock') }}</span><div><h2 id="h-ret">Retention</h2><p>Retention runs daily in the worker. Deleted tasks are removed from storage.</p></div></header>
   <form method="post" action="/admin/retention" class="row-form">
-    <label>Delete tasks (uploads and outputs) not updated for <input type="number" name="days" min="1" value="{{ retention }}" class="w-num"> days</label>
+    <div class="field"><label for="ret-days">Delete tasks not updated for (days)</label><input id="ret-days" type="number" name="days" min="1" value="{{ retention }}"></div>
     <button class="btn" name="run" value="">Save</button>
-    <button class="btn btn-ghost" name="run" value="1">Save and run now</button>
+    <button class="btn btn-quiet" name="run" value="1">Save and run now</button>
   </form>
-  <p class="muted small">Retention runs daily in the worker. Approved versions are kept for the same period; deleted tasks are removed from storage.</p>
-  <h2>Recent jobs</h2>
-  <table class="tbl compact"><thead><tr><th>Job</th><th>Task</th><th>Status</th><th>Attempts</th><th>Error (type/location only)</th></tr></thead><tbody>
-  {% for j in jobs %}<tr><td>#{{ j.id }}</td><td><a href="/tasks/{{ j.task_id }}">{{ j.task_id }}</a></td><td>{{ j.status }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td><td class="small muted">{{ (j.error or '')[:120] }}</td></tr>{% endfor %}
-  </tbody></table>
+  <h3>Recent jobs</h3>
+  <div class="tbl-wrap"><table class="tbl compact"><thead><tr><th scope="col">Job</th><th scope="col">Task</th><th scope="col">Status</th><th scope="col">Attempts</th><th scope="col">Error (type/location only)</th></tr></thead><tbody>
+  {% for j in jobs %}<tr><td>#{{ j.id }}</td><td><a href="/tasks/{{ j.task_id }}">{{ j.task_id }}</a></td><td>{{ j.status }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td><td class="small muted">{{ (j.error or '')[:120] }}</td></tr>{% else %}<tr><td colspan="5" class="muted">No jobs yet.</td></tr>{% endfor %}
+  </tbody></table></div>
 </section>
 </div>
-<section class="card">
-  <h2>Client reporting rules</h2>
-  <p class="muted small">These hold client-specific naming rules, column overrides, metric choices and deck labels. Answers employees choose to remember are saved here. Employees don't see or choose these; they're applied from the task's client.</p>
+<section class="card" aria-labelledby="h-rules">
+  <header class="card-h"><span class="card-ic">{{ icon('gear') }}</span><div><h2 id="h-rules">Client reporting rules</h2>
+    <p>Client-specific naming rules, column overrides, metric choices and deck labels. Answers employees choose to remember are saved here. They're applied automatically from the task's client.</p></div></header>
   {% for p in profiles %}
   <details class="profile"><summary><b>{{ p.name }}</b> <span class="muted small">{{ clients.get(p.client_id, 'Any client') }} · updated {{ p.updated_at|ago }}</span></summary>
     <form method="post" action="/admin/profiles/{{ p.id }}">
-      <textarea name="settings_json" rows="18" class="mono">{{ dumps(p.settings) }}</textarea>
+      <label class="sr" for="pj-{{ p.id }}">Rules JSON for {{ p.name }}</label>
+      <textarea id="pj-{{ p.id }}" name="settings_json" rows="18" class="mono">{{ dumps(p.settings) }}</textarea>
       <button class="btn btn-primary">Save rules</button>
     </form>
   </details>

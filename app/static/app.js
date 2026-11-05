@@ -37,14 +37,45 @@
   const size = (n) => n < 1048576 ? Math.round(n / 1024) + " KB" : (n / 1048576).toFixed(1) + " MB";
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  // ------------------------------------------------------------------ new task
+  // ------------------------------------------------------------------ shell
+  function initShell() {
+    const openBtn = $("[data-drawer-open]"), scrim = $(".drawer-scrim"), sb = $("#sidebar");
+    if (!openBtn || !sb) return;
+    const set = (open) => {
+      body.classList.toggle("drawer-open", open); scrim.hidden = !open; openBtn.setAttribute("aria-expanded", String(open));
+      if (open) { const f = $(".sb-close", sb); if (f) f.focus(); } else openBtn.focus();
+    };
+    openBtn.addEventListener("click", () => set(true));
+    $$("[data-drawer-close]").forEach((el) => el.addEventListener("click", () => set(false)));
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && body.classList.contains("drawer-open")) set(false); });
+  }
+  function initLogin() {
+    const b = $("#zohoBtn"); if (!b) return;
+    b.addEventListener("click", (e) => {
+      if (b.classList.contains("is-busy")) { e.preventDefault(); return; }
+      b.classList.add("is-busy"); b.setAttribute("aria-disabled", "true");
+      $(".btn-label", b).textContent = "Redirecting to Zoho…";
+      $("#zohoStatus").textContent = "Taking you to Zoho to sign in…";
+    });
+    // coming back with the browser's back button restores the page from cache: reset the button
+    window.addEventListener("pageshow", () => { b.classList.remove("is-busy"); b.removeAttribute("aria-disabled"); $(".btn-label", b).textContent = "Sign in with Zoho"; $("#zohoStatus").textContent = ""; });
+  }
+  function initDashboard() {
+    const f = $("form.filters"); if (!f) return;
+    $$("[data-autosubmit]", f).forEach((s) => s.addEventListener("change", () => f.requestSubmit ? f.requestSubmit() : f.submit()));
+    f.addEventListener("submit", () => { const p = $(".task-panel"); if (p) { p.classList.add("loading"); p.setAttribute("aria-busy", "true"); } });
+  }
+
+  // ------------------------------------------------------------------ report builder
   function initNewTask() {
     const form = $("#taskForm"); if (!form) return;
     let taskId = body.dataset.taskId || null;
+    const maxBytes = (+body.dataset.maxMb || 50) * 1048576;
     const files = new Map(); // id -> summary
     const saveState = $("#saveState");
-    let creating = null, saveTimer = null, saving = Promise.resolve();
+    let creating = null, saveTimer = null, saving = Promise.resolve(), submitting = false, triedSubmit = false;
 
+    function setSave(state, text) { saveState.dataset.state = state; saveState.textContent = text; }
     function formData() {
       const fd = new FormData(form); const o = {};
       ["client_id", "profile_id", "title", "brand", "period_start", "period_end", "comparison_start", "comparison_end", "currency", "fx_usd_aed", "instructions"].forEach((k) => { o[k] = fd.get(k) || ""; });
@@ -54,18 +85,20 @@
     async function ensureTask() {
       if (taskId) return taskId;
       if (!creating) creating = api("POST", "/api/tasks", { client_id: form.client_id.value }).then((r) => {
-        taskId = String(r.id); body.dataset.taskId = taskId; history.replaceState(null, "", "/tasks/" + taskId + "/edit"); return taskId;
-      });
+        taskId = String(r.id); body.dataset.taskId = taskId; history.replaceState(null, "", "/tasks/" + taskId + "/edit");
+        $("#deleteDraft").hidden = false; return taskId;
+      }).catch((e) => { creating = null; throw e; });
       return creating;
     }
     function save() {
       saving = saving.then(async () => {
-        try { await ensureTask(); await api("PATCH", "/api/tasks/" + taskId, formData()); saveState.textContent = "Draft saved " + new Date().toLocaleTimeString(); }
-        catch (e) { saveState.textContent = "Not saved: " + e.message; }
+        setSave("saving", "Saving…");
+        try { await ensureTask(); await api("PATCH", "/api/tasks/" + taskId, formData()); setSave("saved", "Saved"); saveState.title = "Saved at " + new Date().toLocaleTimeString(); return true; }
+        catch (e) { setSave("error", "Save failed"); saveState.title = e.message; toast("Draft not saved: " + e.message, true); return false; }
       });
       return saving;
     }
-    function scheduleSave() { saveState.textContent = "Saving…"; clearTimeout(saveTimer); saveTimer = setTimeout(save, 600); checkDeck(); }
+    function scheduleSave() { setSave("saving", "Saving…"); clearTimeout(saveTimer); saveTimer = setTimeout(save, 700); refresh(); }
     form.addEventListener("input", scheduleSave);
     form.addEventListener("change", scheduleSave);
 
@@ -76,76 +109,188 @@
     }
     form.client_id.addEventListener("change", filterProfiles); filterProfiles();
 
+    // unambiguous dates: show the picked date written out (e.g. "1 September 2026")
+    function dateHints() {
+      $$("[data-date-for]").forEach((p) => {
+        const v = $("#" + p.dataset.dateFor).value; if (!v) { p.textContent = ""; return; }
+        const d = new Date(v + "T00:00:00"); p.textContent = isNaN(d) ? "" : d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "long", year: "numeric" });
+      });
+    }
+    form.addEventListener("input", (e) => { if (e.target.type === "date") dateHints(); }); dateHints();
+
+    // comparison period toggle
+    const cmpBtn = $("#cmpToggle"), cmp = $("#cmpFields");
+    cmpBtn.addEventListener("click", () => {
+      const open = cmp.hidden; cmp.hidden = !open; cmpBtn.setAttribute("aria-expanded", String(open));
+      $("span", cmpBtn).textContent = open ? "Remove comparison period" : "Add comparison period";
+      if (open) form.comparison_start.focus(); else { form.comparison_start.value = ""; form.comparison_end.value = ""; dateHints(); scheduleSave(); }
+    });
+
+    // section strip: plain in-page navigation, highlights the section in view
+    const stepLinks = $$(".steps a");
+    stepLinks.forEach((a) => a.addEventListener("click", (e) => {
+      const t = $(a.getAttribute("href")); if (!t) return; e.preventDefault();
+      t.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+      const f = $("input:not([type=hidden]):not(.sr),select:not([aria-hidden]),textarea", t); if (f) f.focus({ preventScroll: true });
+      markStep(a);
+    }));
+    function markStep(a) { stepLinks.forEach((x) => { x.classList.toggle("on", x === a); if (x === a) x.setAttribute("aria-current", "true"); else x.removeAttribute("aria-current"); }); }
+    if ("IntersectionObserver" in window) {
+      // two columns can show several sections at once: highlight the earliest one in view
+      const visible = new Set();
+      const io = new IntersectionObserver((ents) => {
+        ents.forEach((en) => { if (en.isIntersecting) visible.add(en.target.id); else visible.delete(en.target.id); });
+        const a = stepLinks.find((x) => visible.has(x.getAttribute("href").slice(1))); if (a) markStep(a);
+      }, { rootMargin: "-35% 0px -45% 0px" });
+      stepLinks.forEach((a) => { const t = $(a.getAttribute("href")); if (t) io.observe(t); });
+    }
+
+    // ---- uploads
+    const ICON = { raw: "table", template: "table", client_deck: "present", screenshots: "image", creatives: "image" };
+    const svg = (n) => '<svg class="ic" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
     function zoneFor(role) { return $('.dropzone[data-role="' + (role === "creatives" ? "screenshots" : role) + '"]'); }
     function renderFile(li, f) {
-      files.set(f.id, f); li.dataset.fid = f.id; li.className = "fitem";
+      files.set(f.id, f); li.dataset.fid = f.id; li.className = "fitem ok";
       const opts = Object.keys(ROLE_EXT).filter((r) => ROLE_EXT[r].includes(ext(f.name)));
       let meta = "";
       if (f.sheets && f.sheets.length) meta = f.sheets.map((s) => esc(s.name) + ": " + (s.rows == null ? "?" : s.rows) + " rows" + (s.platform ? " · " + esc(s.platform) : "") + (s.currency ? " · " + esc(s.currency) : "") + (s.dates && s.dates.min ? " · " + esc(s.dates.min) + " → " + esc(s.dates.max) : "") + (s.total_rows ? " · " + s.total_rows + " total row(s) excluded" : "") + (s.summary_blocks ? " · " + s.summary_blocks + " summary block(s) excluded" : "")).join("<br>");
       if (f.deck) meta = f.deck.slides + " slides · " + esc(f.deck.aspect) + (f.deck.unsupported ? " · " + f.deck.unsupported + " unsupported element(s)" : "") + (f.deck.summary ? "<br>" + esc(typeof f.deck.summary === "string" ? f.deck.summary : JSON.stringify(f.deck.summary)) : "");
       if (f.images != null) meta = f.images + " image(s)";
-      li.innerHTML = '<div class="frow"><span class="fname">' + esc(f.name) + '</span><span class="muted small">' + size(f.size) + "</span>" +
-        '<select title="File role" aria-label="File role">' + opts.map((r) => '<option value="' + r + '"' + (r === f.role ? " selected" : "") + ">" + ROLE_LABEL[r] + "</option>").join("") + "</select>" +
-        '<button type="button" class="btn btn-ghost btn-sm" data-remove>Remove</button></div>' +
+      li.innerHTML = '<div class="frow"><span class="f-ic">' + svg(ICON[f.role] || "file") + '</span><span class="fname">' + esc(f.name) + '</span><span class="fsize">' + size(f.size) + '</span><span class="fstate">Uploaded</span>' +
+        (opts.length > 1 ? '<label class="sr" for="role-' + f.id + '">File type for ' + esc(f.name) + '</label><select id="role-' + f.id + '">' + opts.map((r) => '<option value="' + r + '"' + (r === f.role ? " selected" : "") + ">" + ROLE_LABEL[r] + "</option>").join("") + "</select>" : "") +
+        '<button type="button" class="btn btn-quiet btn-sm" data-remove>' + svg("trash") + 'Remove<span class="sr"> ' + esc(f.name) + "</span></button></div>" +
         (meta ? '<div class="fmeta">' + meta + "</div>" : "") +
         (f.warnings && f.warnings.length ? '<ul class="fwarn">' + f.warnings.slice(0, 6).map((w) => "<li>" + esc(w) + "</li>").join("") + "</ul>" : "");
-      $("select", li).addEventListener("change", async (e) => {
-        try { const nf = await api("PATCH", "/api/files/" + f.id, { role: e.target.value }); li.remove(); const nli = document.createElement("li"); $(".filelist", zoneFor(nf.role)).appendChild(nli); renderFile(nli, nf); checkDeck(); toast("Role changed to " + ROLE_LABEL[nf.role]); }
+      const sel = $("select", li);
+      if (sel) sel.addEventListener("change", async (e) => {
+        try { const nf = await api("PATCH", "/api/files/" + f.id, { role: e.target.value }); li.remove(); const nli = document.createElement("li"); $(".filelist", zoneFor(nf.role)).appendChild(nli); renderFile(nli, nf); refresh(); toast("Moved to " + ROLE_LABEL[nf.role]); }
         catch (err) { toast(err.message, true); e.target.value = f.role; }
       });
-      $("[data-remove]", li).addEventListener("click", async () => {
-        try { await api("PATCH", "/api/files/" + f.id, { remove: true }); files.delete(f.id); li.remove(); checkDeck(); } catch (err) { toast(err.message, true); }
+      $("[data-remove]", li).addEventListener("click", async (ev) => {
+        const btn = ev.currentTarget; btn.disabled = true;
+        try { await api("PATCH", "/api/files/" + f.id, { remove: true }); files.delete(f.id); li.remove(); refresh(); toast(f.name + " removed"); }
+        catch (err) { toast(err.message, true); btn.disabled = false; }
       });
     }
+    function failItem(li, file, zone, msg, canRetry) {
+      li.className = "fitem err";
+      li.innerHTML = '<div class="frow"><span class="f-ic">' + svg("alert") + '</span><span class="fname">' + esc(file.name) + '</span><span class="fsize">' + size(file.size) + "</span>" +
+        (canRetry ? '<button type="button" class="btn btn-sm" data-retry>' + svg("refresh") + 'Retry<span class="sr"> ' + esc(file.name) + "</span></button>" : "") +
+        '<button type="button" class="btn btn-quiet btn-sm" data-dismiss>Dismiss</button></div><div class="fmeta" role="alert">' + esc(msg) + "</div>";
+      $("[data-dismiss]", li).addEventListener("click", () => li.remove());
+      const r = $("[data-retry]", li); if (r) r.addEventListener("click", () => uploadOne(zone, file, li));
+    }
+    async function uploadOne(zone, file, li) {
+      li.className = "fitem";
+      li.innerHTML = '<div class="frow"><span class="f-ic">' + svg("upload") + '</span><span class="fname">' + esc(file.name) + '</span><span class="fsize">' + size(file.size) + '</span><span class="fstate pct">0%</span></div><div class="bar" role="progressbar" aria-label="Uploading ' + esc(file.name) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div><div class="fmeta">Uploading…</div>';
+      try {
+        await ensureTask();
+        const f = await upload("/api/tasks/" + taskId + "/files", file, { role: zone.dataset.role }, (p) => {
+          const n = Math.round(p * 100); $(".bar i", li).style.width = n + "%"; $(".bar", li).setAttribute("aria-valuenow", n); $(".pct", li).textContent = n + "%";
+          if (p >= 1) $(".fmeta", li).textContent = "Checking the file…";
+        });
+        renderFile(li, f);
+      } catch (e) { failItem(li, file, zone, e.message, true); }
+      refresh();
+    }
     async function handleFiles(zone, list) {
-      const role = zone.dataset.role;
-      try { await ensureTask(); } catch (e) { toast(e.message, true); return; }
-      for (const file of list) {
-        const li = document.createElement("li"); li.className = "fitem";
-        li.innerHTML = '<div class="frow"><span class="fname">' + esc(file.name) + '</span><span class="muted small">' + size(file.size) + '</span><span class="muted small pct">0%</span></div><div class="bar"><i></i></div><div class="fmeta">Uploading…</div>';
-        $(".filelist", zone).appendChild(li);
-        const allowed = zone.dataset.accept.split(",");
-        if (!allowed.includes(ext(file.name))) { li.classList.add("err"); $(".fmeta", li).textContent = "Not accepted here (" + zone.dataset.accept + ")"; continue; }
-        let r = role;
-        try {
-          const f = await upload("/api/tasks/" + taskId + "/files", file, { role: r }, (p) => { $(".bar i", li).style.width = Math.round(p * 100) + "%"; $(".pct", li).textContent = Math.round(p * 100) + "%"; if (p >= 1) $(".fmeta", li).textContent = "Inspecting…"; });
-          renderFile(li, f);
-        } catch (e) { li.classList.add("err"); $(".fmeta", li).textContent = e.message; $(".bar", li).remove(); }
+      const allowed = zone.dataset.accept.split(",");
+      const arr = zone.dataset.multiple ? list : list.slice(0, 1);
+      for (const file of arr) {
+        const li = document.createElement("li"); $(".filelist", zone).appendChild(li);
+        if (!allowed.includes(ext(file.name))) { failItem(li, file, zone, "This file type isn't supported here. Use " + allowed.join(", ").toUpperCase().replace(/\./g, "") + ".", false); continue; }
+        if (file.size > maxBytes) { failItem(li, file, zone, "This file is larger than the " + (maxBytes / 1048576) + " MB limit.", false); continue; }
+        await uploadOne(zone, file, li);
       }
-      checkDeck();
     }
     $$(".dropzone").forEach((zone) => {
       const input = $("input[type=file]", zone);
-      $(".dz-pick", zone).addEventListener("click", () => input.click());
+      $$(".dz-pick", zone).forEach((b) => b.addEventListener("click", () => input.click()));
       input.addEventListener("change", () => { handleFiles(zone, Array.from(input.files)); input.value = ""; });
-      ["dragenter", "dragover"].forEach((ev) => zone.addEventListener(ev, (e) => { e.preventDefault(); zone.classList.add("over"); }));
-      ["dragleave", "drop"].forEach((ev) => zone.addEventListener(ev, (e) => { e.preventDefault(); zone.classList.remove("over"); }));
-      zone.addEventListener("drop", (e) => handleFiles(zone, Array.from(e.dataTransfer.files)));
+      let depth = 0;
+      zone.addEventListener("dragenter", (e) => { e.preventDefault(); depth++; zone.classList.add("over"); });
+      zone.addEventListener("dragover", (e) => { e.preventDefault(); });
+      zone.addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; zone.classList.remove("over"); } });
+      zone.addEventListener("drop", (e) => { e.preventDefault(); depth = 0; zone.classList.remove("over"); handleFiles(zone, Array.from(e.dataTransfer.files)); });
     });
+    // dropping a file outside a zone must not navigate away from the draft
+    ["dragover", "drop"].forEach((ev) => window.addEventListener(ev, (e) => { if (!e.target.closest || !e.target.closest(".dropzone")) e.preventDefault(); }));
     try { JSON.parse($("#draftFiles").textContent || "[]").forEach((f) => { const li = document.createElement("li"); $(".filelist", zoneFor(f.role)).appendChild(li); renderFile(li, f); }); } catch (e) { /* none */ }
 
-    function checkDeck() {
-      const want = $$('input[name=deliverables]:checked').map((i) => i.value);
+    // ---- requirements, inline errors
+    function problems() {
+      const d = formData(), out = [];
+      const hasRaw = Array.from(files.values()).some((f) => f.role === "raw");
       const hasDeck = Array.from(files.values()).some((f) => f.role === "client_deck");
-      $("#deckMissing").hidden = !(want.includes("deck_update") && !hasDeck);
+      if (!d.title.trim()) out.push({ id: "err-title", field: "#f-title", msg: "Give the task a title.", short: "add a task title" });
+      if (d.period_start && d.period_end && d.period_start > d.period_end) out.push({ id: "err-period", field: "#f-ps", msg: "The reporting start is after the end.", short: "fix the reporting dates" });
+      const fx = (d.fx_usd_aed || "").trim();
+      if (fx && (isNaN(+fx) || +fx < 1 || +fx > 10)) out.push({ id: "err-fx", field: "#f-fx", msg: "Enter a rate such as 3.6725.", short: "check the USD → AED rate" });
+      if (!d.deliverables.length) out.push({ id: "err-outputs", field: 'input[name=deliverables]', msg: "Choose at least one output.", short: "choose an output" });
+      if (!hasRaw) out.push({ id: "err-raw", field: "#zone-raw .dz-pick", zone: "#zone-raw", msg: "Upload at least one raw report (CSV or XLSX).", short: "upload raw reports" });
+      if (d.deliverables.includes("deck_update") && !hasDeck) out.push({ id: "err-deck", field: "#zone-deck .dz-pick", zone: "#zone-deck", msg: "Upload the client deck to update it, or deselect “Updated client PowerPoint”.", short: "upload the client PowerPoint" });
+      return out;
     }
-    checkDeck();
+    function detectedCurrencies() {
+      const seen = {};
+      files.forEach((f) => (f.sheets || []).forEach((s) => { const k = s.currency || "not stated"; (seen[k] = seen[k] || []).push(f.name); }));
+      const el = $("#detectedCur"); const keys = Object.keys(seen);
+      if (!keys.length) { el.hidden = true; return; }
+      el.hidden = false;
+      el.textContent = "Currency in your uploads: " + keys.map((k) => k + " (" + Array.from(new Set(seen[k])).length + " file" + (new Set(seen[k]).size > 1 ? "s" : "") + ")").join(", ") + ".";
+    }
+    function refresh() {
+      const ps = problems();
+      const want = formData().deliverables.includes("deck_update");
+      const tag = $("#deckTag"); tag.textContent = want ? "Required" : "Optional"; tag.classList.toggle("need", want);
+      const hint = $("#submitHint");
+      hint.textContent = ps.length ? "To continue: " + ps.map((p) => p.short).join(", ") + "." : "";
+      $("#submitBtn").classList.toggle("incomplete", ps.length > 0);
+      if (triedSubmit) showErrors(ps); else showErrors(ps.filter((p) => p.id === "err-deck" && Array.from(files.values()).length));
+      detectedCurrencies();
+    }
+    function showErrors(ps) {
+      $$(".f-err", form).forEach((e) => { e.hidden = true; e.textContent = ""; });
+      $$("[aria-invalid]", form).forEach((e) => e.removeAttribute("aria-invalid"));
+      $$(".dropzone.invalid").forEach((z) => z.classList.remove("invalid"));
+      ps.forEach((p) => {
+        const e = $("#" + p.id); if (e) { e.textContent = p.msg; e.hidden = false; }
+        const f = $(p.field); if (f && f.matches("input:not([type=checkbox]),select,textarea")) f.setAttribute("aria-invalid", "true");
+        if (p.zone) $(p.zone).classList.add("invalid");
+      });
+    }
+    refresh();
 
     const del = $("#deleteDraft");
-    if (del) del.addEventListener("click", async () => { if (!confirm("Delete this draft and its uploaded files?")) return; try { await api("POST", "/api/tasks/" + taskId + "/delete"); location.href = "/"; } catch (e) { toast(e.message, true); } });
+    del.addEventListener("click", async () => {
+      if (!taskId || !confirm("Delete this draft and its uploaded files? This can't be undone.")) return;
+      del.disabled = true;
+      try { await api("POST", "/api/tasks/" + taskId + "/delete"); location.href = "/tasks"; } catch (e) { toast(e.message, true); del.disabled = false; }
+    });
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
+      if (submitting) return; // never queue a second job
+      triedSubmit = true;
       const err = $("#formError"); err.hidden = true;
-      const fail = (m) => { err.textContent = m; err.hidden = false; err.scrollIntoView({ block: "center" }); };
-      const d = formData();
-      if (!d.title.trim()) return fail("Give the task a title.");
-      if (!d.deliverables.length) return fail("Choose at least one deliverable.");
-      if (!Array.from(files.values()).some((f) => f.role === "raw")) return fail("Upload at least one raw data file in area A.");
-      const btn = $("#submitBtn"); btn.disabled = true; btn.textContent = "Submitting…";
-      try { clearTimeout(saveTimer); await save(); const r = await api("POST", "/api/tasks/" + taskId + "/submit"); location.href = r.url; }
-      catch (ex) { fail(ex.message); btn.disabled = false; btn.textContent = "Submit for processing"; }
+      const ps = problems(); showErrors(ps);
+      if (ps.length) {
+        const f = $(ps[0].field); if (f) { f.scrollIntoView({ block: "center" }); f.focus({ preventScroll: true }); }
+        return;
+      }
+      submitting = true;
+      const btn = $("#submitBtn"); btn.disabled = true; btn.classList.add("is-busy"); btn.firstChild.textContent = "Submitting…";
+      try {
+        clearTimeout(saveTimer);
+        if (!(await save())) throw new Error("The draft couldn't be saved. Check your connection and try again.");
+        const r = await api("POST", "/api/tasks/" + taskId + "/submit"); location.href = r.url;
+      } catch (ex) {
+        err.innerHTML = '<svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg><div><b>Not submitted</b><p></p></div>'; $("p", err).textContent = ex.message; err.hidden = false;
+        err.scrollIntoView({ block: "center" });
+        submitting = false; btn.disabled = false; btn.classList.remove("is-busy"); btn.firstChild.textContent = "Submit for processing";
+      }
     });
+    window.addEventListener("beforeunload", (e) => { if (saveState.dataset.state === "saving" || saveState.dataset.state === "error") { e.preventDefault(); e.returnValue = ""; } });
   }
 
   // ------------------------------------------------------------------ workspace
@@ -217,6 +362,9 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     const p = body.dataset.page;
+    initShell();
+    if (p === "login") initLogin();
+    if (p === "dashboard") initDashboard();
     if (p === "new_task") initNewTask();
     if (p === "workspace") initWorkspace();
   });

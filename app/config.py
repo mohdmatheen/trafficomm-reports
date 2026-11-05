@@ -31,15 +31,15 @@ class Settings:
     retention_days_default: int = field(default_factory=lambda: int(_env("RETENTION_DAYS", "180")))
     soffice: str = field(default_factory=lambda: _env("SOFFICE_BIN", "soffice"))
     cookie_secure: bool = field(default_factory=lambda: _env("COOKIE_SECURE", "0") == "1")
-    # Zoho sign-in (OAuth 2.0 / OpenID Connect). Enabled when client id + secret are set.
+    # Zoho sign-in (OAuth 2.0 / OpenID Connect): the only sign-in method. Needs client id + secret.
     public_base_url: str = field(default_factory=lambda: (_env("PUBLIC_BASE_URL") or "").rstrip("/"))
     zoho_client_id: str | None = field(default_factory=lambda: _env("ZOHO_CLIENT_ID"))
     zoho_client_secret: str | None = field(default_factory=lambda: _env("ZOHO_CLIENT_SECRET"))
     zoho_accounts_url: str = field(default_factory=lambda: (_env("ZOHO_ACCOUNTS_URL") or "https://accounts.zoho.in").rstrip("/"))  # Trafficomm's Zoho org is on the India data centre
     zoho_allowed_domains: list[str] = field(default_factory=lambda: _csv(_env("ZOHO_ALLOWED_DOMAINS", "trafficomm.com")))
     zoho_admin_emails: list[str] = field(default_factory=lambda: _csv(_env("ZOHO_ADMIN_EMAILS", "matheen.m@trafficomm.com")))
-    zoho_auto_provision: bool = field(default_factory=lambda: _env("ZOHO_AUTO_PROVISION", "0") == "1")
-    password_login: bool = field(default_factory=lambda: _env("PASSWORD_LOGIN", "1") == "1")
+    # Sign-in is Zoho only. Access is granted per person on the Admin page (plus ZOHO_ADMIN_EMAILS);
+    # a matching email domain alone never grants access.
 
     @property
     def zoho_enabled(self) -> bool:
