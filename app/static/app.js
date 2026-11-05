@@ -4,8 +4,8 @@
   const $ = (s, el) => (el || document).querySelector(s);
   const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
   const body = document.body;
-  const ROLE_EXT = { raw: [".csv", ".xlsx"], template: [".xlsx"], client_deck: [".pptx"], creatives: [".zip"] };
-  const ROLE_LABEL = { raw: "Raw data", template: "Excel template", client_deck: "Client deck", creatives: "Creative images (ZIP)" };
+  const ROLE_EXT = { raw: [".csv", ".xlsx"], template: [".xlsx"], client_deck: [".pptx"], screenshots: [".png", ".jpg", ".jpeg", ".zip"] };
+  const ROLE_LABEL = { raw: "Raw data", template: "Excel template", client_deck: "Client deck", screenshots: "Screenshots", creatives: "Screenshots (ZIP)" };
 
   function toast(msg, err) {
     const t = $("#toast"); if (!t) return;
@@ -47,7 +47,7 @@
 
     function formData() {
       const fd = new FormData(form); const o = {};
-      ["client_id", "profile_id", "title", "brand", "period_start", "period_end", "comparison_start", "comparison_end", "currency", "instructions"].forEach((k) => { o[k] = fd.get(k) || ""; });
+      ["client_id", "profile_id", "title", "brand", "period_start", "period_end", "comparison_start", "comparison_end", "currency", "fx_usd_aed", "instructions"].forEach((k) => { o[k] = fd.get(k) || ""; });
       o.deliverables = fd.getAll("deliverables");
       return o;
     }
@@ -76,7 +76,7 @@
     }
     form.client_id.addEventListener("change", filterProfiles); filterProfiles();
 
-    function zoneFor(role) { return $('.dropzone[data-role="' + (role === "creatives" ? "client_deck" : role) + '"]'); }
+    function zoneFor(role) { return $('.dropzone[data-role="' + (role === "creatives" ? "screenshots" : role) + '"]'); }
     function renderFile(li, f) {
       files.set(f.id, f); li.dataset.fid = f.id; li.className = "fitem";
       const opts = Object.keys(ROLE_EXT).filter((r) => ROLE_EXT[r].includes(ext(f.name)));
@@ -106,7 +106,7 @@
         $(".filelist", zone).appendChild(li);
         const allowed = zone.dataset.accept.split(",");
         if (!allowed.includes(ext(file.name))) { li.classList.add("err"); $(".fmeta", li).textContent = "Not accepted here (" + zone.dataset.accept + ")"; continue; }
-        let r = role; if (role === "client_deck" && ext(file.name) === ".zip") r = "creatives";
+        let r = role;
         try {
           const f = await upload("/api/tasks/" + taskId + "/files", file, { role: r }, (p) => { $(".bar i", li).style.width = Math.round(p * 100) + "%"; $(".pct", li).textContent = Math.round(p * 100) + "%"; if (p >= 1) $(".fmeta", li).textContent = "Inspecting…"; });
           renderFile(li, f);

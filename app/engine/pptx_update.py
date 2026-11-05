@@ -11,8 +11,11 @@ import zipfile
 
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData
+from pptx.dml.color import RGBColor
+from pptx.util import Pt
 
 from . import fmt as FM
+from . import rules as R
 from .pptx_inspect import MONTH_YEAR_RE, clean, inspect_deck, label_to_metric, slide_title
 
 TITLE_SPLIT = re.compile(r"\s+[–—-]\s+|:\s+")
@@ -88,6 +91,8 @@ class DeckUpdater:
         self.slide_map: list[dict] = []
         self.inspection = inspect_deck(src, self.profile)
         self.entities = self._entities()
+        self.screenshots = self._index_screenshots(self.options.get("screenshots") or [])
+        self.used_screenshots: set[str] = set()
 
     # ------------------------------------------------------------------
     def _entities(self) -> list[dict]:
@@ -263,8 +268,13 @@ class DeckUpdater:
                     entry["status"] = "updated"
                     if e["row"].get("_rows", 1) > 1:
                         self.flags.append({"slide": idx, "severity": "info", "message": f"Slide {idx}: creative ran in {e['row']['_rows']} ads - reach/frequency shown as '{self.na}' because reach is not additive"})
-                    if self.options.get("replace_thumbnails") and self.options.get("creatives_zip"):
-                        self._replace_thumbnail(slide, idx, e)
+                    shot = self._screenshot_for(idx, e["name"])
+                    if shot:
+                        self._place_screenshot(slide, idx, shot)
+                    elif self.screenshots:
+                        self.flags.append({"slide": idx, "severity": "info", "message": f"Slide {idx}: no screenshot named like '{e['name']}' (or 'slide {idx}') was uploaded - picture kept"})
+                    else:
+                        self._border_existing(slide, idx)
                     self._check_notes(slide, idx)
             elif cls == "cover":
                 n = self._update_period_text(slide, idx, ds, de)
@@ -274,7 +284,10 @@ class DeckUpdater:
                 n = self._update_charts(slide, idx)
                 entry["changes"] = n
                 entry["status"] = "updated" if n else "unchanged"
-            elif cls == "client_content":
+            elif cls != "client_content" and self._screenshot_for(idx, None):
+                self._place_screenshot(slide, idx, self._screenshot_for(idx, None))
+                entry["status"] = "updated"
+            if cls == "client_content":
                 entry["status"] = "client content - preserved"
                 if info["date_ranges"] or info["month_labels"]:
                     self.flags.append({"slide": idx, "severity": "info", "message": f"Slide {idx} '{info['title']}': client-supplied content with its own dates ({', '.join((info['date_ranges'] or info['month_labels'])[:2])}) - not changed; confirm with the client team"})
@@ -293,6 +306,10 @@ class DeckUpdater:
                     continue
             self.flags.append({"slide": None, "severity": "warning" if imp else "info",
                                "message": "No slide in the deck for " + " ".join(str(x) for x in (e["brand"], e["objective"]) if x) + (" " if (e["brand"] or e["objective"]) else "") + f"'{e['name']}' (impressions {FM.fmt_int(imp)}, spend {FM.fmt_num(spend)}). Not added." + (" Ask for 'add slides for new creatives' if needed." if imp else "")})
+        unused = [s["label"] for k, s in self.screenshots.items() if k not in self.used_screenshots]
+        if unused:
+            self.flags.append({"slide": None, "severity": "warning", "message": f"{len(unused)} uploaded screenshot(s) didn't match any slide and were not placed: " + ", ".join(sorted(set(unused))[:12]) +
+                               ". Name each file like the creative on its slide (e.g. 'BWA-Static-EN.png') or 'slide 5.png'."})
         self.slide_map.sort(key=lambda m: m["slide"])
         prs.save(out_path)
         return {"blocked": False, "changes": self.changes, "flags": self.flags, "slide_map": self.slide_map,
@@ -416,6 +433,105 @@ class DeckUpdater:
             t = clean(slide.notes_slide.notes_text_frame.text)
             if re.search(r"\d", t):
                 self.flags.append({"slide": idx, "severity": "warning", "message": f"Slide {idx}: speaker notes contain figures that may be stale - review: '{t[:80]}'"})
+
+    # ------------------------------------------------------------------
+    # screenshots
+    @staticmethod
+    def _index_screenshots(items: list[dict]) -> dict:
+        """items: [{"path", "name"}] for PNG/JPG files and ZIPs of them. Returns key -> {label, loader}."""
+        out: dict = {}
+
+        def add(fname, loader):
+            base = re.sub(r"\.(png|jpe?g)$", "", fname.split("/")[-1], flags=re.I)
+            m = re.fullmatch(r"\s*(?:slide|sl|s)?[\s_-]*0*(\d{1,3})\s*", base, flags=re.I)
+            if m:
+                key = f"#slide{int(m.group(1))}"
+            else:
+                key = nkey_loose(re.sub(r"[-_ ]?(ss|screenshot|screen ?shot)$", "", base, flags=re.I))
+            if key and key not in out:
+                out[key] = {"label": fname.split("/")[-1], "load": loader}
+
+        for it in items:
+            p = it["path"]
+            if p.lower().endswith(".zip") or (it.get("name") or "").lower().endswith(".zip"):
+                try:
+                    zf = zipfile.ZipFile(p)
+                except Exception:  # noqa: BLE001
+                    continue
+                for n in zf.namelist():
+                    if "__MACOSX" in n or n.split("/")[-1].startswith(".") or not re.search(r"\.(png|jpe?g)$", n, re.I):
+                        continue
+                    add(n, (lambda zf=zf, n=n: zf.read(n)))
+            else:
+                add(it.get("name") or p, (lambda p=p: open(p, "rb").read()))
+        return out
+
+    def _screenshot_for(self, idx: int, name: str | None):
+        k = f"#slide{idx}"
+        if k in self.screenshots:
+            return k
+        if name:
+            k = nkey_loose(name)
+            if k in self.screenshots:
+                return k
+        return None
+
+    def _target_picture(self, slide):
+        pics = [sh for sh in slide.shapes if sh.shape_type == 13]
+        return max(pics, key=lambda p: (p.width or 0) * (p.height or 0)) if pics else None
+
+    @staticmethod
+    def _black_border(pic):
+        pic.line.color.rgb = RGBColor(*R.SCREENSHOT_BORDER_RGB)
+        pic.line.width = Pt(R.SCREENSHOT_BORDER_PT)
+
+    def _place_screenshot(self, slide, idx, key):
+        shot = self.screenshots[key]
+        try:
+            blob = shot["load"]()
+        except Exception:  # noqa: BLE001
+            self.flags.append({"slide": idx, "severity": "warning", "message": f"Slide {idx}: screenshot '{shot['label']}' could not be read"})
+            return
+        if len(blob) > 25_000_000:
+            self.flags.append({"slide": idx, "severity": "warning", "message": f"Slide {idx}: screenshot '{shot['label']}' is over 25 MB - not placed"})
+            return
+        from PIL import Image
+        try:
+            with Image.open(io.BytesIO(blob)) as im:
+                iw, ih = im.size
+                if im.format not in ("PNG", "JPEG"):
+                    raise ValueError(im.format)
+        except Exception:  # noqa: BLE001
+            self.flags.append({"slide": idx, "severity": "warning", "message": f"Slide {idx}: '{shot['label']}' is not a readable PNG/JPG - not placed"})
+            return
+        old = self._target_picture(slide)
+        if old is None:
+            self.flags.append({"slide": idx, "severity": "warning", "message": f"Slide {idx}: no picture on the slide to replace with screenshot '{shot['label']}' - not placed"})
+            return
+        # fit inside the old picture's box, keep the screenshot's aspect ratio, centre it
+        bw, bh = old.width, old.height
+        scale = min(bw / iw, bh / ih)
+        w, h = int(iw * scale), int(ih * scale)
+        left, top = old.left + (bw - w) // 2, old.top + (bh - h) // 2
+        new = slide.shapes.add_picture(io.BytesIO(blob), left, top, w, h)
+        old._element.addprevious(new._element)  # same z-order as the picture it replaces
+        old._element.getparent().remove(old._element)
+        new.name = old.name
+        self._black_border(new)
+        self.used_screenshots.add(key)
+        self.changes.append({"slide": idx, "shape": new.name, "metric": "screenshot", "old": "previous image", "new": shot["label"] + " (black border)"})
+
+    def _border_existing(self, slide, idx):
+        """Agency rule: screenshots on creative slides have a black border."""
+        pic = self._target_picture(slide)
+        if pic is None:
+            return
+        ln = pic._element.spPr.find("{http://schemas.openxmlformats.org/drawingml/2006/main}ln")
+        has_line = ln is not None and ln.find("{http://schemas.openxmlformats.org/drawingml/2006/main}noFill") is None and len(ln)
+        if has_line:
+            return
+        self._black_border(pic)
+        self.changes.append({"slide": idx, "shape": pic.name, "metric": "screenshot border", "old": "no border", "new": "black border"})
 
     def _replace_thumbnail(self, slide, idx, e):
         zpath = self.options["creatives_zip"]

@@ -20,8 +20,8 @@ from .storage import safe_name, sha256, storage
 
 log = logging.getLogger("trafficomm.service")
 
-ALLOWED_EXT = {".csv", ".xlsx", ".pptx", ".zip"}
-ROLE_EXT = {"raw": {".csv", ".xlsx"}, "template": {".xlsx"}, "client_deck": {".pptx"}, "creatives": {".zip"}}
+ALLOWED_EXT = {".csv", ".xlsx", ".pptx", ".zip", ".png", ".jpg", ".jpeg"}
+ROLE_EXT = {"raw": {".csv", ".xlsx"}, "template": {".xlsx"}, "client_deck": {".pptx"}, "screenshots": {".png", ".jpg", ".jpeg", ".zip"}, "creatives": {".zip"}}
 STAGE_TO_STATUS = {"inspecting": "inspecting", "mapping": "mapping", "awaiting_clarification": "awaiting_clarification",
                    "calculating": "calculating", "generating": "generating", "validating": "validating",
                    "ready_for_review": "ready_for_review", "validation_blocked": "validation_blocked", "blocked": "validation_blocked"}
@@ -58,7 +58,7 @@ def add_file(s, task: Task, user: User, tmp_path: str, original_name: str, role:
         raise UserError(f"'{original_name}' is empty.")
     if ext not in ALLOWED_EXT:
         os.remove(tmp_path)
-        raise UserError(f"'{original_name}': only CSV, XLSX, PPTX and ZIP (creative images) files are accepted. Macro-enabled files (.xlsm/.pptm) are rejected.")
+        raise UserError(f"'{original_name}': only CSV, XLSX, PPTX, PNG/JPG screenshots and ZIP files of screenshots are accepted. Macro-enabled files (.xlsm/.pptm) are rejected.")
     insp = inspect_file(tmp_path, original_name, profile_settings(task))
     if not insp.get("ok", True):
         os.remove(tmp_path)
@@ -314,7 +314,7 @@ def process_job(job_id: int, worker_id: str = "worker"):
             answers.setdefault(f"deckslide:{idx}", val)
         tdict = {"title": task.title, "client": task.client.name, "brand": task.brand, "period_start": task.period_start, "period_end": task.period_end,
                  "comparison_start": task.comparison_start, "comparison_end": task.comparison_end, "timezone": task.timezone,
-                 "currency": task.currency, "deliverables": task.deliverables, "instructions": task.instructions}
+                 "currency": task.currency, "fx_usd_aed": task.fx_usd_aed, "deliverables": task.deliverables, "instructions": task.instructions}
         finputs = [{"id": f.id, "name": f.original_name, "path": f.stored_path, "ext": os.path.splitext(f.original_name)[1].lower(),
                     "role": f.role, "inspection": f.inspection, "uploaded_order": f.id, "excluded": f.excluded} for f in files]
         workdir = os.path.join(storage.version_dir(task.id, v.number), "work")

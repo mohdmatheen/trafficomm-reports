@@ -271,7 +271,7 @@ def run_validation(*, files: list[dict], norm, calc, excel: dict | None, deck_up
             for key, vals in excel["written"]["creative"].items():
                 ex_creative[key[-1]] = ex_creative.get(key[-1], []) + [vals]
             for ch in deck_update["changes"]:
-                if ch.get("metric") in ("impressions", "link_clicks", "clicks", "reach", "video_plays_3s"):
+                if ch.get("metric") in ("impressions", "link_clicks", "clicks", "reach", "views", "video_plays_3s"):
                     ent = next((m["entity"] for m in deck_update["slide_map"] if m["slide"] == ch["slide"]), None)
                     if not ent:
                         continue

@@ -14,7 +14,7 @@ from app.engine.inspect import inspect_file
 from tests.helpers import check, fx, qkeys, run
 
 MULTI = [(fx("meta_acme_sept.csv"), "raw"), (fx("tiktok_acme_sept_aed.xlsx"), "raw"), (fx("snapchat_acme_sept.csv"), "raw")]
-A_MULTI = {"equiv:snapchat:swipe_ups=link_clicks": "no", "conversion_metric": "leads_meta_form"}
+A_MULTI = {"conversion_metric": "leads_meta_form"}
 
 
 @pytest.fixture(scope="module")
@@ -35,7 +35,8 @@ def _sha(p):
 def test_multi_platform_asks_before_combining_definitions():
     r = run(MULTI)
     assert r["status"] == "awaiting_clarification"
-    assert "equiv:snapchat:swipe_ups=link_clicks" in qkeys(r)  # swipe ups never silently treated as clicks
+    # agency rule: Snapchat Swipe Ups are its link clicks - no question
+    assert "equiv:snapchat:swipe_ups=link_clicks" not in qkeys(r)
     conv = next(q for q in r["questions"] if q["key"] == "conversion_metric")
     values = [o["value"] for o in conv["options"]]
     assert "leads_meta_form" in values and "none" in values
@@ -51,9 +52,11 @@ def test_multi_platform_totals(multi):
     t = r["summary"]["totals"]
     assert t["spend"] == pytest.approx(11750.75 + 1930.0 + 780.0)
     assert t["impressions"] == 1780000 + 540000 + 372000
-    # Snapchat swipe ups kept separate -> its impressions are excluded from the CTR denominator
-    assert plats["snapchat"]["clicks"] is None and plats["snapchat"]["ctr"] is None
-    assert t["ctr"] == pytest.approx(18000 / (1780000 + 540000) * 100)
+    # agency rule: Snapchat Swipe Ups count as link clicks
+    assert plats["snapchat"]["clicks"] == 900 + 930 + 960
+    assert t["ctr"] == pytest.approx((18000 + 2790) / (1780000 + 540000 + 372000) * 100)
+    # files that state AED for TikTok/Snapchat keep it, with a warning against the USD rule
+    assert any("agency rule says USD" in w for w in r["warnings"])
     assert check(r, "reconciliation")["status"] == "pass"
     assert check(r, "rates")["status"] == "pass"
     # the platform's own total row is excluded, never double counted
@@ -109,16 +112,15 @@ def test_reach_never_summed(multi):
 
 
 # --- conflicting currencies -------------------------------------------------------------------
-def test_conflicting_currency_requires_rate():
+def test_usd_converted_to_aed_at_task_rate():
     files = [(fx("meta_acme_sept.csv"), "raw"), (fx("tiktok_acme_sept_usd.xlsx"), "raw")]
-    r = run(files, answers={"conversion_metric": "none"})
-    assert r["status"] == "awaiting_clarification" and "fx:USD->AED" in qkeys(r)
-    assert not r["artifacts"]
-    r2 = run(files, answers={"conversion_metric": "none", "fx:USD->AED": "3.6725"})
-    assert r2["status"] == "ready_for_review"
+    r2 = run(files, answers={"conversion_metric": "none"})  # agency rule: USD -> AED at the task rate, no question
+    assert r2["status"] == "ready_for_review" and "fx:USD->AED" not in qkeys(r2)
     assert r2["summary"]["totals"]["spend"] == pytest.approx(11750.75 + 1930.0 * 3.6725, rel=1e-9)
     assert any("3.6725" in a for a in r2["assumptions"])
     assert check(r2, "currency")["status"] == "pass"
+    r3 = run(files, answers={"conversion_metric": "none"}, fx_usd_aed=3.67)
+    assert r3["summary"]["totals"]["spend"] == pytest.approx(11750.75 + 1930.0 * 3.67, rel=1e-9)
 
 
 # --- overlapping exports ----------------------------------------------------------------------
@@ -213,8 +215,10 @@ def test_feedback_interpretation_metric_definition():
     rp = AI.RuleProvider().interpret_feedback("Please use all clicks instead of link clicks", False)
     assert [(o.op, o.value) for o in rp.ops] == [("set_click_metric", "clicks_all")]
     r = run([(fx("meta_acme_sept.csv"), "raw")], answers={"conversion_metric": "none"}, plan_overrides={"click_metric": "clicks_all"})
-    assert r["summary"]["totals"]["clicks"] == 9800 + 5200 + 4100 + 2600
-    assert r["summary"]["click_metric"].lower().startswith("all clicks") or "all" in r["summary"]["click_metric"].lower()
+    # agency rule: clicks are always link clicks, even when the feedback asks for all clicks
+    assert r["summary"]["totals"]["clicks"] == 14300
+    assert any("always report link clicks" in w for w in r["warnings"])
+    assert r["summary"]["click_metric"] == "Link clicks"
 
 
 def test_feedback_breakdown_ops():

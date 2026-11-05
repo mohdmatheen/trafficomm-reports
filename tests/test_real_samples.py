@@ -42,7 +42,7 @@ def test_atc_deck_matches_employee_made_deck(atc):
     we write '-' because frequency is undefined (zero denominator)."""
     sm = [m for m in atc["deck"]["slide_map"] if m.get("classification") == "metric_slide"]
     assert len(sm) == 22 and all(m["status"] == "updated" or m["status"] == "unchanged" for m in sm)
-    fig = [c for c in atc["deck"]["changes"] if c["metric"] not in ("range", "period_label")]
+    fig = [c for c in atc["deck"]["changes"] if c["metric"] not in ("range", "period_label", "screenshot border")]
     assert [(c["slide"], c["col"]) for c in fig] == [(28, "Frequency")], fig
     assert atc["deck"]["unchanged_cells"] >= 22 * 7
 
@@ -56,7 +56,6 @@ def test_atc_all_clicks_revision_consistent(tmp_path):
             plan_overrides={"click_metric": "clicks_all"}, workdir=str(tmp_path))
     assert r["status"] == "ready_for_review"
     assert check(r, "crossfile")["status"] == "pass"
-    assert r["definition_fallback"] == {"requested": "clicks_all", "used": "link_clicks"}
     assert r["summary"]["totals"]["clicks"] == 19189
-    assert any("not in any uploaded export" in w for w in r["warnings"])
+    assert any("always report link clicks" in w for w in r["warnings"])  # agency rule
     assert not [c for c in r["deck"]["changes"] if c.get("col") == "Clicks"]

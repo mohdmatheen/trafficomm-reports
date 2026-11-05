@@ -65,6 +65,23 @@ def check_ooxml(path: str, expected: str) -> dict:
     return info
 
 
+def check_image(path: str) -> dict:
+    """Validate an uploaded screenshot (PNG/JPG) without trusting its extension."""
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            fmt = im.format
+            w, h = im.size
+            im.verify()
+    except Exception:  # noqa: BLE001
+        raise FileRejected("Not a readable PNG/JPG image.")
+    if fmt not in ("PNG", "JPEG"):
+        raise FileRejected(f"Images must be PNG or JPG (this file is {fmt}).")
+    if w * h > 60_000_000:
+        raise FileRejected("Image is too large (over 60 megapixels).")
+    return {"format": fmt, "width": w, "height": h}
+
+
 def check_zip_of_images(path: str) -> list[str]:
     try:
         zf = zipfile.ZipFile(path)

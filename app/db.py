@@ -59,6 +59,7 @@ class Task(Base):
     comparison_end: Mapped[dt.date | None]
     timezone: Mapped[str] = mapped_column(String(60), default="Asia/Dubai")
     currency: Mapped[str] = mapped_column(String(3), default="AED")
+    fx_usd_aed: Mapped[float | None] = mapped_column(Float, default=None)
     deliverables: Mapped[list] = mapped_column(JSON, default=list)
     instructions: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(40), default="draft", index=True)
@@ -235,3 +236,7 @@ def reset_engine():
 
 def init_db():
     Base.metadata.create_all(engine())
+    # lightweight additive migrations for databases created by earlier versions
+    from sqlalchemy import text
+    with engine().begin() as c:
+        c.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS fx_usd_aed DOUBLE PRECISION"))

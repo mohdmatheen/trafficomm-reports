@@ -155,7 +155,7 @@ def build_new_deck(path: str, calc, ctx: dict, commentary: list[dict] | None, pl
     if "summary" not in remove:
         s = new_slide("summary")
         _header(s, "Executive summary", sub)
-        kpis = [m for m in ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "video_plays_3s", "vtr", "conversions", "cpa"]
+        kpis = [m for m in ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "views", "vtr", "conversions", "cpa"]
                 if t.get(m) is not None][:8]
         expected[n] = {}
         for i, m in enumerate(kpis):
@@ -219,7 +219,7 @@ def build_new_deck(path: str, calc, ctx: dict, commentary: list[dict] | None, pl
         table_slides("brand", "Performance by brand / project", calc.tables["brand"], agg)
     if calc.tables.get("creative") and "creative" not in remove:
         tb = calc.tables["creative"]
-        ms = [m for m in ["spend", "impressions", "reach", "clicks", "ctr", "video_plays_3s", "vtr"] if any(r.get(m) is not None for r in tb.rows)]
+        ms = [m for m in ["spend", "impressions", "reach", "clicks", "ctr", "views", "vtr"] if any(r.get(m) is not None for r in tb.rows)]
         table_slides("creative", "Creative highlights", tb, ms, note="Reach shown per creative where it ran as a single ad; it is not additive. Sorted by spend.")
     elif calc.tables.get("campaign") and "creative" not in remove:
         table_slides("creative", "Campaign highlights", calc.tables["campaign"], agg)

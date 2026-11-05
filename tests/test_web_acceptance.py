@@ -144,7 +144,9 @@ def test_revision_changes_breakdown_and_keeps_versions(emp, workflow):
     v2, arts2 = artifacts(tid, 2)
     ops = {(o["op"], o["value"]) for o in v2.change_summary["ops"]}
     assert ("split_tabs_by", "country") in ops and ("set_click_metric", "clicks_all") in ops
-    assert any(f.startswith("Clicks") for f in v2.change_summary["figures"])
+    # agency rule: clicks stay link clicks even when feedback asks for all clicks
+    assert not any(f.startswith("Clicks") for f in v2.change_summary["figures"])
+    assert any("always report link clicks" in w for w in v2.result["warnings"])
     xl = next(a for a in arts2 if a.kind == "excel_consolidated")
     wb = openpyxl.load_workbook(xl.stored_path)
     split = [n for n in wb.sheetnames if "UAE" in n or "KSA" in n or "Saudi" in n or "Emirates" in n]
@@ -155,7 +157,7 @@ def test_revision_changes_breakdown_and_keeps_versions(emp, workflow):
     a1 = next(a for a in arts1 if a.kind == "excel_consolidated")
     r = emp.get(f"/artifacts/{a1.id}/download")
     assert r.status_code == 200 and r.content[:2] == b"PK"
-    assert v1.result["summary"]["totals"]["clicks"] != v2.result["summary"]["totals"]["clicks"]
+    assert v1.result["summary"]["totals"]["clicks"] == v2.result["summary"]["totals"]["clicks"]
 
 
 def test_revision_with_additional_upload(emp, workflow):

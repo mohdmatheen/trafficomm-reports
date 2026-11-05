@@ -240,6 +240,18 @@ async def update_task(request: Request, task_id: int):
             if cur and not cur.isalpha():
                 raise S.UserError("Invalid currency code")
             t.currency = cur
+        if "fx_usd_aed" in body:
+            raw = str(body["fx_usd_aed"] or "").strip()
+            if raw:
+                try:
+                    r = float(raw)
+                except ValueError:
+                    raise S.UserError("USD to AED rate must be a number, e.g. 3.6725")
+                if not 1 <= r <= 10:
+                    raise S.UserError("USD to AED rate looks wrong (expected about 3.67)")
+                t.fx_usd_aed = r
+            else:
+                t.fx_usd_aed = None
         for k in ("period_start", "period_end", "comparison_start", "comparison_end"):
             if k in body:
                 try:
