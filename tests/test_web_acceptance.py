@@ -192,7 +192,7 @@ def test_revision_with_additional_upload(emp, workflow):
     assert v3.change_summary["new_files"] == ["snapchat_acme_sept.csv"]
     plats = [r["platform"] for r in v3.result["summary"]["tables"]["platform"]["rows"]]
     assert "snapchat" in plats
-    assert len(emp.get(f"/tasks/{tid}").text.split('class="ver ')) - 1 == 3  # all versions listed
+    assert len(emp.get(f"/tasks/{tid}").text.split('class="vh-n"')) - 1 == 3  # all versions listed
 
 
 def test_unsupported_feedback_gets_explanation(emp, workflow):

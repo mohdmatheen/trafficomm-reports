@@ -293,41 +293,104 @@
     window.addEventListener("beforeunload", (e) => { if (saveState.dataset.state === "saving" || saveState.dataset.state === "error") { e.preventDefault(); e.returnValue = ""; } });
   }
 
-  // ------------------------------------------------------------------ workspace
+  // ------------------------------------------------------------------ task workspace
   function initWorkspace() {
     const tid = body.dataset.taskId; if (!tid) return;
     let token = body.dataset.stateToken;
-    let dirty = false;
-    document.addEventListener("input", (e) => { if (e.target.closest("form")) dirty = true; });
-    document.addEventListener("change", (e) => { if (e.target.closest("form")) dirty = true; });
+    let dirty = false, busy = false;
+    const url = new URL(location.href);
 
+    // ---- tabs (ARIA tabs; the active tab is kept in the URL so background refreshes keep it)
+    const tabs = $$('[role=tab]');
+    function showTab(key, focus) {
+      const btn = tabs.find((t) => t.dataset.tab === key) || tabs[0];
+      tabs.forEach((t) => { const on = t === btn; t.setAttribute("aria-selected", String(on)); t.tabIndex = on ? 0 : -1; $("#" + t.getAttribute("aria-controls")).hidden = !on; });
+      if (focus) btn.focus();
+      const u = new URL(location.href); if (btn.dataset.tab === "overview") u.searchParams.delete("tab"); else u.searchParams.set("tab", btn.dataset.tab);
+      history.replaceState(null, "", u.pathname + u.search + u.hash);
+      const vf = $("#versionForm input[name=tab]"); if (vf) vf.value = btn.dataset.tab === "overview" ? "" : btn.dataset.tab;
+    }
+    tabs.forEach((t, i) => {
+      t.addEventListener("click", () => showTab(t.dataset.tab));
+      t.addEventListener("keydown", (e) => {
+        let j = null;
+        if (e.key === "ArrowRight") j = (i + 1) % tabs.length; else if (e.key === "ArrowLeft") j = (i - 1 + tabs.length) % tabs.length;
+        else if (e.key === "Home") j = 0; else if (e.key === "End") j = tabs.length - 1;
+        if (j !== null) { e.preventDefault(); showTab(tabs[j].dataset.tab, true); }
+      });
+    });
+    const HASH_TAB = { "#validation": "validation", "#files": "files", "#outputs": "overview", "#questions": "overview", "#progress": "overview", "#feedback": "overview" };
+    showTab(url.searchParams.get("tab") || HASH_TAB[location.hash] || "overview");
+    if (location.hash === "#questions" || location.hash === "#outputs" || location.hash === "#validation") { const el = $(location.hash); if (el) setTimeout(() => el.scrollIntoView({ block: "start" }), 50); }
+    if (location.hash === "#feedback") { const f = $("#fb-text"); if (f) setTimeout(() => f.focus(), 50); }
+    $$("[data-tab-link]").forEach((a) => a.addEventListener("click", (e) => {
+      e.preventDefault(); showTab(a.dataset.tabLink);
+      const href = a.getAttribute("href"); const target = href && href.startsWith("#vg-") ? $(href) : $("#tab-" + a.dataset.tabLink);
+      if (target) { target.scrollIntoView({ block: "start" }); target.focus({ preventScroll: true }); }
+    }));
+    const jf = $(".jump-fb"); if (jf) jf.addEventListener("click", (e) => { e.preventDefault(); $("#feedback").scrollIntoView({ block: "start" }); const f = $("#fb-text"); if (f) f.focus({ preventScroll: true }); });
+
+    // ---- version selector: reload the page for that version (outputs, preview, checks and tracker all change together)
+    const vs = $("#versionSelect");
+    if (vs) vs.addEventListener("change", () => {
+      if (dirty && !confirm("Switch version? Your unsent feedback is kept as a draft on this device.")) { vs.value = body.dataset.view; return; }
+      $("#versionForm").submit();
+    });
+
+    // ---- preview: deck/workbook switch and slide thumbnails
+    $$("[data-pv-switch]").forEach((b) => b.addEventListener("click", () => switchPreview(b.dataset.pvSwitch)));
+    function switchPreview(k) {
+      $$("[data-pv]").forEach((p) => { p.hidden = p.dataset.pv !== k; });
+      $$("[data-pv-switch]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.pvSwitch === k)));
+    }
+    $$("[data-preview]").forEach((b) => b.addEventListener("click", () => { showTab("overview"); switchPreview(b.dataset.preview); $("#preview").scrollIntoView({ block: "start" }); }));
+    $$(".pv").forEach((pv) => {
+      const main = $("[data-pv-main]", pv), cap = $("[data-pv-cap]", pv), full = $("[data-pv-full]", pv);
+      const thumbs = $$(".pv-thumb", pv);
+      function pick(b) {
+        thumbs.forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+        main.src = b.dataset.src; full.href = b.dataset.src; cap.textContent = b.dataset.unit + " " + b.dataset.n;
+        main.alt = main.alt.replace(/(slide|page) \d+/i, b.dataset.unit.toLowerCase() + " " + b.dataset.n);
+      }
+      thumbs.forEach((b, i) => {
+        b.addEventListener("click", () => pick(b));
+        b.addEventListener("keydown", (e) => { const j = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : null; if (j !== null && thumbs[j]) { e.preventDefault(); thumbs[j].focus(); pick(thumbs[j]); } });
+      });
+    });
+
+    // ---- background updates: refresh only when nothing is being typed; keep tab + version via the URL
+    document.addEventListener("input", (e) => { if (e.target.closest("form") && e.target.id !== "versionSelect") dirty = true; });
     async function poll() {
       try {
         const s = await api("GET", "/api/tasks/" + tid + "/state");
         if (s.token !== token) {
-          if (!dirty) { sessionStorage.setItem("tc-scroll", String(window.scrollY)); location.reload(); return; }
-          toast("This task has been updated - refresh to see the latest status");
+          $("#liveStatus").textContent = "Task status: " + s.label;
+          if (!dirty && !busy) { sessionStorage.setItem("tc-scroll", String(window.scrollY)); location.reload(); return; }
+          toast("This task has been updated (" + s.label + "). Your feedback draft is kept; refresh when you're ready.");
           token = s.token;
         }
-        setTimeout(poll, s.processing ? 2000 : 5000);
-      } catch (e) { setTimeout(poll, 8000); }
+        setTimeout(poll, s.processing ? 2500 : 6000);
+      } catch (e) { setTimeout(poll, 10000); }
     }
     setTimeout(poll, body.dataset.processing === "1" ? 1500 : 4000);
     try { const y = sessionStorage.getItem("tc-scroll"); if (y) { sessionStorage.removeItem("tc-scroll"); window.scrollTo(0, +y); } } catch (e) { /* ignore */ }
     const m = $("#msgs"); if (m) m.scrollTop = m.scrollHeight;
 
+    // ---- actions (approve targets the explicit version on the button)
     $$("[data-action]").forEach((b) => b.addEventListener("click", async () => {
       const a = b.dataset.action;
-      const confirmText = { cancel: "Cancel processing of this version? Earlier versions are not affected.", delete: "Delete this task, its uploads and all outputs? This cannot be undone." }[a];
+      const confirmText = { cancel: "Cancel processing of this version? Earlier versions are not affected.", delete: "Delete this task, its uploads and all outputs? This cannot be undone.",
+        approve: b.textContent.trim().replace(/\s+/g, " ") + "? Only this version is approved; later revisions need their own approval." }[a];
       if (confirmText && !confirm(confirmText)) return;
-      b.disabled = true;
+      b.disabled = true; busy = true;
       try {
         await api("POST", "/api/tasks/" + tid + "/" + a, a === "approve" ? { version_id: +b.dataset.version } : undefined);
-        if (a === "delete") { location.href = "/"; return; }
-        dirty = false; location.reload();
-      } catch (e) { toast(e.message, true); b.disabled = false; }
+        if (a === "delete") { location.href = "/tasks"; return; }
+        location.reload();
+      } catch (e) { toast(e.message, true); b.disabled = false; busy = false; }
     }));
 
+    // ---- clarification answers
     const qf = $("#questionsForm");
     if (qf) qf.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -336,27 +399,49 @@
       $$("input[data-save]", qf).forEach((i) => { if (i.checked) save[i.dataset.save] = true; });
       const qids = new Set($$("input[data-qid]", qf).map((i) => i.dataset.qid));
       if (Object.keys(answers).length < qids.size) { toast("Please answer every question", true); return; }
-      const btn = $("button", qf); btn.disabled = true; btn.textContent = "Resuming…";
+      const btn = $("button", qf); btn.disabled = true; btn.textContent = "Resuming…"; busy = true;
       try { await api("POST", "/api/tasks/" + tid + "/answers", { answers, save }); dirty = false; location.reload(); }
-      catch (ex) { toast(ex.message, true); btn.disabled = false; btn.textContent = "Submit answers and continue"; }
+      catch (ex) { toast(ex.message, true); btn.disabled = false; btn.textContent = "Submit answers and continue"; busy = false; }
     });
 
-    const ff = $("#feedbackForm");
-    if (ff) ff.addEventListener("submit", async (e) => {
+    // ---- feedback & revisions
+    const ff = $("#feedbackForm"); if (!ff) return;
+    const key = "tc-fb-" + tid, text = $("#fb-text"), base = $("#fb-base"), err = $("#fbErr"), send = $("#fbSend");
+    const uploaded = []; // {id, name} - uploaded once, reused if sending fails
+    const pending = []; // File objects not uploaded yet
+    function baseLabel() { const o = base.selectedOptions[0]; $("#fbBaseLabel").textContent = "version " + o.dataset.n; }
+    base.addEventListener("change", baseLabel); baseLabel();
+    try { const d = sessionStorage.getItem(key); if (d && !text.value) { text.value = d; dirty = !!d; } } catch (e) { /* ignore */ }
+    text.addEventListener("input", () => { try { sessionStorage.setItem(key, text.value); } catch (e) { /* ignore */ } err.hidden = true; text.removeAttribute("aria-invalid"); });
+    const list = $("#fbFiles"), input = $("#fbFilesInput");
+    $("#fbAttach").addEventListener("click", () => input.click());
+    function renderFiles() {
+      list.innerHTML = "";
+      uploaded.forEach((f, i) => { const li = document.createElement("li"); li.className = "fitem ok"; li.innerHTML = '<div class="frow"><span class="fname">' + esc(f.name) + '</span><span class="fstate">Uploaded</span><button type="button" class="btn btn-quiet btn-sm">Remove<span class="sr"> ' + esc(f.name) + '</span></button></div>'; $("button", li).onclick = () => { uploaded.splice(i, 1); api("PATCH", "/api/files/" + f.id, { remove: true }).catch(() => {}); renderFiles(); }; list.appendChild(li); });
+      pending.forEach((f, i) => { const li = document.createElement("li"); li.className = "fitem"; li.innerHTML = '<div class="frow"><span class="fname">' + esc(f.name) + '</span><span class="fsize">' + size(f.size) + '</span><button type="button" class="btn btn-quiet btn-sm">Remove<span class="sr"> ' + esc(f.name) + '</span></button></div>'; $("button", li).onclick = () => { pending.splice(i, 1); renderFiles(); }; list.appendChild(li); });
+    }
+    input.addEventListener("change", () => { Array.from(input.files).forEach((f) => pending.push(f)); input.value = ""; dirty = true; renderFiles(); });
+    ff.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const text = ff.text.value.trim(); if (!text) return;
-      const btn = $("button", ff); btn.disabled = true; btn.textContent = "Working…";
-      const ids = []; const list = $("#fbFiles"); list.innerHTML = "";
+      if (busy) return; // no duplicate revision requests
+      const t = text.value.trim();
+      if (!t) { err.textContent = "Describe what you would like to change."; err.hidden = false; text.setAttribute("aria-invalid", "true"); text.focus(); return; }
+      busy = true; send.disabled = true; send.firstChild.textContent = "Sending…";
       try {
-        for (const file of Array.from(ff.extra.files)) {
-          const li = document.createElement("li"); li.className = "fitem"; li.innerHTML = '<div class="frow"><span class="fname">' + esc(file.name) + '</span></div><div class="bar"><i></i></div>'; list.appendChild(li);
-          const f = await upload("/api/tasks/" + tid + "/files", file, { for_revision: "1" }, (p) => { $(".bar i", li).style.width = Math.round(p * 100) + "%"; });
-          ids.push(f.id); $(".bar", li).outerHTML = '<div class="fmeta">' + esc(ROLE_LABEL[f.role] || f.role) + (f.sheets && f.sheets.length ? " · " + f.sheets.map((s) => s.rows + " rows").join(", ") : "") + "</div>";
+        while (pending.length) {
+          const f = pending[0];
+          const r = await upload("/api/tasks/" + tid + "/files", f, { for_revision: "1" });
+          uploaded.push({ id: r.id, name: f.name }); pending.shift(); renderFiles();
         }
-        const r = await api("POST", "/api/tasks/" + tid + "/feedback", { text, base_version_id: ff.base_version_id ? ff.base_version_id.value : null, file_ids: ids });
-        if (!r.ok) toast(r.summary || "No change could be made", true);
-        dirty = false; setTimeout(() => location.reload(), r.ok ? 300 : 2500);
-      } catch (ex) { toast(ex.message, true); btn.disabled = false; btn.textContent = "Create revision"; }
+        const r = await api("POST", "/api/tasks/" + tid + "/feedback", { text: t, base_version_id: +base.value, file_ids: uploaded.map((f) => f.id) });
+        if (!r.ok) { err.textContent = r.summary || "No change could be made. Please rephrase."; err.hidden = false; throw null; }
+        try { sessionStorage.removeItem(key); } catch (x) { /* ignore */ }
+        dirty = false; toast("Revision v" + r.version + " started");
+        location.href = "/tasks/" + tid;
+      } catch (ex) {
+        if (ex) { err.textContent = "Not sent: " + ex.message + " Your text and attachments are kept."; err.hidden = false; }
+        busy = false; send.disabled = false; send.firstChild.textContent = "Send feedback";
+      }
     });
   }
 

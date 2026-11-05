@@ -45,8 +45,12 @@ def test_login_page_is_zoho_only(app):
     assert "Sign in with Zoho" in r.text and "/auth/zoho" in r.text
     for gone in ('type="password"', 'type="email"', "password instead", "Other sign-in options", "DESIGN CONCEPT"):
         assert gone not in r.text
-    for copy in ("Welcome back.", "Your work account", "Authorized Trafficomm employees only.",
-                 "Need access? Contact your workspace administrator.", "From raw reports.", "Built for the Trafficomm team."):
+    for gone in ("Forgot", "Google", "Microsoft", "Create account", "Sign up"):
+        assert gone not in r.text
+    for copy in ("Welcome back.", "Sign in to your reporting workspace.", "Authorized employees only.",
+                 "Internal workspace", "Built for your next report", "Less reporting work.", "More clarity.",
+                 "You’ll continue to Zoho to sign in.", "Need access? Contact your workspace administrator.",
+                 "Built for the Trafficomm team.", "Trafficomm Reporting Workspace", "/static/img/login-hero-"):
         assert copy in r.text
 
 

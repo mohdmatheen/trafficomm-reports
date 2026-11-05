@@ -1,61 +1,91 @@
 {% extends "base.html" %}
-{% from "partials/ui.html" import icon, status_badge %}
+{% from "partials/ui.html" import icon, status_badge, avatar, empty_state %}
 {% block page %}workspace{% endblock %}
 {% block title %}{{ t.title or 'Task' }} · Trafficomm{% endblock %}
-{% block bodyattrs %}data-task-id="{{ t.id }}" data-state-token="{{ state.token }}" data-processing="{{ '1' if processing else '0' }}"{% endblock %}
-{% block mainclass %}page page-wide{% endblock %}
+{% block bodyattrs %}data-task-id="{{ t.id }}" data-state-token="{{ state.token }}" data-processing="{{ '1' if processing else '0' }}" data-view="{{ view.id if view else '' }}"{% endblock %}
+{% block mainclass %}page page-wide page-ws{% endblock %}
 {% block content %}
-{% set R = shown_result or {} %}
 {% set S = R.get('summary') or {} %}
 {% set cur_code = S.get('currency') or t.currency %}
-<div class="page-head ws-head">
-  <div>
-    <h1>{{ t.title or 'Untitled task' }}</h1>
-    <p class="page-sub">{{ client }}{% if t.brand %} · {{ t.brand }}{% endif %}{% if t.period_start %} · {{ t.period_start.strftime('%d %b %Y') }} – {{ t.period_end.strftime('%d %b %Y') if t.period_end else '' }}{% endif %} · {{ t.currency }} · {{ owner }}</p>
+{% set is_latest = view and cur and view.id == cur.id %}
+
+{# ------------------------------------------------------------------ header #}
+<div class="ws-top">
+  <div class="ws-title">
+    <div class="ws-h1row">
+      <h1>{{ t.title or 'Untitled task' }}</h1>
+      <span class="ws-taskstatus"><span class="sr">Task status: </span>{{ status_badge(t.status) }}</span>
+    </div>
+    <p class="page-sub">{{ client }}{% if t.brand %} · {{ t.brand }}{% endif %}{% if t.period_start %} · {{ t.period_start.strftime('%d %b %Y') }} – {{ t.period_end.strftime('%d %b %Y') if t.period_end else '' }}{% endif %}</p>
+    <div class="ws-chips">
+      <span class="mchip">{{ icon('user') }}Owner: {{ owner }}</span>
+      {% if view %}<span class="mchip">{{ icon('layers') }}Viewing version {{ view.number }}{% if is_latest %} (latest){% endif %}</span>
+      <span class="mchip"><span class="sr">Status of the version you are viewing: </span>v{{ view.number }}: {{ STATUS_LABEL.get(view.status, view.status) }}{% if t.approved_version_id == view.id %} · approved{% endif %}</span>{% endif %}
+    </div>
   </div>
-  <div class="ws-actions">
-    <span id="statusPill">{{ status_badge(t.status, STATUS_LABEL.get(t.status, t.status) ~ (' · v' ~ cur.number if cur else '')) }}</span>
-    {% if processing or t.status == 'awaiting_clarification' %}<button class="btn" data-action="cancel">Cancel processing</button>{% endif %}
-    {% if cur and cur.status in ['failed','cancelled'] %}<button class="btn" data-action="retry">{{ icon('refresh') }}Retry v{{ cur.number }}</button>{% endif %}
-    {% if cur and cur.status == 'ready_for_review' and t.approved_version_id != cur.id %}<button class="btn btn-primary" data-action="approve" data-version="{{ cur.id }}">{{ icon('check') }}Approve v{{ cur.number }}</button>{% endif %}
-    <button class="btn btn-quiet btn-sm" data-action="delete">{{ icon('trash') }}Delete task</button>
+  <div class="ws-tools">
+    <a class="btn" href="/tasks">{{ icon('arrow-left') }}Back to tasks</a>
+    {% if versions %}
+    <form method="get" action="/tasks/{{ t.id }}" class="vsel" id="versionForm">
+      <label for="versionSelect" class="sr">Version to view</label>
+      <select id="versionSelect" name="v">
+        {% for v in versions %}<option value="{{ v.id }}" {% if view and v.id == view.id %}selected{% endif %}>Version v{{ v.number }}{% if loop.first %} · latest{% endif %}{% if t.approved_version_id == v.id %} · approved{% endif %}</option>{% endfor %}
+      </select>
+      <input type="hidden" name="tab" value="">
+      <noscript><button class="btn btn-sm">View</button></noscript>
+    </form>
+    {% endif %}
   </div>
 </div>
-<nav class="ws-nav" aria-label="Task sections">
-  <a href="#progress">Progress</a>{% if open_questions %}<a href="#questions" class="hot">Questions ({{ open_questions|length }})</a>{% endif %}<a href="#summary">Summary</a><a href="#outputs">Outputs</a><a href="#validation">Validation</a><a href="#findings">Findings</a>{% if R.get('deck') or R.get('template') or R.get('new_deck') %}<a href="#deck">Deck &amp; template</a>{% endif %}<a href="#files">Files</a><a href="#versions">Versions</a><a href="#feedback">Feedback</a>
-</nav>
+<div class="ws-actions-row">
+  {% if processing or t.status == 'awaiting_clarification' %}<button class="btn btn-sm" data-action="cancel">Cancel processing</button>{% endif %}
+  {% if cur and cur.status in ['failed','cancelled'] %}<button class="btn btn-sm" data-action="retry">{{ icon('refresh') }}Retry v{{ cur.number }}</button>{% endif %}
+  {% if view and view.status == 'ready_for_review' and t.approved_version_id != view.id %}<button class="btn btn-sm btn-primary" data-action="approve" data-version="{{ view.id }}">{{ icon('check') }}Approve v{{ view.number }}</button>{% endif %}
+  <button class="btn btn-quiet btn-sm" data-action="delete">{{ icon('trash') }}Delete task</button>
+  <a class="btn btn-sm jump-fb" href="#feedback">{{ icon('chat') }}Go to feedback</a>
+</div>
 
-<div class="ws-grid">
+{% if view and not is_latest %}
+<div class="notice notice-info" role="status">{{ icon('info') }}<div><b>You’re viewing an earlier version (v{{ view.number }})</b><p>The latest is v{{ cur.number }}: {{ STATUS_LABEL.get(cur.status, cur.status)|lower }}. <a href="/tasks/{{ t.id }}?v={{ cur.id }}">View v{{ cur.number }}</a></p></div></div>
+{% endif %}
+
+{# ------------------------------------------------------------------ stage tracker #}
+<ol class="tracker" aria-label="Processing stages for version {{ view.number if view else '' }}">
+  {% for st in track %}
+  <li class="tk tk-{{ st.state }}">
+    <span class="tk-ic" aria-hidden="true">{% if st.state == 'done' %}{{ icon('check-circle') }}{% elif st.state == 'active' %}<span class="tk-spin"></span>{% elif st.state == 'attention' %}{{ icon('alert') }}{% elif st.state == 'failed' %}{{ icon('x') }}{% else %}<span class="tk-box"></span>{% endif %}</span>
+    <span class="tk-txt"><b>{{ st.label }}</b><span class="tk-note">{{ st.note or {'done':'Done','pending':'Not started','active':'In progress','attention':'Needs attention','failed':'Failed'}[st.state] }}</span></span>
+    <span class="sr">({{ {'done':'completed','pending':'pending','active':'in progress','attention':'needs attention','failed':'failed'}[st.state] }})</span>
+  </li>
+  {% endfor %}
+</ol>
+<p class="sr" role="status" aria-live="polite" id="liveStatus">Task status: {{ STATUS_LABEL.get(t.status, t.status) }}</p>
+
+<div class="ws-layout">
 <div class="ws-main">
 
-<section class="card" id="progress">
-  <div class="card-head"><h2>Processing{% if cur %} · v{{ cur.number }}{% endif %}</h2>{% if processing %}<span class="spinner"></span><span class="muted small">This page updates automatically. You can leave and come back.</span>{% endif %}</div>
-  <ol class="stages">
-    {% for st in stage_rows %}
-    <li class="stage {{ st.state }}"><span class="dot"></span><div><b>{{ st.label }}</b>{% if st.at %}<span class="muted small"> · {{ st.at.strftime('%H:%M:%S') }}</span>{% endif %}{% if st.detail %}<div class="muted small">{{ st.detail }}</div>{% endif %}</div></li>
-    {% endfor %}
-    {% if t.status == 'approved' %}<li class="stage done approved"><span class="dot"></span><div><b>Approved by employee</b></div></li>{% endif %}
-  </ol>
-  {% if cur and cur.status in ['failed','cancelled','validation_blocked','blocked'] %}
-  <div class="alert {% if cur.status == 'cancelled' %}alert-warn{% else %}alert-fail{% endif %}" role="alert">
-    <b>{{ STATUS_LABEL.get(cur.status, cur.status) }}.</b> {{ cur.error or (job.error if job and cur.status == 'failed' else '') or ('Some validation checks failed - outputs are kept for inspection but should not be sent. See the validation panel.' if cur.status == 'validation_blocked' else '') }}
+{% if attention %}
+<section class="attn-banner tone-{{ attention.tone }}" aria-labelledby="attnT">
+  <span class="ab-ic">{% if attention.busy %}<span class="spinner"></span>{% else %}{{ icon(attention.icon) }}{% endif %}</span>
+  <div class="ab-body"><h2 id="attnT">{{ attention.title }}</h2><p>{{ attention.text }}</p></div>
+  <div class="ab-act">
+    {% if attention.retry %}<button class="btn btn-sm" data-action="retry">{{ icon('refresh') }}Retry v{{ cur.number }}</button>{% endif %}
+    {% if attention.approve %}<button class="btn btn-sm btn-primary" data-action="approve" data-version="{{ attention.approve }}">{{ icon('check') }}Approve v{{ view.number }}</button>{% endif %}
+    {% if attention.action %}<a class="btn btn-sm" href="{{ attention.href or '#tab-' ~ attention.tab }}" {% if attention.tab %}data-tab-link="{{ attention.tab }}"{% endif %}>{{ attention.action }}{{ icon('arrow-right') }}</a>{% endif %}
   </div>
-  {% endif %}
-  {% if job and job.attempts > 1 and processing %}<p class="muted small">Attempt {{ job.attempts }} of {{ job.max_attempts }}.</p>{% endif %}
-  {% if shown and cur and shown.id != cur.id %}<div class="alert alert-info">v{{ cur.number }} is {{ STATUS_LABEL.get(cur.status, cur.status)|lower }}. Outputs below are from <b>v{{ shown.number }}</b>, which is unchanged.</div>{% endif %}
 </section>
+{% endif %}
 
 {% if open_questions %}
-<section class="card card-attn" id="questions">
-  <h2>Questions before I can continue</h2>
-  <p class="muted">I don't guess when the data is ambiguous. Inspection and mapping are saved; answering resumes processing.</p>
+<section class="card card-attn" id="questions" aria-labelledby="qT">
+  <header class="card-h"><span class="card-ic warn">{{ icon('chat') }}</span><div><h2 id="qT">Questions before processing can continue</h2><p>The workspace doesn’t guess when the data is ambiguous. Answering resumes processing.</p></div></header>
   <form id="questionsForm">
   {% for q in open_questions %}
-    <div class="question">
-      <p class="q-text"><b>{{ loop.index }}.</b> {{ q.text }}</p>
+    <fieldset class="question">
+      <legend class="q-text"><b>{{ loop.index }}.</b> {{ q.text }}</legend>
       {% if q.context %}<p class="muted small">{{ q.context }}</p>{% endif %}
       {% if q.allow_free_text %}
-        <input name="q{{ q.id }}" data-qid="{{ q.id }}" placeholder="Enter a value" inputmode="decimal">
+        <label class="sr" for="q{{ q.id }}">Answer</label><input id="q{{ q.id }}" name="q{{ q.id }}" data-qid="{{ q.id }}" placeholder="Enter a value" inputmode="decimal">
       {% else %}
         {% for o in q.options %}
         <label class="radio"><input type="radio" name="q{{ q.id }}" data-qid="{{ q.id }}" value="{{ o.value }}" {% if q.default == o.value %}checked{% endif %}> {{ o.label }}{% if q.default == o.value %} <span class="tag">suggested</span>{% endif %}</label>
@@ -64,209 +94,327 @@
       {% if q.key.startswith('conversion_metric') or q.key.startswith('equiv:') or q.key.startswith('clicks_def:') or q.key.startswith('deckslide:') %}
       <label class="check small"><input type="checkbox" data-save="{{ q.id }}" {% if q.key.startswith('deckslide:') %}checked{% endif %}> Remember for this client</label>
       {% endif %}
-    </div>
+    </fieldset>
   {% endfor %}
   <button class="btn btn-primary">Submit answers and continue</button>
   </form>
 </section>
 {% endif %}
 
-<section class="card" id="summary">
-  <div class="card-head"><h2>Summary{% if shown %} · v{{ shown.number }}{% endif %}</h2>
-    {% if R.get('ai_mocked') %}<span class="tag tag-warn">AI mocked (rule-based)</span>{% elif R.get('ai_provider') %}<span class="tag">AI: {{ R.get('ai_provider') }}</span>{% endif %}</div>
-  {% if R.get('ai_steps') %}<p class="muted small ai-steps">{% if R.get('structure') %}{{ R.get('structure').reason }}.<br>{% endif %}How this version was produced:
-    {% for st in R.get('ai_steps') %}<span class="tag{% if st.engine == 'claude' %} tag-ai{% endif %}" title="{{ st.reason }}">{{ st.step }}: {{ 'Claude' if st.engine == 'claude' else 'built-in rules' }}</span> {% endfor %}
-    · all figures are calculated by the engine, never by AI</p>{% endif %}
-  {% if S %}
-  <p class="muted">{{ S.get('period_label') }} · data window {{ S.get('data_window') }} · {{ S.get('included_rows') }} rows included · clicks = {{ S.get('click_metric') }} · conversions = {{ S.get('conversion') or 'not selected' }}</p>
-  <div class="kpis">
-    {% set T = S.get('totals', {}) %}
-    {% for m in ['spend','impressions','clicks','ctr','cpc','cpm','conversions','cpa','video_plays_3s','vtr'] %}
-      {% if m in T %}<div class="kpi"><span>{{ METRIC_LABELS.get(m, m) }}</span><b>{{ T[m]|fmt_metric(m, cur_code) }}</b></div>{% endif %}
-    {% endfor %}
-  </div>
-  {% if S.get('comparison') %}
-  <h3>Period comparison</h3>
-  <table class="tbl compact"><thead><tr><th>Metric</th><th>Current</th><th>Previous</th><th>Change</th></tr></thead><tbody>
-  {% for m, d in S.comparison.deltas.items() %}<tr><td>{{ METRIC_LABELS.get(m, m) }}</td><td>{{ T.get(m)|fmt_metric(m, cur_code) }}</td><td>{{ (S.comparison.get('previous') or {}).get(m)|fmt_metric(m, cur_code) }}</td><td>{% if d.get('pct') is not none %}{{ '%+.1f'|format(d.pct) }}%{% else %}N/A{% endif %}</td></tr>{% endfor %}
-  </tbody></table>
-  {% endif %}
-  {% if R.get('commentary') %}
-  <h3>Commentary <span class="muted small">(every figure traced to a calculated value)</span></h3>
-  <ul class="commentary">{% for c in R.commentary %}<li><span class="tag">{{ c.type }}</span> {{ c.text }}</li>{% endfor %}</ul>
-  {% endif %}
-  {% if R.get('commentary_dropped') %}<p class="muted small">{{ R.commentary_dropped|length }} AI statement(s) were dropped because a number could not be traced.</p>{% endif %}
-  {% set P = R.get('plan') or {} %}
-  {% if P %}
-  <details><summary>Interpreted plan</summary>
-    <ul class="plain small">
-      {% for k, v in P.items() if not k.startswith('_') and v not in [None, [], '', False] %}<li><b>{{ k.replace('_',' ') }}</b>: {{ v if v is string else v|tojson }}</li>{% endfor %}
+{# ------------------------------------------------------------------ tabs #}
+<div class="tabs" role="tablist" aria-label="Task details">
+  {% for key, label in [('overview','Overview'),('files','Files & outputs'),('validation','Validation'),('activity','Activity'),('diagnostics','Diagnostics')] %}
+  <button type="button" role="tab" id="tab-{{ key }}" aria-controls="panel-{{ key }}" aria-selected="{{ 'true' if loop.first else 'false' }}" {% if not loop.first %}tabindex="-1"{% endif %} data-tab="{{ key }}">{{ label }}{% if key == 'validation' and V and (V.counts.fail or V.counts.warn) %} <span class="tab-count {{ 'bad' if V.counts.fail else 'warn' }}">{{ V.counts.fail or V.counts.warn }}<span class="sr"> {{ 'failed' if V.counts.fail else 'warnings' }}</span></span>{% endif %}</button>
+  {% endfor %}
+</div>
+
+{# ---------- Overview #}
+<div class="tabpanel" role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" tabindex="0">
+  <section class="card" id="outputs" aria-labelledby="outT">
+    <div class="card-head"><h2 id="outT">Generated outputs</h2>{% if view %}<span class="vtag">Version {{ view.number }}</span>{% endif %}</div>
+    {% if outputs %}
+    <div class="out-cards">
+      {% for o in outputs %}{% set a = o.a %}
+      <article class="out-card">
+        <div class="oc-top">
+          <span class="oc-file k-{{ a.kind }}">{{ icon(o.icon) }}</span>
+          <div class="oc-meta"><h3>{{ a.label }}</h3><p>{{ o.type }} · {{ o.ext }} · {{ a.size|mb }} · v{{ view.number }}</p></div>
+          <span class="badge-st tone-{{ review_state[0] }}"><span class="bdot" aria-hidden="true"></span>{{ review_state[1] }}</span>
+        </div>
+        {% if a.reused_from_id %}<p class="oc-note">Unchanged from the previous version.</p>{% endif %}
+        <div class="oc-actions">
+          {% if o.preview %}<button type="button" class="btn btn-sm" data-preview="{{ o.preview }}">{{ icon('image') }}Preview<span class="sr"> {{ a.label }}</span></button>{% else %}<span class="oc-na">No preview</span>{% endif %}
+          {% if o.available %}
+          <a class="btn btn-sm" href="/artifacts/{{ a.id }}/download">{{ icon('download') }}{{ 'Download' if t.approved_version_id == view.id else 'Download draft' }}<span class="sr"> {{ a.label }}, version {{ view.number }}</span></a>
+          {% else %}<span class="oc-na" title="Removed by the retention policy or deleted">File no longer available</span>{% endif %}
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    <p class="f-hint">{% if t.approved_version_id == view.id %}Approved by an employee. Nothing is sent to the client automatically.{% elif review_state[0] == 'bad' %}Validation blocked this version. Downloads are kept for inspection only and must not be sent to the client.{% else %}Draft outputs need review before client use. Download links are private and created fresh on each click.{% endif %}</p>
+    {% elif view and view.status in ['queued','inspecting','mapping','calculating','generating','validating'] %}
+      <div class="inline-state"><span class="spinner"></span>Outputs are being generated for v{{ view.number }}.</div>
+    {% elif view and view.status == 'awaiting_clarification' %}
+      <div class="inline-state">{{ icon('chat') }}Outputs are generated after the open questions are answered.</div>
+    {% else %}
+      <div class="inline-state">{{ icon('info') }}No outputs exist for v{{ view.number if view else '' }}{% if view and view.status == 'failed' %} because processing failed{% endif %}.</div>
+    {% endif %}
+  </section>
+
+  <section class="card preview-card" id="preview" aria-labelledby="pvT">
+    <div class="card-head pv-head">
+      <h2 id="pvT">Report preview</h2>
+      {% if previews|length > 1 %}
+      <div class="seg seg-sm" role="group" aria-label="Preview type">
+        {% for k in previews %}<button type="button" data-pv-switch="{{ k }}" aria-pressed="{{ 'true' if loop.first else 'false' }}">{{ 'Deck' if k.startswith('deck') else 'Workbook' }}{% if previews|length > 2 %}: {{ PREVIEW_LABEL.get(k, k) }}{% endif %}</button>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% if previews %}
+      {% for k, pv in previews.items() %}{% set unit = 'Slide' if k.startswith('deck') else 'Page' %}
+      <div class="pv" data-pv="{{ k }}" {% if not loop.first %}hidden{% endif %}>
+        <figure class="pv-stage">
+          <img src="/artifacts/{{ pv[0].id }}/preview" alt="{{ PREVIEW_LABEL.get(k, k) }}, {{ unit|lower }} {{ pv[0].meta.page }} of {{ pv|length }}, version {{ view.number }}" data-pv-main>
+          <figcaption><span data-pv-cap>{{ unit }} {{ pv[0].meta.page }}</span> of {{ pv|length }} · {{ PREVIEW_LABEL.get(k, k) }} · v{{ view.number }}
+            <a href="/artifacts/{{ pv[0].id }}/preview" target="_blank" rel="noopener" class="pv-open" data-pv-full>Open full preview<span class="sr"> (opens in a new tab)</span>{{ icon('arrow-right') }}</a></figcaption>
+        </figure>
+        <div class="pv-thumbs" role="group" aria-label="{{ unit }}s">
+          {% for p in pv %}
+          <button type="button" class="pv-thumb" data-src="/artifacts/{{ p.id }}/preview" data-n="{{ p.meta.page }}" data-unit="{{ unit }}" aria-pressed="{{ 'true' if loop.first else 'false' }}" aria-label="{{ unit }} {{ p.meta.page }}">
+            <img loading="lazy" src="/artifacts/{{ p.id }}/preview" alt=""><span>{{ p.meta.page }}</span>
+          </button>
+          {% endfor %}
+        </div>
+        {% if not k.startswith('deck') %}<p class="f-hint">Workbook previews are rendered pages; browsing sheet by sheet isn’t available. Download the workbook for the full data.</p>{% endif %}
+      </div>
+      {% endfor %}
+    {% elif outputs %}
+      <div class="inline-state">{{ icon('info') }}No preview was generated for this version (rendering didn’t run or failed). Download the files to review them.</div>
+    {% else %}
+      <div class="inline-state">{{ icon('image') }}A preview appears once outputs are generated.</div>
+    {% endif %}
+  </section>
+
+  <section class="card" aria-labelledby="vsT">
+    <div class="card-head"><h2 id="vsT">Validation summary</h2>
+      {% if V %}<span class="pill v-{{ V.overall }}">{{ {'passed':'All checks passed','warnings':'Passed with warnings','blocked':'Blocked'}[V.overall] }}</span>{% endif %}</div>
+    {% if V %}
+    <ul class="vsum">
+      {% for g, label, ic in [('data','Data checks','layers'),('workbook','Workbook checks','table'),('presentation','Presentation checks','present')] if g in group_summary %}
+      {% set gs = group_summary[g] %}
+      <li>
+        <span class="vs-ic">{{ icon(ic) }}</span><b>{{ label }}</b>
+        <span class="vs-res r-{{ gs.state }}">{% if gs.n.fail %}{{ gs.n.fail }} failed{% endif %}{% if gs.n.fail and gs.n.warn %} · {% endif %}{% if gs.n.warn %}{{ gs.n.warn }} warning{{ 's' if gs.n.warn != 1 }}{% endif %}{% if not gs.n.fail and not gs.n.warn %}{{ gs.n.pass }} of {{ gs.total }} passed{% endif %}{% if gs.n.not_run %} · {{ gs.n.not_run }} not run{% endif %}</span>
+        <a href="#vg-{{ g }}" data-tab-link="validation" class="vs-link">View results{{ icon('chevron-right') }}</a>
+      </li>
+      {% endfor %}
     </ul>
+    {% else %}<div class="inline-state">{{ icon('info') }}Checks run after files are generated. A check is only shown as passed if it actually ran.</div>{% endif %}
+  </section>
+</div>
+
+{# ---------- Files & outputs #}
+<div class="tabpanel" role="tabpanel" id="panel-files" aria-labelledby="tab-files" tabindex="0" hidden>
+  <section class="card" aria-labelledby="genT">
+    <div class="card-head"><h2 id="genT">Generated for version {{ view.number if view else '' }}</h2></div>
+    {% set gen = (art_by_v.get(view.id, []) if view else []) | rejectattr('kind', 'equalto', 'preview') | list %}
+    {% if gen %}
+    <ul class="flist">
+      {% for a in gen %}
+      <li><span class="fl-ic">{{ icon('present' if a.kind.startswith('deck') else 'file' if a.kind in ['pdf','record'] else 'table') }}</span>
+        <div class="fl-body"><b>{{ a.label }}</b><span>{{ a.filename }} · {{ a.size|mb }}{% if a.kind == 'record' %} · processing record{% endif %}{% if a.reused_from_id %} · unchanged from previous version{% endif %}</span></div>
+        <a class="btn btn-sm" href="/artifacts/{{ a.id }}/download">{{ icon('download') }}Download<span class="sr"> {{ a.label }}</span></a></li>
+      {% endfor %}
+    </ul>
+    {% else %}<div class="inline-state">{{ icon('info') }}Nothing has been generated for this version yet.</div>{% endif %}
+  </section>
+  <section class="card" id="files" aria-labelledby="srcT">
+    <header class="card-h"><span class="card-ic">{{ icon('lock') }}</span><div><h2 id="srcT">Original files</h2><p>Stored read-only and never modified. Outputs are always new files.</p></div></header>
+    {% for role, label, ic in role_groups %}
+    <h3>{{ label }} <span class="muted small">({{ files_by_role[role]|length }})</span></h3>
+    {% if files_by_role[role] %}
+    <ul class="flist">
+      {% for f in files_by_role[role] %}
+      <li class="{% if f.excluded %}excluded{% endif %}"><span class="fl-ic">{{ icon(ic) }}</span>
+        <div class="fl-body"><b>{{ f.name }}</b>
+          <span>{{ f.name.rsplit('.', 1)[-1]|upper }} · {{ f.size|mb }}{% if f.added_in_version > 1 %} · added in v{{ f.added_in_version }}{% endif %}{% if f.excluded %} · excluded{% endif %}</span>
+          {% if f.sheets %}<span class="fl-detail">{% for sh in f.sheets %}{{ sh.name }}: {{ sh.rows }} rows{% if sh.platform %}, {{ sh.platform }}{% endif %}{% if sh.currency %}, {{ sh.currency }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}
+          {% if f.deck %}<span class="fl-detail">{{ f.deck.slides }} slides · {{ f.deck.aspect }}{% if f.deck.unsupported %} · {{ f.deck.unsupported }} unsupported element(s){% endif %}</span>{% endif %}
+          {% if f.warnings %}<ul class="small warnlist">{% for w in f.warnings[:5] %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}
+        </div></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="muted small">None uploaded.</p>{% endif %}
+    {% endfor %}
+  </section>
+</div>
+
+{# ---------- Validation #}
+<div class="tabpanel" role="tabpanel" id="panel-validation" aria-labelledby="tab-validation" tabindex="0" hidden>
+  <section class="card" id="validation" aria-labelledby="valT">
+    <div class="card-head"><h2 id="valT">Validation · v{{ view.number if view else '' }}</h2>
+      {% if V %}<span class="pill v-{{ V.overall }}">{{ {'passed':'All checks passed','warnings':'Passed with warnings','blocked':'Blocked'}[V.overall] }}</span>
+      <span class="muted small">{{ V.counts.pass }} passed · {{ V.counts.warn }} warnings · {{ V.counts.fail }} failed{% if V.counts.not_run %} · {{ V.counts.not_run }} not run{% endif %}</span>{% endif %}</div>
+    {% if V %}
+      {% for g, label, ic in [('data','Data','layers'),('workbook','Workbook','table'),('presentation','Presentation','present')] if groups[g] %}
+      <h3 class="vgroup" id="vg-{{ g }}" tabindex="-1">{{ icon(ic) }}{{ label }}</h3>
+      <ul class="checks">
+        {% for c in groups[g] %}
+        <li class="check-item c-{{ c.status }}">
+          <details {% if c.status == 'fail' %}open{% endif %}>
+            <summary><span class="badge b-{{ c.status }}">{{ {'pass':'Passed','warn':'Warning','fail':'Failed','not_run':'Not run'}[c.status] }}</span><span class="ck-txt"><b>{{ c.title }}</b><span>{{ c.message }}</span></span></summary>
+            <div class="ck-body">
+              {% if c.next %}<p class="ck-next">{{ icon('arrow-right') }}<span><b>Next step:</b> {{ c.next }}</span></p>{% endif %}
+              {% if c.details %}<p class="ck-dh">Technical detail (affected files, sheets or slides)</p><ul class="small details">{% for d in c.details[:40] %}<li>{{ d if d is string else d|tojson }}</li>{% endfor %}{% if c.details|length > 40 %}<li class="muted">… {{ c.details|length - 40 }} more in the validation record (Files &amp; outputs)</li>{% endif %}</ul>
+              {% elif not c.next %}<p class="muted small">No further detail recorded.</p>{% endif %}
+            </div>
+          </details>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endfor %}
+    {% else %}<div class="inline-state">{{ icon('info') }}Checks run after files are generated. A check is only shown as passed if it actually ran.</div>{% endif %}
+  </section>
+</div>
+
+{# ---------- Activity #}
+<div class="tabpanel" role="tabpanel" id="panel-activity" aria-labelledby="tab-activity" tabindex="0" hidden>
+  <section class="card" aria-labelledby="actT">
+    <div class="card-head"><h2 id="actT">Activity</h2><span class="muted small">{{ activity|length }} events, oldest first · <span class="who-key person">{{ icon('user') }}employee</span> · <span class="who-key sys">{{ icon('gear') }}system</span></span></div>
+    {% set ACT_PAGE = 60 %}
+    {% if activity|length > ACT_PAGE %}
+    <details class="act-older"><summary>Show {{ activity|length - ACT_PAGE }} earlier events</summary>
+      <ol class="activity">{% for i in activity[:activity|length - ACT_PAGE] %}{% include "partials/activity_item.html" %}{% endfor %}</ol>
+    </details>
+    {% endif %}
+    <ol class="activity">{% for i in activity[-ACT_PAGE:] %}{% include "partials/activity_item.html" %}{% endfor %}</ol>
+  </section>
+</div>
+
+{# ---------- Diagnostics #}
+<div class="tabpanel" role="tabpanel" id="panel-diagnostics" aria-labelledby="tab-diagnostics" tabindex="0" hidden>
+  <section class="card" aria-labelledby="dgT">
+    <div class="card-head"><h2 id="dgT">Technical diagnostics · v{{ view.number if view else '' }}</h2></div>
+    {% if view and (view.error or (vjob and vjob.error)) %}
+    <details class="dg" open><summary>Error</summary><pre class="dg-pre">{{ view.error or '' }}{% if vjob and vjob.error and vjob.error != view.error %}
+{{ vjob.error }}{% endif %}</pre></details>
+    {% endif %}
+    {% if vjob %}<details class="dg"><summary>Job</summary><ul class="plain small"><li>Job #{{ vjob.id }} · {{ vjob.status }} · attempt {{ vjob.attempts }} of {{ vjob.max_attempts }}</li></ul></details>{% endif %}
+    {% if S %}
+    <details class="dg"><summary>Summary figures and commentary</summary>
+      <p class="muted small">{{ S.get('period_label') }} · data window {{ S.get('data_window') }} · {{ S.get('included_rows') }} rows included · clicks = {{ S.get('click_metric') }} · conversions = {{ S.get('conversion') or 'not selected' }}</p>
+      {% set T = S.get('totals', {}) %}
+      <div class="kpis">{% for m in ['spend','impressions','clicks','ctr','cpc','cpm','conversions','cpa','video_plays_3s','vtr'] %}{% if m in T %}<div class="kpi"><span>{{ METRIC_LABELS.get(m, m) }}</span><b>{{ T[m]|fmt_metric(m, cur_code) }}</b></div>{% endif %}{% endfor %}</div>
+      {% if S.get('comparison') %}
+      <div class="scroll-x"><table class="tbl compact"><thead><tr><th>Metric</th><th>Current</th><th>Previous</th><th>Change</th></tr></thead><tbody>
+      {% for m, d in S.comparison.deltas.items() %}<tr><td>{{ METRIC_LABELS.get(m, m) }}</td><td>{{ T.get(m)|fmt_metric(m, cur_code) }}</td><td>{{ (S.comparison.get('previous') or {}).get(m)|fmt_metric(m, cur_code) }}</td><td>{% if d.get('pct') is not none %}{{ '%+.1f'|format(d.pct) }}%{% else %}N/A{% endif %}</td></tr>{% endfor %}
+      </tbody></table></div>
+      {% endif %}
+      {% if R.get('commentary') %}<h3>Commentary <span class="muted small">(every figure traced to a calculated value)</span></h3>
+      <ul class="commentary">{% for c in R.commentary %}<li><span class="tag">{{ c.type }}</span> {{ c.text }}</li>{% endfor %}</ul>{% endif %}
+      {% if R.get('commentary_dropped') %}<p class="muted small">{{ R.commentary_dropped|length }} AI statement(s) were dropped because a number could not be traced.</p>{% endif %}
+      {% if S.get('definitions') %}<h3>Metric definitions used</h3><ul class="small">{% for k, d in S.definitions.items() %}<li><b>{{ METRIC_LABELS.get(k, k) }}</b>: {{ d }}</li>{% endfor %}</ul>{% endif %}
+    </details>
+    {% endif %}
+    {% if R.get('ai_steps') %}
+    <details class="dg"><summary>How this version was produced {% if R.get('ai_mocked') %}<span class="tag tag-warn">AI rule-based</span>{% endif %}</summary>
+      <p class="small">{% if R.get('structure') %}{{ R.get('structure').reason }}.<br>{% endif %}{% for st in R.get('ai_steps') %}<span class="tag{% if st.engine == 'claude' %} tag-ai{% endif %}" title="{{ st.reason }}">{{ st.step }}: {{ 'Claude' if st.engine == 'claude' else 'built-in rules' }}</span> {% endfor %}· all figures are calculated by the engine, never by AI</p>
+    </details>
+    {% endif %}
+    {% set P = R.get('plan') or {} %}
+    {% if P %}<details class="dg"><summary>Interpreted plan</summary><ul class="plain small">{% for k, v in P.items() if not k.startswith('_') and v not in [None, [], '', False] %}<li><b>{{ k.replace('_',' ') }}</b>: {{ v if v is string else v|tojson }}</li>{% endfor %}</ul></details>{% endif %}
+    {% if R.get('inspection') %}<details class="dg"><summary>Files inspected ({{ R.inspection|length }})</summary><ul class="plain small">{% for i in R.inspection %}<li>{% if i.ok %}✓{% else %}<span class="bad">✗</span>{% endif %} {{ i.file }} <span class="muted">({{ i.role }})</span>{% if i.error %} – <span class="bad">{{ i.error }}</span>{% endif %}</li>{% endfor %}</ul></details>{% endif %}
+    {% if R.get('mapping') %}
+    <details class="dg"><summary>Column mapping ({{ R.mapping|length }} sheets)</summary>
+      <div class="scroll-x"><table class="tbl compact"><thead><tr><th>File / sheet</th><th>Platform</th><th>Rows</th><th>Currency</th><th>Mapped columns</th><th>Ignored</th></tr></thead><tbody>
+      {% for m in R.mapping %}<tr><td>{{ m.file }}<div class="muted small">{{ m.sheet }}</div></td><td>{{ PLATFORM_LABELS.get(m.platform, m.platform) }}</td><td>{{ m.rows }}</td><td>{{ m.currency or '–' }}</td>
+        <td><details><summary>{{ m.mapped|length }} columns</summary><ul class="small plain">{% for c in m.mapped %}<li>{{ c.original }} → <b>{{ METRIC_LABELS.get(c.canonical, c.canonical) }}</b>{% if c.source and c.source != 'synonym' %} <span class="tag">{{ c.source }}</span>{% endif %}</li>{% endfor %}</ul></details></td>
+        <td class="small muted">{{ m.ignored|length }}</td></tr>{% endfor %}
+      </tbody></table></div>
+    </details>
+    {% endif %}
+    {% for title, key in [('Assumptions', 'assumptions'), ('Warnings', 'warnings')] %}
+      {% if R.get(key) %}<details class="dg"><summary>{{ title }} ({{ R[key]|length }})</summary><ul class="small">{% for a in R[key][:50] %}<li>{{ a }}</li>{% endfor %}{% if R[key]|length > 50 %}<li class="muted">… {{ R[key]|length - 50 }} more in the processing record</li>{% endif %}</ul></details>{% endif %}
+    {% endfor %}
+    {% if R.get('overlaps') %}<details class="dg"><summary>Duplicates and overlaps ({{ R.overlaps|length }})</summary><ul class="small">{% for o in R.overlaps %}<li><b>{{ o.type.replace('_',' ') }}</b>: {{ o.files|join(' ↔ ') }}{% if o.rows %} · {{ o.rows }} rows{% endif %}{% if o.resolution %} · resolved: {{ o.resolution }}{% endif %}</li>{% endfor %}</ul></details>{% endif %}
+    {% if R.get('exclusions') %}<details class="dg"><summary>Excluded rows ({{ R.exclusions|length }})</summary><div class="scroll-x"><table class="tbl compact"><thead><tr><th>File</th><th>Scope</th><th>Reason</th></tr></thead><tbody>{% for e in R.exclusions[:80] %}<tr><td>{{ e.file }}{% if e.sheet %} <span class="muted small">{{ e.sheet }}</span>{% endif %}</td><td>{{ e.scope }}</td><td>{{ e.reason }}</td></tr>{% endfor %}</tbody></table></div>{% if R.exclusions|length > 80 %}<p class="muted small">Showing the first 80. The full list is in the processing record.</p>{% endif %}</details>{% endif %}
+    {% if R.get('deck') %}
+    <details class="dg"><summary>Client deck slide map ({{ R.deck.slide_map|length }} slides)</summary>
+      <p class="muted small">{{ R.deck.changes|length }} cells changed · {{ R.deck.unchanged_cells }} already correct{% if R.deck.range_text %} · range label "{{ R.deck.range_text }}"{% endif %}</p>
+      <div class="scroll-x"><table class="tbl compact"><thead><tr><th>#</th><th>Slide</th><th>Type</th><th>Matched to</th><th>Status</th></tr></thead><tbody>
+      {% for m in R.deck.slide_map %}<tr class="sm-{{ m.status }}"><td>{{ m.slide }}</td><td>{{ m.title }}</td><td class="small muted">{{ (m.classification or '').replace('_',' ') }}</td><td class="small">{{ m.entity or '–' }}</td><td><span class="tag">{{ m.status }}{% if m.changes %} · {{ m.changes }} cells{% endif %}</span></td></tr>{% endfor %}
+      </tbody></table></div>
+      {% if R.deck.flags %}<h3>Needs review</h3><ul class="small">{% for f in R.deck.flags %}<li class="sev-{{ f.severity }}">{% if f.slide %}Slide {{ f.slide }}: {% endif %}{{ f.message }}</li>{% endfor %}</ul>{% endif %}
+    </details>
+    {% endif %}
+    {% if R.get('template') %}
+    <details class="dg"><summary>Excel template</summary>
+      <ul class="small">{% for w in R.template.written[:20] %}<li>{{ w if w is string else w|tojson }}</li>{% endfor %}</ul>
+      {% if R.template.unsupported %}<p><b>Unsupported template features</b></p><ul class="small">{% for u in R.template.unsupported %}<li>{{ u }}</li>{% endfor %}</ul>{% endif %}
+      {% if R.template.skipped_formula_cells %}<p class="small muted">{{ R.template.skipped_formula_cells }} formula cells left untouched.</p>{% endif %}
+    </details>
+    {% endif %}
+    {% if R.get('new_deck') %}<details class="dg"><summary>New deck</summary><p class="small">{{ R.new_deck.slides }} slides: {{ R.new_deck.sections|join(', ') }}</p></details>{% endif %}
+    {% if records %}<details class="dg"><summary>Processing records ({{ records|length }})</summary><ul class="plain">{% for a in records %}<li><a href="/artifacts/{{ a.id }}/download">{{ a.label }}</a> <span class="muted small">{{ a.size|mb }}</span></li>{% endfor %}</ul></details>{% endif %}
+    {% if not R %}<div class="inline-state">{{ icon('info') }}Diagnostics appear after inspection.</div>{% endif %}
+  </section>
+</div>
+</div>
+
+{# ------------------------------------------------------------------ feedback & revisions #}
+<aside class="ws-side" id="feedback" aria-labelledby="fbT">
+<section class="card fb-card">
+  <h2 id="fbT">Feedback &amp; revisions</h2>
+  <p class="muted">Keep changes connected to this report.</p>
+
+  {% if msgs %}
+  <details class="convo" {% if msgs|length <= 6 %}open{% endif %}>
+    <summary>Conversation ({{ msgs|length }})</summary>
+    <div class="msgs" id="msgs" tabindex="0" aria-label="Conversation history">
+    {% for m in msgs %}
+      <div class="msg m-{{ m.kind }}">
+        <div class="msg-meta">{% if m.author_id %}{{ icon('user') }}{{ users.get(m.author_id) }}{% else %}{{ icon('gear') }}Workspace assistant{% endif %} · {{ m.kind }} · {{ m.created_at|ago }}</div>
+        <div class="msg-text">{{ m.text }}</div>
+      </div>
+    {% endfor %}
+    </div>
   </details>
   {% endif %}
-  {% elif processing or t.status == 'awaiting_clarification' %}
-  <p class="muted">Figures appear here once calculation finishes.</p>
-  {% else %}
-  <p class="muted">No figures yet.</p>
-  {% endif %}
-</section>
 
-<section class="card" id="outputs">
-  <h2>Outputs{% if shown %} · v{{ shown.number }}{% endif %}</h2>
-  {% if deliverables %}
-  <div class="outputs">
-    {% for a in deliverables %}
-    <div class="output">
-      <div class="out-icon k-{{ a.kind }}">{{ {'excel':'XLSX','excel_consolidated':'XLSX','deck_update':'PPTX','deck_new':'PPTX','pdf':'PDF'}.get(a.kind, a.kind) }}</div>
-      <div class="out-body"><b>{{ a.label }}</b><div class="muted small">{{ a.filename }} · {{ a.size|mb }}{% if a.reused_from_id %} · <span class="tag">unchanged from previous version</span>{% endif %}</div></div>
-      <a class="btn btn-sm" href="/artifacts/{{ a.id }}/download">{{ icon('download') }}Download<span class="sr"> {{ a.label }}</span></a>
+  {% if can_feedback and feedback_bases %}
+  <form id="feedbackForm" class="feedback" novalidate>
+    <label for="fb-base">Feedback for</label>
+    <select id="fb-base" name="base_version_id">
+      {% for v in feedback_bases %}<option value="{{ v.id }}" data-n="{{ v.number }}" {% if view and v.id == view.id %}selected{% endif %}>Version {{ v.number }}{% if loop.first %} (latest){% endif %}{% if t.approved_version_id == v.id %} · approved{% endif %}</option>{% endfor %}
+    </select>
+    <p class="fb-info">{{ icon('info') }}<span>The revision is built from <b id="fbBaseLabel">the version selected above</b>. Describe the change and include the slide, tab or metric where possible.</span></p>
+    <label for="fb-text">What would you like to change?</label>
+    <textarea id="fb-text" name="text" rows="5" placeholder="e.g. Separate UAE and KSA into different tabs, and shorten the summary on slide 3." aria-describedby="fbErr"></textarea>
+    <p class="f-err" id="fbErr" role="alert" hidden></p>
+    <input type="file" name="extra" id="fbFilesInput" class="sr" multiple accept=".csv,.xlsx,.pptx,.zip,.png,.jpg,.jpeg" tabindex="-1" aria-hidden="true">
+    <ul class="filelist" id="fbFiles" aria-live="polite"></ul>
+    <div class="fb-actions">
+      <button type="button" class="btn" id="fbAttach">{{ icon('upload') }}Attach files</button>
+      <button type="submit" class="btn btn-primary" id="fbSend">Send feedback{{ icon('arrow-right') }}</button>
     </div>
-    {% endfor %}
-  </div>
-  {% for kind, pv in previews.items() %}
-  <h3>{{ {'deck_update':'Updated client deck','deck_new':'New deck','excel':'Excel report','template':'Populated template'}.get(kind, kind) }} preview <span class="muted small">({{ pv|length }} page{{ 's' if pv|length != 1 }}, rendered with LibreOffice)</span></h3>
-  <div class="previews">{% for p in pv|sort(attribute='meta.page') %}<a href="/artifacts/{{ p.id }}/preview" target="_blank" rel="noopener"><img loading="lazy" src="/artifacts/{{ p.id }}/preview" alt="{{ p.label }}"><span>{{ p.meta.page }}</span></a>{% endfor %}</div>
-  {% endfor %}
-  {% if records %}<h3>Records</h3><ul class="plain">{% for a in records %}<li><a href="/artifacts/{{ a.id }}/download">{{ a.label }}</a> <span class="muted small">{{ a.size|mb }}</span></li>{% endfor %}</ul>{% endif %}
-  <p class="muted small">Download links are private and expire after a few minutes. Nothing is sent to the client automatically.</p>
+    <p class="f-hint">A revision is a new version. Earlier versions and their files stay available.</p>
+  </form>
+  {% elif not can_feedback %}
+  <div class="inline-state">{% if t.status == 'awaiting_clarification' %}{{ icon('chat') }}Answer the open questions first. Feedback opens once the version finishes.{% else %}<span class="spinner"></span>Feedback opens when v{{ cur.number }} finishes processing.{% endif %}</div>
   {% else %}
-  <p class="muted">No outputs yet.</p>
+  <div class="inline-state">{{ icon('info') }}Feedback opens once a version has finished.</div>
   {% endif %}
-</section>
 
-<section class="card" id="validation">
-  {% set V = R.get('validation') %}
-  <div class="card-head"><h2>Validation</h2>{% if V %}<span class="pill v-{{ V.overall }}">{{ {'passed':'All checks passed','warnings':'Passed with warnings','blocked':'Blocked'}[V.overall] }}</span><span class="muted small">{{ V.counts.pass }} passed · {{ V.counts.warn }} warnings · {{ V.counts.fail }} failed{% if V.counts.not_run %} · {{ V.counts.not_run }} not run{% endif %}</span>{% endif %}</div>
-  {% if V %}
-  <ul class="checks">
-    {% for c in V.checks %}
-    <li class="check-item c-{{ c.status }}">
-      <details {% if c.status == 'fail' %}open{% endif %}><summary><span class="badge b-{{ c.status }}">{{ {'pass':'Pass','warn':'Warning','fail':'Failed','not_run':'Not run'}[c.status] }}</span> <b>{{ c.title }}</b> <span class="muted">– {{ c.message }}</span></summary>
-      {% if c.details %}<ul class="small details">{% for d in c.details[:40] %}<li>{{ d if d is string else d|tojson }}</li>{% endfor %}{% if c.details|length > 40 %}<li class="muted">… {{ c.details|length - 40 }} more in the validation record</li>{% endif %}</ul>{% endif %}
-      </details>
-    </li>
-    {% endfor %}
-  </ul>
-  {% else %}<p class="muted">Checks run after files are generated. A check is only shown as passed if it actually ran.</p>{% endif %}
-</section>
-
-<section class="card" id="findings">
-  <h2>Findings</h2>
-  {% set RR = result if result.get('mapping') else R %}
-  {% if RR.get('inspection') %}
-  <h3>Files inspected</h3>
-  <ul class="plain small">{% for i in RR.inspection %}<li>{% if i.ok %}✓{% else %}<span class="bad">✗</span>{% endif %} {{ i.file }} <span class="muted">({{ i.role }})</span>{% if i.error %} – <span class="bad">{{ i.error }}</span>{% endif %}</li>{% endfor %}</ul>
-  {% endif %}
-  {% if RR.get('mapping') %}
-  <h3>Column mapping</h3>
-  <div class="scroll-x"><table class="tbl compact">
-    <thead><tr><th>File / sheet</th><th>Platform</th><th>Rows</th><th>Currency</th><th>Mapped columns</th><th>Ignored</th></tr></thead><tbody>
-    {% for m in RR.mapping %}<tr><td>{{ m.file }}<div class="muted small">{{ m.sheet }}</div></td><td>{{ PLATFORM_LABELS.get(m.platform, m.platform) }}</td><td>{{ m.rows }}</td><td>{{ m.currency or '–' }}</td>
-      <td><details><summary>{{ m.mapped|length }} columns</summary><ul class="small plain">{% for c in m.mapped %}<li>{{ c.original }} → <b>{{ METRIC_LABELS.get(c.canonical, c.canonical) }}</b>{% if c.source and c.source != 'synonym' %} <span class="tag">{{ c.source }}</span>{% endif %}</li>{% endfor %}</ul></details></td>
-      <td class="small muted">{{ m.ignored|length }}</td></tr>{% endfor %}
-    </tbody></table></div>
-  {% endif %}
-  {% for title, key in [('Assumptions', 'assumptions'), ('Warnings', 'warnings')] %}
-    {% if RR.get(key) %}<h3>{{ title }}</h3><ul class="small">{% for a in RR[key][:30] %}<li>{{ a }}</li>{% endfor %}{% if RR[key]|length > 30 %}<li class="muted">… {{ RR[key]|length - 30 }} more</li>{% endif %}</ul>{% endif %}
-  {% endfor %}
-  {% if RR.get('overlaps') %}<h3>Duplicates and overlaps</h3><ul class="small">{% for o in RR.overlaps %}<li><b>{{ o.type.replace('_',' ') }}</b>: {{ o.files|join(' ↔ ') }}{% if o.rows %} · {{ o.rows }} rows{% endif %}{% if o.resolution %} · resolved: {{ o.resolution }}{% endif %}</li>{% endfor %}</ul>{% endif %}
-  {% if RR.get('exclusions') %}<h3>Excluded rows ({{ RR.exclusions|length }})</h3>
-    <details><summary>Show exclusions</summary><table class="tbl compact"><thead><tr><th>File</th><th>Scope</th><th>Reason</th></tr></thead><tbody>{% for e in RR.exclusions[:80] %}<tr><td>{{ e.file }}{% if e.sheet %} <span class="muted small">{{ e.sheet }}</span>{% endif %}</td><td>{{ e.scope }}</td><td>{{ e.reason }}</td></tr>{% endfor %}</tbody></table></details>{% endif %}
-  {% if S.get('definitions') %}<h3>Metric definitions used</h3><ul class="small">{% for k, d in S.definitions.items() %}<li><b>{{ METRIC_LABELS.get(k, k) }}</b>: {{ d }}</li>{% endfor %}</ul>{% endif %}
-  {% if not RR.get('mapping') and not RR.get('inspection') %}<p class="muted">Findings appear after inspection.</p>{% endif %}
-</section>
-
-{% if R.get('deck') or R.get('template') or R.get('new_deck') %}
-<section class="card" id="deck">
-  <h2>Deck &amp; template</h2>
-  {% if R.deck %}
-  <h3>Client deck slide map</h3>
-  <p class="muted small">{{ R.deck.changes|length }} cells changed · {{ R.deck.unchanged_cells }} already correct{% if R.deck.range_text %} · range label "{{ R.deck.range_text }}"{% endif %}</p>
-  <div class="scroll-x"><table class="tbl compact"><thead><tr><th>#</th><th>Slide</th><th>Type</th><th>Matched to</th><th>Status</th></tr></thead><tbody>
-  {% for m in R.deck.slide_map %}<tr class="sm-{{ m.status }}"><td>{{ m.slide }}</td><td>{{ m.title }}</td><td class="small muted">{{ (m.classification or '').replace('_',' ') }}</td><td class="small">{{ m.entity or '–' }}</td><td><span class="tag">{{ m.status }}{% if m.changes %} · {{ m.changes }} cells{% endif %}</span></td></tr>{% endfor %}
-  </tbody></table></div>
-  {% if R.deck.flags %}<h3>Needs review</h3><ul class="small">{% for f in R.deck.flags %}<li class="sev-{{ f.severity }}">{% if f.slide %}Slide {{ f.slide }}: {% endif %}{{ f.message }}</li>{% endfor %}</ul>{% endif %}
-  {% endif %}
-  {% if R.template %}
-  <h3>Excel template</h3>
-  <ul class="small">{% for w in R.template.written[:20] %}<li>{{ w if w is string else w|tojson }}</li>{% endfor %}</ul>
-  {% if R.template.unsupported %}<p><b>Unsupported template features</b></p><ul class="small">{% for u in R.template.unsupported %}<li>{{ u }}</li>{% endfor %}</ul>{% endif %}
-  {% if R.template.skipped_formula_cells %}<p class="small muted">{{ R.template.skipped_formula_cells }} formula cells left untouched.</p>{% endif %}
-  {% endif %}
-  {% if R.new_deck %}<h3>New deck</h3><p class="small">{{ R.new_deck.slides }} slides: {{ R.new_deck.sections|join(', ') }}</p>{% endif %}
-</section>
-{% endif %}
-
-<section class="card" id="files">
-  <h2>Files ({{ files|length }})</h2>
-  <ul class="files-ro">
-  {% for f in files %}
-    <li class="{% if f.excluded %}excluded{% endif %}">
-      <div><b>{{ f.name }}</b> <span class="tag">{{ {'raw':'raw data','template':'template','client_deck':'client deck','screenshots':'screenshots','creatives':'screenshots'}.get(f.role, f.role) }}</span>{% if f.added_in_version > 1 %} <span class="tag">added in v{{ f.added_in_version }}</span>{% endif %}{% if f.excluded %} <span class="tag tag-warn">excluded</span>{% endif %}
-      <span class="muted small">{{ f.size|mb }}</span></div>
-      {% if f.sheets %}<div class="small muted">{% for sh in f.sheets %}{{ sh.name }}: {{ sh.rows }} rows{% if sh.platform %}, {{ sh.platform }}{% endif %}{% if sh.currency %}, {{ sh.currency }}{% endif %}{% if sh.total_rows %}, {{ sh.total_rows }} total row(s){% endif %}{% if sh.summary_blocks %}, {{ sh.summary_blocks }} summary block(s){% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
-      {% if f.deck %}<div class="small muted">{{ f.deck.slides }} slides · {{ f.deck.aspect }}{% if f.deck.unsupported %} · {{ f.deck.unsupported }} unsupported element(s){% endif %}</div>{% endif %}
-      {% if f.warnings %}<ul class="small warnlist">{% for w in f.warnings[:5] %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}
-    </li>
-  {% endfor %}
-  </ul>
-  <p class="muted small">Originals are stored read-only and never modified.</p>
-</section>
-
-<section class="card" id="versions">
-  <h2>Version history</h2>
-  <ul class="versions">
+  <h3 class="vh-h">Version history</h3>
+  <ol class="vhist">
   {% for v in versions %}
-    <li class="ver {% if t.approved_version_id == v.id %}approved{% endif %}">
-      <div class="ver-head"><b>v{{ v.number }}</b> {{ status_badge(v.status) }}{% if t.approved_version_id == v.id %} {{ status_badge('approved', 'Approved by employee' ~ (' · ' ~ (v.approved_at|ago) if v.approved_at else '')) }}{% endif %}
-        <span class="muted small">{{ v.kind }}{% if v.base_version_id %} from v{{ (versions|selectattr('id','equalto',v.base_version_id)|first).number }}{% endif %} · {{ users.get(v.created_by) }} · {{ v.created_at|ago }}</span>
-        {% if v.status == 'ready_for_review' and t.approved_version_id != v.id %}<button class="btn btn-sm" data-action="approve" data-version="{{ v.id }}">Approve</button>{% endif %}</div>
+    <li class="vh {% if view and v.id == view.id %}viewing{% endif %} {% if t.approved_version_id == v.id %}approved{% endif %}">
+      <div class="vh-head">
+        <span class="vh-n">v{{ v.number }}</span>
+        {% if loop.first %}<span class="vh-tag">Latest</span>{% endif %}
+        {% if view and v.id == view.id %}<span class="vh-tag viewing">Viewing</span>{% endif %}
+        {{ status_badge(v.status) }}
+        {% if t.approved_version_id == v.id %}{{ status_badge('approved', 'Approved') }}{% endif %}
+      </div>
+      <p class="vh-meta">{{ 'Revision' if v.kind == 'revision' else 'Initial' }}{% if v.base_version_id %} from v{{ (versions|selectattr('id','equalto',v.base_version_id)|first).number }}{% endif %} · {{ users.get(v.created_by) }} · <time datetime="{{ v.created_at.isoformat() }}">{{ v.created_at|ago }}</time></p>
       {% if v.feedback %}<blockquote class="small">{{ v.feedback }}</blockquote>{% endif %}
       {% set cs = v.change_summary %}
-      {% if cs %}<div class="small changes">
+      {% if cs %}<details class="vh-cs"><summary>Change summary</summary><div class="small changes">
         {% if cs.ops %}<div><b>Changes:</b> {% for o in cs.ops %}{{ o.note or (o.op.replace('_',' ') ~ (': ' ~ o.value if o.value else '')) }}{% if not loop.last %}; {% endif %}{% endfor %}</div>{% endif %}
         {% if cs.figures %}<div><b>Figures:</b> {{ cs.figures|join('; ') }}</div>{% else %}<div class="muted">Headline figures unchanged.</div>{% endif %}
         {% if cs.new_files %}<div><b>New files:</b> {{ cs.new_files|join(', ') }}</div>{% endif %}
         {% if cs.artifacts %}<div>{{ cs.artifacts|join(' · ') }}</div>{% endif %}
-      </div>{% endif %}
+      </div></details>{% endif %}
       {% set va = art_by_v.get(v.id, []) | rejectattr('kind', 'in', ['preview','record']) | list %}
-      {% if va %}<div class="ver-dl">{% for a in va %}<a href="/artifacts/{{ a.id }}/download" class="chip">{{ a.label }}</a>{% endfor %}</div>{% endif %}
+      {% if va %}<div class="ver-dl">{% for a in va %}<a href="/artifacts/{{ a.id }}/download" class="chip">{{ icon('download') }}{{ a.label }}<span class="sr"> v{{ v.number }}</span></a>{% endfor %}</div>{% endif %}
+      <div class="vh-act">
+        {% if not (view and v.id == view.id) %}<a href="/tasks/{{ t.id }}?v={{ v.id }}" class="vh-open">Open version details{{ icon('arrow-right') }}</a>{% endif %}
+        {% if v.status == 'ready_for_review' and t.approved_version_id != v.id %}<button class="btn btn-sm" data-action="approve" data-version="{{ v.id }}">{{ icon('check') }}Approve v{{ v.number }}</button>{% endif %}
+      </div>
     </li>
   {% endfor %}
-  </ul>
-</section>
-</div>
-
-<aside class="ws-side">
-<section class="card convo" id="feedback">
-  <h2>Conversation</h2>
-  <div class="msgs" id="msgs">
-  {% for m in msgs %}
-    <div class="msg m-{{ m.kind }}">
-      <div class="msg-meta">{% if m.author_id %}{{ users.get(m.author_id) }}{% else %}Workspace assistant{% endif %} · {{ m.kind }} · {{ m.created_at|ago }}</div>
-      <div class="msg-text">{{ m.text }}</div>
-    </div>
-  {% endfor %}
-  </div>
-  {% if not processing and t.status != 'awaiting_clarification' %}
-  <form id="feedbackForm" class="feedback">
-    <label for="fb-text"><b>What would you like to change?</b></label>
-    <textarea id="fb-text" name="text" rows="4" required placeholder="e.g. Use all clicks instead of link clicks · Split tabs by country · Add a breakdown by language · Remove slide 4 · Use the new file I uploaded"></textarea>
-    <div class="row2">
-      <label class="small">Base it on
-        <select name="base_version_id">{% for v in versions if v.status in ['ready_for_review','approved','validation_blocked'] or v.result %}<option value="{{ v.id }}">v{{ v.number }}{% if loop.first %} (latest){% endif %}</option>{% endfor %}</select>
-      </label>
-      <label class="small">Add files (optional)
-        <input type="file" name="extra" multiple accept=".csv,.xlsx,.pptx,.zip,.png,.jpg,.jpeg">
-      </label>
-    </div>
-    <ul class="filelist" id="fbFiles"></ul>
-    <button class="btn btn-primary btn-block">Create revision</button>
-    <p class="muted small">A revision is a new version. Earlier versions and their files stay available.</p>
-  </form>
-  {% else %}
-  <p class="muted small">Feedback opens once the current version finishes (answer any open questions first).</p>
-  {% endif %}
+  </ol>
+  <p class="f-hint">Previous versions remain available.</p>
 </section>
 </aside>
 </div>

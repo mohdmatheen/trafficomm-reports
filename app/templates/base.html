@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="/static/app.css">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <script src="/static/app.js" defer></script>
+{% block head %}{% endblock %}
 </head>
 <body data-page="{% block page %}{% endblock %}" class="{% block bodyclass %}{% endblock %}" {% block bodyattrs %}{% endblock %}>
 {% include "partials/icons.html" %}

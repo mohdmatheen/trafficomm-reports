@@ -1,0 +1,7 @@
+{% from "partials/ui.html" import icon %}<li class="act act-{{ i.kind }} {{ 'by-person' if i.person else 'by-system' }}">
+  <span class="act-ic" aria-hidden="true">{{ icon({'upload':'upload','submit':'arrow-right','revision':'refresh','process':'gear','validation':'check-square','approval':'check-circle','clarification':'chat','feedback':'pencil','system':'info'}.get(i.kind, 'info')) }}</span>
+  <div class="act-body">
+    <p>{{ i.text }}</p>
+    <span class="act-meta"><span class="sr">{{ 'Employee action' if i.person else 'System event' }}: </span>{{ i.who or 'Unknown' }}{% if i.v %} · v{{ i.v }}{% endif %} · {% if i.at %}<time datetime="{{ i.at.isoformat() }}" title="{{ i.at.strftime('%d %b %Y %H:%M') }}">{{ i.at.strftime('%d %b %Y, %H:%M') }}</time>{% endif %}</span>
+  </div>
+</li>

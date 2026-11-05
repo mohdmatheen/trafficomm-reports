@@ -522,57 +522,213 @@ def task_state(request: Request, task_id: int):
         return _state_token(s, t)
 
 
-def workspace_ctx(s, user: User, t: Task) -> dict:
+# ---------------------------------------------------------------------------
+# Task workspace
+# ---------------------------------------------------------------------------
+TRACK = [("received", "Files received", ("uploaded", "inspecting")), ("prepared", "Data prepared", ("mapping", "awaiting_clarification")),
+         ("built", "Report built", ("calculating", "generating")), ("validation", "Validation", ("validating",)),
+         ("review", "Review", ("ready_for_review",)), ("approved", "Approved", ())]
+STAGE_ORDER = [k for k, _ in STAGES]
+OUTPUT_KINDS = ("excel", "excel_consolidated", "deck_update", "deck_new", "pdf")
+OUTPUT_TYPE = {"excel": "Excel workbook", "excel_consolidated": "Excel workbook", "deck_update": "PowerPoint deck", "deck_new": "PowerPoint deck", "pdf": "PDF"}
+PREVIEW_FOR = {"excel": ("template", "excel"), "excel_consolidated": ("excel", "template"), "deck_update": ("deck_update",), "deck_new": ("deck_new",)}
+PREVIEW_LABEL = {"deck_update": "Updated client deck", "deck_new": "New deck", "excel": "Excel report", "template": "Populated template"}
+CHECK_GROUP = {"excel": "workbook", "template": "workbook", "deck": "presentation", "crossfile": "presentation", "labels": "presentation",
+               "deck_flags": "presentation", "deck_new": "presentation", "layout": "presentation"}
+CHECK_NEXT = {
+    "columns": "Check that the raw export includes the missing columns, then upload it with your feedback.",
+    "coverage": "Make sure every uploaded file belongs in this report, or upload the missing source data with your feedback.",
+    "period": "Check the reporting dates on the task and the dates in the exports.",
+    "overlaps": "Check whether the same data was uploaded twice.",
+    "currency": "Answer the currency question, or upload exports that state their currency.",
+    "reconciliation": "Don't send this version. Review the technical detail and request a revision.",
+    "rates": "Don't send this version. Review the technical detail and request a revision.",
+    "excel": "Download the workbook and check the values listed in the detail.",
+    "template": "Check the template cells listed in the detail.",
+    "deck": "Open the updated deck and check the slides listed in the detail.",
+    "crossfile": "Compare the workbook and the deck values listed in the detail before sharing.",
+    "labels": "Check the date range and labels on the deck.",
+    "deck_flags": "Review the flagged slides before sharing.",
+    "layout": "Check the slides listed for text that overflows its box.",
+    "commentary": "Review the commentary; untraceable statements were removed.",
+}
+
+
+def _check_group(c: dict) -> str:
+    cid = c.get("id", "")
+    if cid.startswith("open_"):
+        t = (c.get("title") or "").lower()
+        return "presentation" if any(w in t for w in ("deck", "powerpoint", "pptx", "slide")) else "workbook"
+    return CHECK_GROUP.get(cid, "data")
+
+
+def _track(v: TaskVersion | None, reached: set, t: Task) -> list[dict]:
+    """Stage tracker for one version, from its real status, stage and events (never inferred from files)."""
+    if not v:
+        return [{"key": k, "label": lbl, "state": "pending", "note": ""} for k, lbl, _ in TRACK]
+    V = (v.result or {}).get("validation") or {}
+    idx = STAGE_ORDER.index(v.stage) if v.stage in STAGE_ORDER else 0
+    out = []
+    for k, label, stages in TRACK:
+        st, note = "pending", ""
+        pos = [STAGE_ORDER.index(x) for x in stages]
+        here = v.stage in stages
+        passed = bool(pos) and max(pos) < idx
+        if k == "approved":
+            if t.approved_version_id == v.id:
+                st, note = "done", ("Approved " + _ago(v.approved_at)) if v.approved_at else "Approved"
+        elif v.status in ("failed", "cancelled"):
+            if here:
+                st, note = ("failed", "Failed") if v.status == "failed" else ("attention", "Cancelled")
+            elif passed:
+                st = "done"
+        elif v.status == "awaiting_clarification" and k == "prepared":
+            st, note = "attention", "Needs your answer"
+        elif k == "validation" and V:
+            st = {"blocked": "attention", "warnings": "done", "passed": "done"}.get(V.get("overall"), "done")
+            note = {"blocked": f"{V['counts'].get('fail', 0)} failed", "warnings": f"{V['counts'].get('warn', 0)} warning(s)", "passed": "All passed"}.get(V.get("overall"), "")
+            if v.status in S.PROCESSING and here:
+                st, note = "active", "In progress"
+        elif k == "review":
+            if t.approved_version_id == v.id:
+                st, note = "done", "Reviewed"
+            elif v.status == "ready_for_review":
+                st, note = "active", "Waiting for your review"
+        elif here and v.status in S.PROCESSING:
+            st, note = "active", "In progress"
+        elif passed or (pos and any(x in reached for x in stages) and not here):
+            st = "done"
+        out.append({"key": k, "label": label, "state": st, "note": note})
+    return out
+
+
+def _attention(t: Task, v: TaskVersion | None, cur: TaskVersion | None, open_qs, job) -> dict | None:
+    if open_qs and v and cur and v.id == cur.id:
+        n = len(open_qs)
+        return {"tone": "warn", "icon": "chat", "title": f"{n} question{'s' if n != 1 else ''} need{'s' if n == 1 else ''} your answer",
+                "text": "Processing is paused until you answer. Inspection and mapping are saved.", "action": "Answer question" + ("s" if n != 1 else ""), "href": "#questions"}
+    if not v:
+        return None
+    V = (v.result or {}).get("validation") or {}
+    cnt = V.get("counts") or {}
+    if v.status == "failed":
+        err = v.error or (job.error if job and job.version_id == v.id else "") or "No error detail was recorded."
+        return {"tone": "error", "icon": "alert", "title": f"Processing failed for v{v.number}", "text": err[:400], "action": "View error", "tab": "diagnostics", "retry": cur is not None and v.id == cur.id}
+    if v.status == "cancelled":
+        return {"tone": "warn", "icon": "info", "title": f"Processing of v{v.number} was cancelled", "text": "Earlier versions are not affected. You can retry this version.", "retry": cur is not None and v.id == cur.id}
+    if v.status == "validation_blocked" or V.get("overall") == "blocked":
+        return {"tone": "error", "icon": "alert", "title": "Validation blocked this version",
+                "text": f"{cnt.get('fail', 0)} check{'s' if cnt.get('fail', 0) != 1 else ''} failed. Outputs are kept for inspection but must not be sent to the client.", "action": "View checks", "tab": "validation"}
+    if v.status == "ready_for_review" and t.approved_version_id != v.id:
+        if cnt.get("warn"):
+            return {"tone": "warn", "icon": "alert", "title": "Review validation before sharing",
+                    "text": f"{cnt['warn']} warning{'s' if cnt['warn'] != 1 else ''} to review. Open the validation results to see issues and affected outputs.", "action": "View checks", "tab": "validation"}
+        return {"tone": "info", "icon": "check-circle", "title": f"v{v.number} is ready for your review", "text": "All validation checks passed. Review the outputs, then approve or request changes.", "approve": v.id}
+    if v.status in S.PROCESSING:
+        return {"tone": "info", "icon": "clock", "busy": True, "title": f"Processing v{v.number}: {S.STATUS_LABEL.get(v.status, v.status)}",
+                "text": "This page updates automatically. You can leave and come back."}
+    return None
+
+
+def _activity(s, t: Task, versions, users) -> list[dict]:
+    """Every real event for the task, oldest first. actor: person or system."""
+    vno = {v.id: v.number for v in versions}
+    items = []
+    for f in s.scalars(select(TaskFile).where(TaskFile.task_id == t.id).order_by(TaskFile.id)).all():
+        items.append({"at": f.uploaded_at, "kind": "upload", "who": users.get(f.uploaded_by), "person": True, "v": f.added_in_version,
+                      "text": f"Uploaded {f.original_name}" + (" (later removed)" if f.removed else "")})
+    for v in versions:
+        items.append({"at": v.created_at, "kind": "revision" if v.kind == "revision" else "submit", "who": users.get(v.created_by), "person": True, "v": v.number,
+                      "text": (f"Requested revision v{v.number}" + (f" from v{vno.get(v.base_version_id)}" if v.base_version_id else "")) if v.kind == "revision" else "Submitted for processing"})
+        for e in s.scalars(select(StageEvent).where(StageEvent.version_id == v.id).order_by(StageEvent.id)).all():
+            items.append({"at": e.at, "kind": "validation" if e.stage == "validating" else "process", "who": "Workspace", "person": False, "v": v.number,
+                          "text": dict(STAGES).get(e.stage, e.stage) + (f": {e.detail}" if e.detail else "")})
+        if v.approved_at:
+            items.append({"at": v.approved_at, "kind": "approval", "who": users.get(v.approved_by), "person": True, "v": v.number, "text": f"Approved v{v.number}"})
+    for q in s.scalars(select(Question).where(Question.task_id == t.id, Question.answered_at.is_not(None))).all():
+        items.append({"at": q.answered_at, "kind": "clarification", "who": users.get(q.answered_by), "person": True, "v": vno.get(q.version_id),
+                      "text": f"Answered: {q.text[:140]} → {q.answer}"})
+    for m in s.scalars(select(Message).where(Message.task_id == t.id, Message.kind.in_(["feedback", "assistant", "system"])).order_by(Message.id)).all():
+        if m.kind == "feedback":
+            items.append({"at": m.created_at, "kind": "feedback", "who": users.get(m.author_id), "person": True, "v": vno.get(m.version_id), "text": "Feedback: " + m.text[:300]})
+        elif m.kind == "assistant":
+            items.append({"at": m.created_at, "kind": "system", "who": "Workspace assistant", "person": False, "v": vno.get(m.version_id), "text": m.text[:300]})
+    tz = dt.timezone.utc
+    items.sort(key=lambda i: (i["at"].replace(tzinfo=tz) if i["at"] and i["at"].tzinfo is None else i["at"]) or now())
+    return items
+
+
+def workspace_ctx(s, user: User, t: Task, view_id: int | None = None) -> dict:
     versions = s.scalars(select(TaskVersion).where(TaskVersion.task_id == t.id).order_by(TaskVersion.number.desc())).all()
     cur = versions[0] if versions else None
+    view = next((v for v in versions if v.id == view_id), None) or cur
     files = s.scalars(select(TaskFile).where(TaskFile.task_id == t.id, TaskFile.removed.is_(False)).order_by(TaskFile.id)).all()
-    events = s.scalars(select(StageEvent).where(StageEvent.version_id == cur.id).order_by(StageEvent.id)).all() if cur else []
+    events = s.scalars(select(StageEvent).where(StageEvent.version_id == view.id).order_by(StageEvent.id)).all() if view else []
     questions = s.scalars(select(Question).where(Question.version_id == cur.id).order_by(Question.id)).all() if cur else []
+    open_qs = [q for q in questions if q.status == "open"]
     msgs = s.scalars(select(Message).where(Message.task_id == t.id).order_by(Message.id)).all()
     users = {u.id: u.name for u in s.scalars(select(User)).all()}
-    art_by_v = {}
-    for v in versions:
-        art_by_v[v.id] = s.scalars(select(Artifact).where(Artifact.version_id == v.id).order_by(Artifact.id)).all()
+    art_by_v = {v.id: s.scalars(select(Artifact).where(Artifact.version_id == v.id).order_by(Artifact.id)).all() for v in versions}
     job = s.scalar(select(Job).where(Job.version_id == cur.id).order_by(Job.id.desc())) if cur else None
-    reached = {e.stage for e in events}
-    stage_rows = []
-    for key, label in STAGES:
-        ev = next((e for e in reversed(events) if e.stage == key), None)
-        state = "done" if ev else "todo"
-        if cur and cur.stage == key and t.status in S.PROCESSING | {"awaiting_clarification"}:
-            state = "active"
-        if key == "awaiting_clarification" and not ev:
-            state = "skipped" if cur and cur.stage in ("calculating", "generating", "validating", "ready_for_review") else "todo"
-        stage_rows.append({"key": key, "label": label, "state": state, "at": ev.at if ev else None, "detail": ev.detail if ev else ""})
-    result = (cur.result or {}) if cur else {}
-    # if current version is waiting, show the last completed version's outputs too
-    shown = cur
-    if cur and not art_by_v.get(cur.id):
-        shown = next((v for v in versions if art_by_v.get(v.id)), cur)
-    shown_result = (shown.result or {}) if shown else {}
-    arts = art_by_v.get(shown.id, []) if shown else []
-    deliverables = [a for a in arts if a.kind not in ("preview", "record")]
-    records = [a for a in arts if a.kind == "record"]
-    previews = {}
+    vjob = s.scalar(select(Job).where(Job.version_id == view.id).order_by(Job.id.desc())) if view else None
+    R = (view.result or {}) if view else {}
+    arts = art_by_v.get(view.id, []) if view else []
+    previews: dict[str, list] = {}
     for a in arts:
         if a.kind == "preview":
             previews.setdefault(a.meta["artifact_kind"], []).append(a)
-    return {"user": user, "t": t, "client": t.client.name, "owner": users.get(t.owner_id), "versions": versions, "cur": cur, "files": [S.file_summary(f) for f in files],
-            "events": events, "stage_rows": stage_rows, "questions": questions, "open_questions": [q for q in questions if q.status == "open"],
-            "msgs": msgs, "users": users, "art_by_v": art_by_v, "job": job, "result": result, "shown": shown, "shown_result": shown_result,
-            "deliverables": deliverables, "records": records, "previews": previews, "state": _state_token(s, t),
-            "processing": t.status in S.PROCESSING, "profile_name": t.profile.name if t.profile else None,
-            "nav": "tasks", "crumbs": [("Reporting tasks", "/tasks"), (t.title or "Untitled task", None)]}
+    for k in previews:
+        previews[k].sort(key=lambda a: (a.meta or {}).get("page", 0))
+    outputs = []
+    for a in arts:
+        if a.kind not in OUTPUT_KINDS:
+            continue
+        available = storage.path_ok(a.stored_path) and os.path.exists(a.stored_path)
+        pkey = next((k for k in PREVIEW_FOR.get(a.kind, ()) if k in previews), None)
+        outputs.append({"a": a, "type": OUTPUT_TYPE.get(a.kind, a.kind), "icon": "present" if a.kind.startswith("deck") else ("file" if a.kind == "pdf" else "table"),
+                        "available": available, "preview": pkey, "ext": os.path.splitext(a.filename)[1].lstrip(".").upper()})
+    records = [a for a in arts if a.kind == "record"]
+    V = R.get("validation") or {}
+    groups = {"data": [], "workbook": [], "presentation": []}
+    for c in V.get("checks", []):
+        groups[_check_group(c)].append(dict(c, next=CHECK_NEXT.get(c.get("id")) if c.get("status") in ("fail", "warn") else None))
+    group_summary = {}
+    for g, cs in groups.items():
+        if cs:
+            n = {st: sum(1 for c in cs if c["status"] == st) for st in ("pass", "warn", "fail", "not_run")}
+            group_summary[g] = {"n": n, "total": len(cs), "state": "fail" if n["fail"] else "warn" if n["warn"] else "not_run" if n["not_run"] == len(cs) else "pass"}
+    if view and view.approved_at and t.approved_version_id == view.id:
+        review_state = ("ok", "Approved")
+    elif view and (view.status == "validation_blocked" or V.get("overall") == "blocked"):
+        review_state = ("bad", "Blocked: not for client use")
+    elif view and view.status == "ready_for_review":
+        review_state = ("warn", "Review required")
+    else:
+        review_state = ("neutral", S.STATUS_LABEL.get(view.status, view.status) if view else "")
+    role_groups = [("raw", "Raw reports", "table"), ("template", "Excel templates", "table"), ("client_deck", "Client PowerPoint", "present"),
+                   ("screenshots", "Screenshots and reference files", "image")]
+    fsum = [S.file_summary(f) for f in files]
+    files_by_role = {k: [f for f in fsum if (f["role"] == k or (k == "screenshots" and f["role"] == "creatives"))] for k, _, _ in role_groups}
+    feedback_bases = [v for v in versions if v.result or v.status in ("ready_for_review", "approved", "validation_blocked")]
+    can_feedback = bool(cur) and cur.status not in S.PROCESSING and t.status != "awaiting_clarification"
+    return {"user": user, "t": t, "client": t.client.name, "owner": users.get(t.owner_id), "versions": versions, "cur": cur, "view": view,
+            "files": fsum, "files_by_role": files_by_role, "role_groups": role_groups, "events": events,
+            "track": _track(view, {e.stage for e in events}, t), "attention": _attention(t, view, cur, open_qs, vjob or job),
+            "questions": questions, "open_questions": open_qs, "msgs": msgs, "users": users, "art_by_v": art_by_v, "job": job, "vjob": vjob,
+            "R": R, "V": V, "groups": groups, "group_summary": group_summary, "outputs": outputs, "records": records, "previews": previews,
+            "review_state": review_state, "activity": _activity(s, t, versions, users), "feedback_bases": feedback_bases, "can_feedback": can_feedback,
+            "state": _state_token(s, t), "processing": t.status in S.PROCESSING, "profile_name": t.profile.name if t.profile else None,
+            "PREVIEW_LABEL": PREVIEW_LABEL, "nav": "tasks", "crumbs": [("Reporting tasks", "/tasks"), (t.title or "Untitled task", None)]}
 
 
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)
-def workspace(request: Request, task_id: int):
+def workspace(request: Request, task_id: int, v: int | None = None):
     user = require_user(request)
     with Session() as s:
         t = get_task_checked(s, user, task_id)
         if t.status == "draft":
             return RedirectResponse(f"/tasks/{t.id}/edit", status_code=303)
-        ctx = workspace_ctx(s, user, t)
+        ctx = workspace_ctx(s, user, t, v)
         return templates.TemplateResponse(request, "workspace.html", ctx)
 
 
@@ -607,6 +763,7 @@ async def feedback(request: Request, task_id: int):
         raise S.UserError("Describe what you would like to change")
     with Session() as s:
         t = get_task_checked(s, user, task_id)
+        s.refresh(t, with_for_update=True)  # row lock: a double click can't create two revisions
         fids = [int(x) for x in body.get("file_ids") or []]
         owned = {f.id for f in s.scalars(select(TaskFile).where(TaskFile.task_id == t.id, TaskFile.id.in_(fids))).all()}
         v, summary = S.create_revision(s, t, user, text[:8000], int(body["base_version_id"]) if body.get("base_version_id") else None, [f for f in fids if f in owned])
