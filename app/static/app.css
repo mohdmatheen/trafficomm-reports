@@ -293,10 +293,29 @@ details summary{cursor:pointer}
   .lh-caps li+li{border:0}
   .lh-caps li+li::before{content:"·";margin:0 8px;color:rgba(255,255,255,.5)}
   .lh-caps .ic{display:none}
-  .login-card{border-radius:20px}
+  .login-card{border-radius:20px;padding:22px 18px 20px}
   .login-foot{flex-direction:column;gap:4px}
+  .login-head{padding:14px 0 12px}
+  .login-head .logo-mark{width:34px}
+  .login-head .logo-wm{font-size:19px}
+  .login-head .logo-sub{font-size:8.5px;margin-top:3px}
+  .login-chip{min-height:30px;padding:0 10px;font-size:12px}
+  .lh-rule{width:48px;height:4px}
+  .lh-eyebrow{margin-top:12px;font-size:11px;letter-spacing:.2em}
+  .lh-title{font-size:clamp(28px,8.4vw,34px);margin-top:8px}
+  .lh-copy{font-size:15px;margin-top:8px}
+  .lh-caps{margin-top:12px}
+  .login-main{gap:18px;padding:18px 0 24px;align-content:start}
+  .lc-lock{width:52px;height:52px;border-radius:12px}
+  .lc-title{font-size:28px;margin-top:8px}
+  .lc-sub{font-size:15px;margin-top:2px}
+  .lc-btn{margin-top:18px;min-height:52px;font-size:18px}
+  .login-card .notice{margin-top:14px;padding:12px 14px}
+  .login-card .notice+.lc-btn{margin-top:14px}
+  .lc-hint{margin-top:14px;font-size:15px}
+  .lc-sep{margin:18px 0 14px}
 }
-@media (max-width:380px){ .login-chip{font-size:0;gap:0;width:34px;padding:0;justify-content:center} .login-chip .ic{width:16px;height:16px} }
+@media (max-width:380px){ .lh-caps{display:none} .login-chip{font-size:0;gap:0;width:34px;padding:0;justify-content:center} .login-chip .ic{width:16px;height:16px} }
 @media (max-height:760px) and (min-width:821px){
   .login-main{padding:24px 0}
   .lh-title{font-size:clamp(40px,4.6vw,76px)}
