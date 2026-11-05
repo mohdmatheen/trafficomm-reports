@@ -51,11 +51,11 @@ def zoho_login(app, monkeypatch, email, *, aud=CID, verified=True, nonce_ok=True
     assert r.status_code == 303
     loc = urlparse(r.headers["location"])
     q = parse_qs(loc.query)
-    assert loc.netloc == "accounts.zoho.com" and loc.path == "/oauth/v2/auth"
+    assert loc.netloc == "accounts.zoho.in" and loc.path == "/oauth/v2/auth"
     assert q["client_id"] == [CID] and q["redirect_uri"] == ["https://reports.example.test/auth/zoho/callback"]
     assert "openid" in q["scope"][0] and "email" in q["scope"][0]
     nonce = q["nonce"][0] if nonce_ok else "other"
-    claims = {"iss": "https://accounts.zoho.com", "aud": aud, "nonce": nonce, "exp": time.time() + 600,
+    claims = {"iss": "https://accounts.zoho.in", "aud": aud, "nonce": nonce, "exp": time.time() + 600,
               "email": email, "email_verified": verified, "name": "Test Person"}
     seen = {}
 

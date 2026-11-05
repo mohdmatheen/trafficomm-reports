@@ -39,7 +39,7 @@ def authorize_url(session: dict, request_base: str) -> str:
     state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
     session["zoho_state"], session["zoho_nonce"] = state, nonce
     q = {"response_type": "code", "client_id": settings.zoho_client_id, "scope": SCOPES,
-         "redirect_uri": redirect_uri(request_base), "state": state, "nonce": nonce, "prompt": "select_account"}
+         "redirect_uri": redirect_uri(request_base), "state": state, "nonce": nonce}
     return settings.zoho_accounts_url + "/oauth/v2/auth?" + urlencode(q)
 
 
