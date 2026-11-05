@@ -1,26 +1,21 @@
 # Login background image
 
-**Status: temporary placeholder. A licensed photograph is still needed for final delivery.**
+**Source:** original AI-generated image, created with Canva's image generator in Matheen's Canva
+account on 5 Nov 2026 (Canva media `MAHaEr15r5E`) and supplied by Matheen as `width_1600.png`
+(1600 x 899 px). It shows a fictional team in a warm, modern office (a presenter at a chart screen,
+colleagues with laptops). The people are not real employees, and the image has no text or interface
+elements in it.
 
-The login page shows a full-screen photo behind a layered charcoal overlay. The files in
-`app/static/img/login-hero-{960,1600,2400}.{webp,jpg}` are a *generated* placeholder: an abstract,
-heavily blurred warm office scene (window light, pendant lamps, wall screens), made by
-`scripts/make_login_placeholder.py`. It has no people or real location in it and no licensing
-restrictions, but it is not the final asset.
+Files: `app/static/img/login-hero-{960,1280,1600}.{webp,jpg}`. The source is 1600 px wide, so it is
+not upscaled; on wider screens the browser scales the 1600 px file under the dark overlay.
 
-The build environment could not reach stock-photo hosts, so no licensed photograph was downloaded.
-
-## Asset needed
-
-- A licensed or company-owned photo of a contemporary digital media team collaborating in an office
-  (laptops, screens with charts, natural poses). Warm, subdued light. Faces not in sharp focus.
-- Landscape, at least 2400 x 1500 px. Keep the left ~45% calm and darker (the headline sits there).
-- Record the source and licence here when it is added.
+The page lays a charcoal overlay (`.login-shade` in `app/static/app.css`) over the photo. It is darkest
+behind the headline on the left and lighter towards the sign-in card, so the scene stays visible
+while the text keeps enough contrast.
 
 ## How to replace it
 
-1. Soften it slightly (Gaussian blur about 6-10 px at 2400 px wide) if it is not already out of focus.
-2. Export each width (960, 1600, 2400) as WebP (quality ~72) and progressive JPEG (quality ~74),
-   using the same file names. Aim for under 250 KB at 2400 px.
-3. No template or CSS change is needed. If the focal point differs, adjust `object-position`
-   on `.login-photo img` in `app/static/app.css`.
+1. Use a landscape image with no baked-in text, ideally at least 2400 px wide. Record its source here.
+2. Export 960, 1280 and 1600 px widths (add 2400 if the source allows, and list it in the `srcset` and
+   preload in `app/templates/login.html`) as WebP (quality ~74) and progressive JPEG (quality ~76).
+3. If the focal point differs, adjust `object-position` on `.login-photo img`.

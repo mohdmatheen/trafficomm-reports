@@ -9,18 +9,14 @@ services:
     dockerfilePath: ./deploy/Dockerfile
     branch: zoho-only-redesign
     autoDeploy: true
-    plan: standard   # same size as production so report processing behaves the same
+    plan: free   # free instance: no paid resources are created; only used to verify sign-in
     region: frankfurt
     healthCheckPath: /healthz
-    disk:
-      name: storage
-      mountPath: /data
-      sizeGB: 1
     envVars:
       - key: DATABASE_URL
         fromDatabase: {name: trafficomm-staging-db, property: connectionString}
       - key: STORAGE_DIR
-        value: /data/storage
+        value: /tmp/storage   # ephemeral on the free plan; fine for a sign-in check
       - key: COOKIE_SECURE
         value: "1"
       - key: SECRET_KEY
@@ -36,5 +32,5 @@ services:
         value: matheen.m@trafficomm.com
 databases:
   - name: trafficomm-staging-db
-    plan: basic-256mb
+    plan: free
     region: frankfurt
