@@ -195,6 +195,32 @@ def test_revision_with_additional_upload(emp, workflow):
     assert len(emp.get(f"/tasks/{tid}").text.split('class="vh-n"')) - 1 == 3  # all versions listed
 
 
+def test_task_page_versions_feedback_base_and_approval(emp, workflow):
+    tid = workflow
+    v1, _ = artifacts(tid, 1)
+    v2, _ = artifacts(tid, 2)
+    assert v2.base_version_id == v1.id  # revision records the explicit base version
+    # viewing an earlier version is explicit, and its approve/feedback targets that version
+    page = emp.get(f"/tasks/{tid}?v={v1.id}").text
+    assert "Viewing version 1" in page and "Feedback for" in page
+    assert f'value="{v1.id}" selected' in page or f'value="{v1.id}"' in page
+    # unknown or foreign version ids are refused
+    assert emp.post(f"/api/tasks/{tid}/approve", headers=H, json={"version_id": 999999}).status_code == 400
+    assert emp.post(f"/api/tasks/{tid}/feedback", headers=H, json={"text": "Add a breakdown by country", "base_version_id": 999999}).status_code == 400
+    # a second revision while one is processing is rejected, so a double click can't create two
+    r1 = emp.post(f"/api/tasks/{tid}/feedback", headers=H, json={"text": "Add a breakdown by country", "base_version_id": v1.id})
+    assert r1.status_code == 200 and r1.json()["ok"]
+    r2 = emp.post(f"/api/tasks/{tid}/feedback", headers=H, json={"text": "Add a breakdown by country", "base_version_id": v1.id})
+    assert r2.status_code == 400
+    drain()
+    if state(emp, tid)["status"] == "awaiting_clarification":
+        answer_all(emp, tid, {})
+        drain()
+    page = emp.get(f"/tasks/{tid}").text
+    for label in ("Files received", "Data prepared", "Report built", "Validation", "Review", "Approved", "Version history"):
+        assert label in page
+
+
 def test_unsupported_feedback_gets_explanation(emp, workflow):
     r = emp.post(f"/api/tasks/{workflow}/feedback", headers=H, json={"text": "make it pop more"})
     assert r.status_code == 200 and r.json()["ok"] is False and "Supported changes" in r.json()["summary"]

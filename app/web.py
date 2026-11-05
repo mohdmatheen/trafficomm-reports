@@ -532,7 +532,7 @@ STAGE_ORDER = [k for k, _ in STAGES]
 OUTPUT_KINDS = ("excel", "excel_consolidated", "deck_update", "deck_new", "pdf")
 OUTPUT_TYPE = {"excel": "Excel workbook", "excel_consolidated": "Excel workbook", "deck_update": "PowerPoint deck", "deck_new": "PowerPoint deck", "pdf": "PDF"}
 PREVIEW_FOR = {"excel": ("template", "excel"), "excel_consolidated": ("excel", "template"), "deck_update": ("deck_update",), "deck_new": ("deck_new",)}
-PREVIEW_LABEL = {"deck_update": "Updated client deck", "deck_new": "New deck", "excel": "Excel report", "template": "Populated template"}
+PREVIEW_LABEL = {"deck_update": "Updated client deck", "deck_new": "New deck", "excel": "Excel report", "excel_consolidated": "Consolidated workbook", "template": "Populated template"}
 CHECK_GROUP = {"excel": "workbook", "template": "workbook", "deck": "presentation", "crossfile": "presentation", "labels": "presentation",
                "deck_flags": "presentation", "deck_new": "presentation", "layout": "presentation"}
 CHECK_NEXT = {
@@ -586,7 +586,7 @@ def _track(v: TaskVersion | None, reached: set, t: Task) -> list[dict]:
             st, note = "attention", "Needs your answer"
         elif k == "validation" and V:
             st = {"blocked": "attention", "warnings": "done", "passed": "done"}.get(V.get("overall"), "done")
-            note = {"blocked": f"{V['counts'].get('fail', 0)} failed", "warnings": f"{V['counts'].get('warn', 0)} warning(s)", "passed": "All passed"}.get(V.get("overall"), "")
+            note = {"blocked": f"{V['counts'].get('fail', 0)} failed", "warnings": f"{V['counts'].get('warn', 0)} warning" + ("" if V["counts"].get("warn", 0) == 1 else "s"), "passed": "All passed"}.get(V.get("overall"), "")
             if v.status in S.PROCESSING and here:
                 st, note = "active", "In progress"
         elif k == "review":
