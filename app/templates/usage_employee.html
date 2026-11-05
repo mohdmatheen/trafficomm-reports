@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "partials/ui.html" import icon, avatar %}
+{% block page %}usage-employee{% endblock %}
+{% block title %}{{ name }} · Usage &amp; costs · Trafficomm{% endblock %}
+{% macro n(v) %}{{ '{:,}'.format(v or 0) }}{% endmacro %}
+{% block content %}
+<div class="page-head">
+  <div class="owner uc-person">{{ avatar(name, 'lg') }}<div><h1>{{ name }}</h1><p class="page-sub">{{ email or '' }}{% if person and not person.active %} · access revoked{% elif not person %} · account removed (history kept){% endif %}</p></div></div>
+  <a class="btn" href="/admin/usage?range={{ rng }}&start={{ r['from'] }}&end={{ r['to'] }}">{{ icon('arrow-left') }}Back to usage &amp; costs</a>
+</div>
+<p class="small muted">Period {{ r['from'].strftime('%d %b %Y') }} – {{ r['to'].strftime('%d %b %Y') }} (IST). Prompts and report content are never shown here.</p>
+
+{% if emp %}
+<div class="uc-stats">
+  <div class="card"><span class="muted small">Tasks worked on</span><b>{{ emp.tasks }}</b></div>
+  <div class="card"><span class="muted small">Versions</span><b>{{ emp.versions }}</b></div>
+  <div class="card"><span class="muted small">Successful requests</span><b>{{ n(emp.succeeded) }}</b><span class="small muted">of {{ n(emp.attempts) }} attempts · {{ emp.retries }} retries · {{ emp.failed }} failed</span></div>
+  <div class="card"><span class="muted small">Tokens</span><b>{{ n(emp.tokens) }}</b><span class="small muted">in {{ n(emp.input) }} · cache read {{ n(emp.cache_read) }} · cache write {{ n(emp.cache_write) }} · out {{ n(emp.output) }}</span></div>
+  <div class="card"><span class="muted small">Attributable Claude cost</span><b class="uc-muted">Unavailable</b><span class="small muted">Shared server key; the provider can’t split cost by employee.</span></div>
+</div>
+<p class="small">Models: {{ emp.models|join(', ') or '—' }} · Awaiting provider cost: {{ n(emp.pending) }} requests</p>
+{% endif %}
+
+<section class="card ad-card" aria-labelledby="h-t"><header class="ad-head"><div><h2 id="h-t">Tasks</h2></div></header>
+  <div class="tbl-wrap"><table class="tbl compact"><thead><tr><th scope="col">Task</th><th scope="col">Client</th><th scope="col">Versions</th><th scope="col">Steps</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Tokens</th></tr></thead><tbody>
+  {% for t in det.tasks %}<tr><td>{% if t.task_id %}<a href="/tasks/{{ t.task_id }}">Task #{{ t.task_id }}</a>{% else %}—{% endif %}</td><td>{{ t.client or '—' }}</td><td>{% for vn in t.versions %}v{{ vn }}{{ ', ' if not loop.last }}{% endfor %}</td><td>{{ t.steps|join(', ') }}</td><td class="num">{{ t.succeeded }} of {{ t.attempts }}</td><td class="num">{{ n(t.tokens) }}</td></tr>
+  {% else %}<tr><td colspan="6" class="muted">No requests in this period.</td></tr>{% endfor %}
+  </tbody></table></div>
+  <p class="small muted">Task links open only while the task exists. Usage records are kept after a task is deleted by retention.</p>
+</section>
+
+<section class="card ad-card" aria-labelledby="h-r"><header class="ad-head"><div><h2 id="h-r">Requests</h2><p>Latest {{ det.requests|length }} attempts. Retries show the attempt they continue.</p></div></header>
+  <div class="tbl-wrap"><table class="tbl compact uc-req"><thead><tr><th scope="col">Completed</th><th scope="col">Task</th><th scope="col">Step</th><th scope="col">Model</th><th scope="col">Attempt</th><th scope="col">Status</th><th scope="col" class="num">In / out tokens</th><th scope="col">Provider request</th></tr></thead><tbody>
+  {% for x in det.requests %}<tr>
+    <td>{{ (x.completed_at or x.started_at)|local }}</td>
+    <td>{% if x.task_id %}#{{ x.task_id }}{% if x.version_number %} v{{ x.version_number }}{% endif %}{% endif %}{% if x.job_id %} <span class="muted small">job {{ x.job_id }}</span>{% endif %}</td>
+    <td>{{ x.step }}</td><td>{{ x.model or x.model_requested }}</td>
+    <td>{{ x.attempt }}{% if x.attempt > 1 %} <span class="muted small">of #{{ x.first_attempt_id }}</span>{% endif %}</td>
+    <td>{% set tn = {'succeeded':'ok','failed':'bad','refused':'warn','started':'info'}.get(x.status,'neutral') %}<span class="badge-st tone-{{ tn }}"><span class="bdot" aria-hidden="true"></span>{{ x.status|capitalize }}</span>{% if x.error_type %} <span class="muted small">{{ x.error_type }}</span>{% endif %}</td>
+    <td class="num">{{ n((x.input_tokens or 0) + (x.cache_read_tokens or 0) + (x.cache_creation_5m_tokens or 0) + (x.cache_creation_1h_tokens or 0)) }} / {{ n(x.output_tokens) }}</td>
+    <td class="mono small break">{{ x.provider_request_id or '—' }}</td>
+  </tr>{% else %}<tr><td colspan="8" class="muted">No requests in this period.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

@@ -259,6 +259,65 @@
     window.addEventListener("beforeunload", (e) => { if ($$(".rule-form").some((f) => !f.hidden && $("[data-state]", f).textContent === "Unsaved changes")) { e.preventDefault(); e.returnValue = ""; } });
   }
 
+  // ------------------------------------------------------------------ usage & costs
+  function initUsage() {
+    const f = $("#ucFilters"); if (!f) return;
+    const range = $("#uc-range");
+    $$("[data-autosubmit]", f).forEach((el) => el.addEventListener("change", () => {
+      const custom = range.value === "custom";
+      $$(".uc-custom", f).forEach((x) => { x.hidden = !custom; });
+      if (el === range && custom) { $("#uc-start").focus(); return; }  // wait for dates
+      f.requestSubmit ? f.requestSubmit() : f.submit();
+    }));
+    $$(".uc-custom input", f).forEach((el) => el.addEventListener("change", () => { if ($("#uc-start").value && $("#uc-end").value) f.submit(); }));
+
+    // Sync now: debounced on the server; the button only reports what happened
+    const sb = $("#ucSync");
+    sb.addEventListener("click", async () => {
+      if (sb.disabled) return; sb.disabled = true; const old = sb.innerHTML; sb.lastChild.textContent = "Syncing…";
+      try { const j = await api("POST", "/api/admin/usage/sync"); toast(j.message, !j.started); if (j.started) setTimeout(() => location.reload(), 8000); }
+      catch (e) { toast(e.message, true); }
+      finally { setTimeout(() => { sb.disabled = false; sb.innerHTML = old; }, 3000); }
+    });
+
+    // employee table: filter and sort over server-rendered rows
+    function bindTable() {
+      const q = $("#ucQ"), tb = $("#ucEmp tbody");
+      if (q) q.addEventListener("input", () => { const t = q.value.trim().toLowerCase(); $$("[data-uc-row]").forEach((r) => { r.hidden = !!t && !r.dataset.name.includes(t); }); });
+      $$("#ucEmp .th-sort").forEach((b) => b.addEventListener("click", () => {
+        const k = b.dataset.sort, th = b.closest("th");
+        const cur = th.getAttribute("aria-sort");
+        const asc = cur === "descending" ? true : (cur === "ascending" ? false : k === "name");
+        $$("#ucEmp th[aria-sort]").forEach((x) => x.setAttribute("aria-sort", "none")); th.setAttribute("aria-sort", asc ? "ascending" : "descending");
+        const rows = $$("[data-uc-row]", tb);
+        rows.sort((a, c) => { const x = k === "name" ? a.dataset.name : +a.dataset[k], y = k === "name" ? c.dataset.name : +c.dataset[k]; return (x > y ? 1 : x < y ? -1 : 0) * (asc ? 1 : -1); });
+        rows.forEach((r) => tb.appendChild(r));
+      }));
+    }
+    bindTable();
+
+    // live application activity over SSE. Only activity refreshes; provider-confirmed costs never change here.
+    const url = body.dataset.usageStream; if (!url || !window.EventSource) return;
+    let pending = null, es;
+    const badge = (tone, text) => { const b = $("#streamBadge"); if (b) { b.className = "badge-st tone-" + tone; b.lastChild.textContent = text; } };
+    const refresh = async () => {
+      pending = null;
+      if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#activityBody")) return; // don't yank focus
+      const qs = new URLSearchParams(new FormData(f)); qs.set("partial", "activity");
+      try { const r = await fetch("/admin/usage?" + qs, { credentials: "same-origin" }); if (r.ok) { $("#activityBody").innerHTML = await r.text(); bindTable(); } } catch (e) { /* keep current */ }
+    };
+    es = new EventSource(url);
+    es.addEventListener("activity", () => {
+      const la = $("#lastActivity");
+      if (la) la.textContent = "Latest request " + new Date().toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }) + " IST";
+      if (!pending) pending = setTimeout(refresh, 1500);
+    });
+    es.addEventListener("unavailable", () => { es.close(); badge("warn", "Live updates paused"); });
+    es.onerror = () => badge("warn", "Reconnecting…");
+    es.onopen = () => badge("ok", "Streaming");
+    window.addEventListener("pagehide", () => es.close());
+  }
+
   // ------------------------------------------------------------------ report builder
   function initNewTask() {
     const form = $("#taskForm"); if (!form) return;
@@ -646,5 +705,6 @@
     if (p === "new_task") initNewTask();
     if (p === "workspace") initWorkspace();
     if (p === "admin") initAdmin();
+    if (p === "usage") initUsage();
   });
 })();

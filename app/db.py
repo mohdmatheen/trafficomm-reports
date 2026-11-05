@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint,
+from sqlalchemy import (JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint,
                         create_engine, event, select)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -197,6 +197,141 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(60))
     target: Mapped[str] = mapped_column(String(200))
     at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ---------------------------------------------------------------------------
+# Usage & costs ledger. No foreign keys to tasks/users on purpose: rows must survive retention
+# deletes and account changes, so names are snapshotted at request time.
+# ---------------------------------------------------------------------------
+class AIRequest(Base):
+    """One attempt at one application-initiated model request (retries are separate rows)."""
+    __tablename__ = "ai_requests"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    initiated_by: Mapped[str] = mapped_column(String(10), default="employee")  # employee | system
+    user_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    user_name: Mapped[str | None] = mapped_column(String(120))
+    user_email: Mapped[str | None] = mapped_column(String(200))
+    task_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    version_id: Mapped[int | None] = mapped_column(Integer)
+    version_number: Mapped[int | None] = mapped_column(Integer)
+    job_id: Mapped[int | None] = mapped_column(Integer)
+    client_name: Mapped[str | None] = mapped_column(String(200))
+    step: Mapped[str] = mapped_column(String(40))  # instructions | feedback | commentary
+    provider: Mapped[str] = mapped_column(String(20), default="anthropic")
+    model_requested: Mapped[str | None] = mapped_column(String(80))
+    model: Mapped[str | None] = mapped_column(String(80))  # as returned by the provider
+    credential_ref: Mapped[str | None] = mapped_column(String(80))  # configured key id or a non-reversible fingerprint
+    workspace_ref: Mapped[str | None] = mapped_column(String(80))
+    provider_request_id: Mapped[str | None] = mapped_column(String(120))
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    first_attempt_id: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="started")  # started | succeeded | failed | refused
+    error_type: Mapped[str | None] = mapped_column(String(80))
+    service_tier: Mapped[str | None] = mapped_column(String(30))
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    cache_creation_5m_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    cache_creation_1h_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    cache_read_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    web_search_requests: Mapped[int | None] = mapped_column(Integer)
+
+
+class ProviderCostRow(Base):
+    """Provider-reported cost for one bucket and dimension combination. Replaced, never summed, on resync."""
+    __tablename__ = "provider_cost_rows"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20), index=True)
+    dedup_key: Mapped[str] = mapped_column(String(64), unique=True)
+    bucket_start: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    bucket_end: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    workspace_id: Mapped[str | None] = mapped_column(String(80))
+    api_key_id: Mapped[str | None] = mapped_column(String(80))
+    model: Mapped[str | None] = mapped_column(String(80))
+    service_tier: Mapped[str | None] = mapped_column(String(30))
+    cost_type: Mapped[str | None] = mapped_column(String(40))
+    token_type: Mapped[str | None] = mapped_column(String(60))
+    amount: Mapped[object] = mapped_column(Numeric(20, 6))  # in the provider's unit (Anthropic: cents)
+    list_amount: Mapped[object | None] = mapped_column(Numeric(20, 6))
+    amount_unit: Mapped[str] = mapped_column(String(20), default="USD_cents")
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    scope: Mapped[str] = mapped_column(String(20), default="unmapped")  # app | excluded | unmapped
+    data_refreshed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    retrieved_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+    raw_group: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ProviderUsageRow(Base):
+    __tablename__ = "provider_usage_rows"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20), index=True)
+    dedup_key: Mapped[str] = mapped_column(String(64), unique=True)
+    bucket_start: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    bucket_end: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    workspace_id: Mapped[str | None] = mapped_column(String(80))
+    api_key_id: Mapped[str | None] = mapped_column(String(80))
+    model: Mapped[str | None] = mapped_column(String(80))
+    scope: Mapped[str] = mapped_column(String(20), default="unmapped")
+    requests: Mapped[int | None] = mapped_column(BigInteger)
+    uncached_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_creation_5m_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_creation_1h_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    web_search_requests: Mapped[int] = mapped_column(BigInteger, default=0)
+    data_refreshed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    retrieved_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class CredentialMapping(Base):
+    """Which provider workspaces / API keys belong to this reporting app, with effective dates."""
+    __tablename__ = "credential_mappings"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20))
+    kind: Mapped[str] = mapped_column(String(20))  # workspace | api_key | render_service
+    external_id: Mapped[str] = mapped_column(String(120))
+    label: Mapped[str] = mapped_column(String(120), default="")
+    scope: Mapped[str] = mapped_column(String(20), default="app")  # app | excluded
+    source: Mapped[str] = mapped_column(String(20), default="env")  # env | admin
+    effective_from: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+    effective_to: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SyncState(Base):
+    __tablename__ = "sync_state"
+    source: Mapped[str] = mapped_column(String(40), primary_key=True)  # anthropic_cost | anthropic_usage | render | fx
+    status: Mapped[str] = mapped_column(String(30), default="never")  # never | ok | error | not_configured | unsupported | backoff
+    last_attempt_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    data_refreshed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    coverage_from: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    coverage_to: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    next_allowed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(300))
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class FxRate(Base):
+    __tablename__ = "fx_rates"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    base: Mapped[str] = mapped_column(String(3))
+    quote: Mapped[str] = mapped_column(String(3))
+    rate: Mapped[object] = mapped_column(Numeric(18, 8))
+    source: Mapped[str] = mapped_column(String(120))
+    rate_date: Mapped[str] = mapped_column(String(10))  # the source's own date for the rate
+    retrieved_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    __table_args__ = (UniqueConstraint("base", "quote", "source", "rate_date", name="uq_fx_day"),)
+
+
+class ReconciliationRun(Base):
+    __tablename__ = "reconciliation_runs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+    period_start: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class AppSetting(Base):

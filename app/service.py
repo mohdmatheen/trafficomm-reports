@@ -194,6 +194,8 @@ def create_revision(s, task: Task, user: User, feedback: str, base_version_id: i
     if versions[-1].status in PROCESSING:
         raise UserError("A version is still processing - wait for it to finish or cancel it")
     provider = AI.get_provider()
+    from . import usage
+    provider.attribution = usage.Attribution.for_user(user, task_id=task.id, client_name=task.client.name if getattr(task, "client", None) else None)
     rp = provider.interpret_feedback(feedback, bool(new_file_ids))
     s.add(Message(task_id=task.id, version_id=None, author_id=user.id, kind="feedback", text=feedback + (f"\n[{len(new_file_ids)} new file(s) attached]" if new_file_ids else "")))
     supported = [o for o in rp.ops if o.op != "unsupported"]
@@ -231,6 +233,7 @@ def create_revision(s, task: Task, user: User, feedback: str, base_version_id: i
                     revision_ops=[o.model_dump() for o in rp.ops], plan_overrides=overrides, answers=answers, file_ids=file_ids, created_by=user.id)
     s.add(v)
     s.flush()
+    usage.link_version(getattr(provider, "request_ids", []), v.id, v.number)
     task.current_version_id = v.id
     task.status = "queued"
     task.approved_version_id = None if task.approved_version_id == base.id and False else task.approved_version_id
@@ -441,7 +444,14 @@ def process_job(job_id: int, worker_id: str = "worker"):
             if s2.get(Job, job_id).cancel_requested:
                 raise Cancelled()
 
-    result = run_version(inp, stage, check_cancel)
+    provider = AI.get_provider()
+    from . import usage
+    with Session() as s3:
+        vv, tt = s3.get(TaskVersion, vid), s3.get(Task, tid)
+        creator = s3.get(User, vv.created_by) if vv.created_by else None
+        attr = dict(task_id=tid, version_id=vid, version_number=vv.number, job_id=job_id, client_name=tt.client.name if tt.client else None)
+        provider.attribution = usage.Attribution.for_user(creator, **attr) if creator else usage.Attribution(initiated_by="system", **attr)
+    result = run_version(inp, stage, check_cancel, provider=provider)
     persist_result(job_id, vid, tid, result)
     return {"status": result["status"]}
 

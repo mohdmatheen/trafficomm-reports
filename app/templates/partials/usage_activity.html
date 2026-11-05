@@ -1,0 +1,49 @@
+{% from "partials/ui.html" import icon, avatar %}
+{% macro n(v) %}{{ '{:,}'.format(v or 0) }}{% endmacro %}
+{% macro tok(v) %}{% if v >= 1000000 %}{{ '%.2f'|format(v / 1000000) }}M{% elif v >= 10000 %}{{ '%.1f'|format(v / 1000) }}K{% else %}{{ n(v) }}{% endif %}{% endmacro %}
+<div class="au-tools">
+  <div class="field au-search"><label class="sr" for="ucQ">Filter employees</label>{{ icon('search') }}<input id="ucQ" type="search" placeholder="Filter by name" data-uc-filter></div>
+  <span class="muted small">Sort by clicking a column heading.</span>
+</div>
+<div class="tbl-wrap">
+<table class="tbl uc-emp" id="ucEmp">
+  <caption class="sr">AI usage by employee for the selected period</caption>
+  <thead><tr>
+    <th scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="name">Employee</button></th>
+    <th scope="col" class="num" aria-sort="none"><button type="button" class="th-sort" data-sort="tasks">Tasks</button></th>
+    <th scope="col" class="num" aria-sort="descending"><button type="button" class="th-sort" data-sort="attempts">API requests</button></th>
+    <th scope="col" class="num" aria-sort="none"><button type="button" class="th-sort" data-sort="tokens">Tokens</button></th>
+    <th scope="col" class="num">Confirmed USD</th>
+    <th scope="col" class="num">INR</th>
+    <th scope="col" class="num" aria-sort="none"><button type="button" class="th-sort" data-sort="pending">Awaiting cost</button></th>
+    <th scope="col">Attribution</th>
+  </tr></thead>
+  <tbody>
+  {% for e in d.employees %}
+  <tr data-uc-row data-name="{{ (e.name or '')|lower }}" data-tasks="{{ e.tasks }}" data-attempts="{{ e.attempts }}" data-tokens="{{ e.tokens }}" data-pending="{{ e.pending }}">
+    <th scope="row"><a class="owner" href="/admin/usage/employees/{{ e.user_id }}?range={{ rng }}&start={{ r['from'] }}&end={{ r['to'] }}">{{ avatar(e.name or '?', 'sm') }}<span><b>{{ e.name or ('User ' ~ e.user_id) }}</b>{% if e.user_id in current_users and not current_users[e.user_id].active %} <span class="muted small">(revoked)</span>{% elif e.user_id not in current_users %} <span class="muted small">(account removed)</span>{% endif %}</span></a></th>
+    <td class="num">{{ e.tasks }}</td>
+    <td class="num">{{ n(e.succeeded) }} <span class="muted small">of {{ n(e.attempts) }}</span></td>
+    <td class="num"><details class="uc-tok"><summary>{{ tok(e.tokens) }}</summary><dl><dt>Input</dt><dd>{{ n(e.input) }}</dd><dt>Cache read</dt><dd>{{ n(e.cache_read) }}</dd><dt>Cache write</dt><dd>{{ n(e.cache_write) }}</dd><dt>Output</dt><dd>{{ n(e.output) }}</dd>{% if e.web_search %}<dt>Web searches</dt><dd>{{ n(e.web_search) }}</dd>{% endif %}</dl></details></td>
+    <td class="num muted">Unavailable</td>
+    <td class="num muted">Unavailable</td>
+    <td class="num">{{ n(e.pending) }}</td>
+    <td><span class="badge-st tone-info"><span class="bdot" aria-hidden="true"></span>Activity exact</span></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8"><div class="empty-mini">{{ icon('chat') }}<p><b>No AI requests in this period.</b> Requests appear here as soon as they finish.</p></div></td></tr>
+  {% endfor %}
+  </tbody>
+  {% if d.employees %}
+  <tfoot><tr class="uc-total">
+    <th scope="row">Total</th><td class="num">{{ d.totals.tasks }}</td><td class="num">{{ n(d.totals.succeeded) }} <span class="small">of {{ n(d.totals.attempts) }}</span></td>
+    <td class="num">{{ tok(d.totals.tokens) }}</td><td class="num">Unavailable</td><td class="num">Unavailable</td><td class="num">{{ n(d.totals.pending) }}</td><td></td>
+  </tr></tfoot>
+  {% endif %}
+</table>
+</div>
+<p class="small muted uc-why">{{ icon('info') }}<span><b>Why employee cost is unavailable:</b> this app sends every employee’s requests through one shared server key. The provider reports cost per workspace, key and model, not per person using our website, so its figures can’t be split exactly by employee. Costs aren’t divided proportionally. The exact provider total is shown above, and each employee’s activity is exact.</span></p>
+<div class="uc-chips">
+  <span class="uc-chip">{{ icon('layers') }}System / unattributed: {{ n(d.system.succeeded) }} of {{ n(d.system.attempts) }} requests · {{ tok(d.system.tokens) }} tokens</span>
+  <span class="uc-chip">{{ icon('clock') }}Recent requests awaiting provider cost: {{ n(d.totals.pending) }}</span>
+</div>

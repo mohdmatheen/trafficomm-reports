@@ -3,6 +3,7 @@ server-side access check (owner or admin)."""
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import os
 import secrets
@@ -1024,3 +1025,128 @@ async def api_admin_profile(request: Request, pid: int):
         S.audit(s, admin.id, "edit_profile", p.name)
         s.commit()
         return {"ok": True, "updated_at": p.updated_at.isoformat(), "message": f"Rules saved for {p.name}. They apply to new and revised reports."}
+
+
+# ---------------------------------------------------------------------------
+# Usage & costs (admin only; cost data never reaches non-admin browsers)
+# ---------------------------------------------------------------------------
+from . import usage as U  # noqa: E402
+
+COST_TYPE_LABEL = {"tokens": "Tokens", "web_search": "Web search", "code_execution": "Code execution", "session_usage": "Session usage", "other": "Other"}
+SOURCE_STATUS = {
+    "ok": ("Synced", "ok"), "never": ("Not synced yet", "neutral"), "not_configured": ("Not connected", "neutral"),
+    "error": ("Sync failed", "bad"), "auth_error": ("Key rejected", "bad"), "unsupported": ("Unsupported", "warn"),
+    "unmapped": ("Awaiting mapping", "warn"), "waiting": ("Backing off", "warn"),
+}
+
+
+def _usage_ctx(s, user, rng, start, end, employee, client):
+    r = U.resolve_range(s, rng, start, end, DISPLAY_TZ)
+    emp_id = int(employee) if str(employee or "").isdigit() else None
+    data = U.summary(s, r, emp_id, client or None)
+    people = s.execute(select(U.AIRequest.user_id, func.max(U.AIRequest.user_name)).where(U.AIRequest.user_id.isnot(None)).group_by(U.AIRequest.user_id)).all()
+    current = {u.id: u for u in s.scalars(select(User))}
+    clients = [c for (c,) in s.execute(select(U.AIRequest.client_name).where(U.AIRequest.client_name.isnot(None)).distinct()).all()]
+    return {"user": user, "r": r, "d": data, "people": sorted([(i, (current[i].name if i in current else n) or f"User {i}") for i, n in people], key=lambda x: x[1].lower()),
+            "current_users": current, "clients": sorted(clients), "employee": emp_id, "client": client or "", "rng": r["key"],
+            "COST_TYPE_LABEL": COST_TYPE_LABEL, "SOURCE_STATUS": SOURCE_STATUS, "to_inr": U.to_inr, "money": U.money,
+            "nav": "usage", "crumbs": [("Administration", "/admin"), ("Usage & costs", None)], "tz": DISPLAY_TZ}
+
+
+@app.get("/admin/usage", response_class=HTMLResponse)
+def usage_page(request: Request, range: str = "month", start: str = "", end: str = "", employee: str = "", client: str = "", partial: str = ""):
+    user = require_admin(request)
+    with Session() as s:
+        ctx = _usage_ctx(s, user, range, start, end, employee, client)
+        s.commit()  # tracking start is recorded on first view
+    resp = templates.TemplateResponse(request, "partials/usage_activity.html" if partial == "activity" else "usage.html", ctx)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.get("/admin/usage/employees/{uid}", response_class=HTMLResponse)
+def usage_employee(request: Request, uid: int, range: str = "month", start: str = "", end: str = ""):
+    user = require_admin(request)
+    with Session() as s:
+        r = U.resolve_range(s, range, start, end, DISPLAY_TZ)
+        det = U.employee_detail(s, uid, r)
+        data = U.summary(s, r, uid)
+        u = s.get(User, uid)
+        snap = next(iter(det["requests"]), None)
+        s.commit()
+    if not u and not snap:
+        raise HTTPException(404, "Not found")
+    name = (u.name if u else snap.user_name) or f"User {uid}"
+    resp = templates.TemplateResponse(request, "usage_employee.html", {
+        "user": user, "r": r, "det": det, "d": data, "emp": data["employees"][0] if data["employees"] else None, "person": u, "name": name,
+        "email": (u.email if u else snap.user_email), "uid": uid, "rng": r["key"], "SOURCE_STATUS": SOURCE_STATUS,
+        "nav": "usage", "crumbs": [("Administration", "/admin"), ("Usage & costs", "/admin/usage"), (name, None)]})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.post("/api/admin/usage/sync")
+def usage_sync(request: Request):
+    admin = require_admin(request)
+    res = U.request_manual_sync()
+    with Session() as s:
+        S.audit(s, admin.id, "usage_sync", "manual" if res["started"] else "debounced")
+        s.commit()
+    return res
+
+
+@app.get("/admin/usage/export.csv")
+def usage_export(request: Request, range: str = "month", start: str = "", end: str = ""):
+    require_admin(request)
+    import csv
+    import io
+    with Session() as s:
+        r = U.resolve_range(s, range, start, end, DISPLAY_TZ)
+        rows = s.scalars(select(U.AIRequest).where(U.AIRequest.started_at >= r["start"], U.AIRequest.started_at < r["end"]).order_by(U.AIRequest.id)).all()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["request_id", "started_at_utc", "completed_at_utc", "initiated_by", "employee_id", "employee", "task_id", "version", "job_id", "step",
+                "model", "attempt", "first_attempt_id", "status", "provider_request_id", "credential_ref", "input_tokens", "output_tokens",
+                "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "web_search_requests"])
+    for x in rows:
+        w.writerow([x.id, x.started_at.isoformat(), x.completed_at.isoformat() if x.completed_at else "", x.initiated_by, x.user_id or "", x.user_name or "",
+                    x.task_id or "", x.version_number or "", x.job_id or "", x.step, x.model or x.model_requested or "", x.attempt, x.first_attempt_id or "",
+                    x.status, x.provider_request_id or "", x.credential_ref or "", x.input_tokens or 0, x.output_tokens or 0, x.cache_read_tokens or 0,
+                    x.cache_creation_5m_tokens or 0, x.cache_creation_1h_tokens or 0, x.web_search_requests or 0])
+    fn = f"app-ai-activity_{r['from']}_{r['to']}.csv"
+    return HTMLResponse(buf.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{fn}"', "Cache-Control": "no-store"})
+
+
+@app.get("/api/admin/usage/stream")
+async def usage_stream(request: Request):
+    """Server-sent events: one message per completed AI request (Postgres LISTEN). Carries no cost figures."""
+    require_admin(request)
+    import asyncio
+
+    from fastapi.responses import StreamingResponse
+
+    async def gen():
+        yield "retry: 15000\n\n"
+        conn = None
+        try:
+            import psycopg
+            dsn = settings.database_url.replace("postgresql+psycopg://", "postgresql://")
+            conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
+            await conn.execute("LISTEN ai_usage")
+            while not await request.is_disconnected():
+                got = False
+                async for n in conn.notifies(timeout=20, stop_after=1):
+                    got = True
+                    yield f"event: activity\ndata: {json.dumps({'request_id': int(n.payload)})}\n\n"
+                if not got:
+                    yield ": keep-alive\n\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.exception("usage stream failed")
+            yield "event: unavailable\ndata: {}\n\n"
+        finally:
+            if conn is not None:
+                await conn.close()
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
