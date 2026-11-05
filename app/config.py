@@ -35,7 +35,7 @@ class Settings:
     public_base_url: str = field(default_factory=lambda: (_env("PUBLIC_BASE_URL") or "").rstrip("/"))
     zoho_client_id: str | None = field(default_factory=lambda: _env("ZOHO_CLIENT_ID"))
     zoho_client_secret: str | None = field(default_factory=lambda: _env("ZOHO_CLIENT_SECRET"))
-    zoho_accounts_url: str = field(default_factory=lambda: (_env("ZOHO_ACCOUNTS_URL") or "https://accounts.zoho.com").rstrip("/"))
+    zoho_accounts_url: str = field(default_factory=lambda: (_env("ZOHO_ACCOUNTS_URL") or "https://accounts.zoho.in").rstrip("/"))  # Trafficomm's Zoho org is on the India data centre
     zoho_allowed_domains: list[str] = field(default_factory=lambda: _csv(_env("ZOHO_ALLOWED_DOMAINS", "trafficomm.com")))
     zoho_admin_emails: list[str] = field(default_factory=lambda: _csv(_env("ZOHO_ADMIN_EMAILS", "matheen.m@trafficomm.com")))
     zoho_auto_provision: bool = field(default_factory=lambda: _env("ZOHO_AUTO_PROVISION", "0") == "1")
