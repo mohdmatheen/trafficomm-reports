@@ -126,6 +126,29 @@ def logout(request: Request):
     return RedirectResponse("/login", status_code=303)
 
 
+@app.get("/account", response_class=HTMLResponse)
+def account_page(request: Request, msg: str = "", error: str = ""):
+    user = require_user(request)
+    return templates.TemplateResponse(request, "account.html", {"user": user, "msg": msg, "error": error})
+
+
+@app.post("/account/password")
+def account_password(request: Request, current: str = Form(...), new: str = Form(...), confirm: str = Form(...)):
+    user = require_user(request)
+    with Session() as s:
+        u = s.get(User, user.id)
+        if not check_password(current, u.password_hash):
+            return RedirectResponse("/account?error=Current password is incorrect", status_code=303)
+        if len(new) < 10:
+            return RedirectResponse("/account?error=New password must be at least 10 characters", status_code=303)
+        if new != confirm:
+            return RedirectResponse("/account?error=The new passwords don't match", status_code=303)
+        u.password_hash = hash_password(new)
+        S.audit(s, u.id, "change_password", u.email)
+        s.commit()
+    return RedirectResponse("/account?msg=Password changed", status_code=303)
+
+
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
@@ -530,6 +553,21 @@ def admin_add_user(request: Request, email: str = Form(...), name: str = Form(..
         S.audit(s, admin.id, "create_user", email)
         s.commit()
     return RedirectResponse("/admin?msg=User created", status_code=303)
+
+
+@app.post("/admin/users/{uid}/password")
+def admin_set_password(request: Request, uid: int, password: str = Form(...)):
+    admin = require_admin(request)
+    if len(password) < 10:
+        return RedirectResponse("/admin?msg=Password must be at least 10 characters", status_code=303)
+    with Session() as s:
+        u = s.get(User, uid)
+        if not u:
+            return RedirectResponse("/admin?msg=User not found", status_code=303)
+        u.password_hash = hash_password(password)
+        S.audit(s, admin.id, "reset_password", u.email)
+        s.commit()
+    return RedirectResponse("/admin?msg=Password updated", status_code=303)
 
 
 @app.post("/admin/users/{uid}/toggle")

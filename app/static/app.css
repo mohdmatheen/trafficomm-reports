@@ -133,3 +133,5 @@ blockquote{margin:6px 0;padding:6px 10px;background:var(--g1);border-left:3px so
 .sr{position:absolute;left:-9999px}
 @media (max-width:1000px){.grid-2,.ws-grid{grid-template-columns:1fr}.ws-side{position:static}.stat-row{grid-template-columns:repeat(2,1fr)}.ws-head,.page-head{flex-direction:column;align-items:stretch}.filters{flex-wrap:wrap}}
 @media (max-width:600px){.row2{grid-template-columns:1fr}.topbar{padding:0 12px}.topbar .who{display:none}.container{padding:0 12px}}
+.topbar a.who{text-decoration:none}.topbar a.who:hover,.topbar a.who.on{color:var(--ink,#0c0c0d)}
+.pw-reset{display:inline-flex;gap:6px;margin-left:6px}.pw-reset input{width:140px;padding:4px 8px;font-size:12px;margin:0}

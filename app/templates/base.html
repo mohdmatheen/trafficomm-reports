@@ -16,7 +16,7 @@
     <a href="/" class="{% if self.page() == 'dashboard' %}on{% endif %}">Dashboard</a>
     <a href="/tasks/new" class="btn btn-primary btn-sm">+ New task</a>
     {% if user.role == 'admin' %}<a href="/admin" class="{% if self.page() == 'admin' %}on{% endif %}">Admin</a>{% endif %}
-    <span class="who">{{ user.name }}{% if user.role == 'admin' %} · admin{% endif %}</span>
+    <a href="/account" class="who{% if self.page() == 'account' %} on{% endif %}">{{ user.name }}{% if user.role == 'admin' %} · admin{% endif %}</a>
     <form method="post" action="/logout" class="inline"><button class="linkbtn">Sign out</button></form>
   </nav>
   {% endif %}

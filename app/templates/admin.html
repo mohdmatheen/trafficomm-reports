@@ -9,7 +9,8 @@
   <h2>Users</h2>
   <table class="tbl compact"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>
   {% for u in users %}<tr><td>{{ u.name }}</td><td>{{ u.email }}</td><td>{{ u.role }}</td><td>{{ 'active' if u.active else 'disabled' }}</td>
-    <td>{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/toggle" class="inline"><button class="btn btn-sm">{{ 'Disable' if u.active else 'Enable' }}</button></form>{% endif %}</td></tr>{% endfor %}
+    <td>{% if u.id != user.id %}<form method="post" action="/admin/users/{{ u.id }}/toggle" class="inline"><button class="btn btn-sm">{{ 'Disable' if u.active else 'Enable' }}</button></form>{% endif %}
+      <form method="post" action="/admin/users/{{ u.id }}/password" class="inline pw-reset"><input name="password" type="password" placeholder="New password" minlength="10" required autocomplete="new-password"><button class="btn btn-sm">Set password</button></form></td></tr>{% endfor %}
   </tbody></table>
   <h3>Add user</h3>
   <form method="post" action="/admin/users" class="row-form">

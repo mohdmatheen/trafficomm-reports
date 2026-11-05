@@ -300,3 +300,29 @@ def test_retention_deletes_old_tasks(admin, emp):
     with Session() as s:
         assert s.get(Task, tid).deleted_at is not None
     assert emp.get(f"/tasks/{tid}").status_code == 404
+
+
+def test_password_change_and_admin_reset(app_client, admin):
+    r = admin.post("/admin/users", data={"email": "pwtest@trafficomm.local", "name": "PW Test", "role": "employee", "password": "first-password-1"}, follow_redirects=False)
+    assert r.status_code == 303
+    u = login(app_client, "pwtest@trafficomm.local", "first-password-1")
+    assert u.get("/account").status_code == 200
+    r = u.post("/account/password", data={"current": "wrong-password", "new": "second-password-2", "confirm": "second-password-2"}, follow_redirects=False)
+    assert "incorrect" in r.headers["location"]
+    r = u.post("/account/password", data={"current": "first-password-1", "new": "second-password-2", "confirm": "nope-nope-nope"}, follow_redirects=False)
+    assert "match" in r.headers["location"]
+    r = u.post("/account/password", data={"current": "first-password-1", "new": "second-password-2", "confirm": "second-password-2"}, follow_redirects=False)
+    assert "changed" in r.headers["location"]
+    bad = TestClient(app_client).post("/login", data={"email": "pwtest@trafficomm.local", "password": "first-password-1"}, follow_redirects=False)
+    assert bad.status_code == 401
+    login(app_client, "pwtest@trafficomm.local", "second-password-2")
+    from app.db import User
+    with Session() as s:
+        uid = s.scalar(select(User.id).where(User.email == "pwtest@trafficomm.local"))
+    assert u.post(f"/admin/users/{uid}/password", data={"password": "admin-set-pw-3"}, follow_redirects=False).status_code == 403
+    r = admin.post(f"/admin/users/{uid}/password", data={"password": "short"}, follow_redirects=False)
+    assert "10" in r.headers["location"]
+    r = admin.post(f"/admin/users/{uid}/password", data={"password": "admin-set-pw-3"}, follow_redirects=False)
+    assert "updated" in r.headers["location"]
+    login(app_client, "pwtest@trafficomm.local", "admin-set-pw-3")
+    assert "Set password" in admin.get("/admin").text
