@@ -324,3 +324,38 @@ def test_live_activity_notifies_without_touching_costs(app, people):
     with Session() as s:
         d = U.summary(s, U.resolve_range(s, "month"))
     assert d["system"]["succeeded"] >= 1  # system usage kept separate from employees
+
+
+def test_render_invoices_entered_by_admin(app, mp, people):
+    boss, ids = people
+    emp = login(app, mp, "owner.one@trafficomm.com")
+    this = now().date().replace(day=1)
+    prev = (this - dt.timedelta(days=1)).replace(day=1)
+    pm, tm = prev.strftime("%Y-%m"), this.strftime("%Y-%m")
+    # admin only
+    assert emp.put("/api/admin/usage/render-invoices", headers=H, json={"month": pm, "amount": "1"}).status_code == 403
+    # validation: future month, negative, too many decimals, junk
+    nxt = (this + dt.timedelta(days=32)).strftime("%Y-%m")
+    for bad in ({"month": nxt, "amount": "5"}, {"month": pm, "amount": "-1"}, {"month": pm, "amount": "1.234"}, {"month": pm, "amount": "abc"}):
+        r = boss.put("/api/admin/usage/render-invoices", headers=H, json=bad)
+        assert r.status_code == 400 and r.json()["detail"]
+    # no entry yet: awaiting, never $0
+    page = boss.get("/admin/usage").text
+    assert "Awaiting entry" in page
+    # enter last month, then replace it (one row per month, Decimal kept exactly)
+    assert boss.put("/api/admin/usage/render-invoices", headers=H, json={"month": pm, "amount": "30.10", "note": "INV-1"}).status_code == 200
+    assert boss.put("/api/admin/usage/render-invoices", headers=H, json={"month": pm, "amount": "$32.22", "note": "INV-1"}).status_code == 200
+    with Session() as s:
+        rc = U.render_cost(s, U.resolve_range(s, "custom", prev.isoformat(), (this - dt.timedelta(days=1)).isoformat()))
+    assert rc["usd"] == Decimal("32.22") and rc["missing"] == [] and rc["whole_months"] is True
+    page = boss.get(f"/admin/usage?range=custom&start={prev.isoformat()}&end={(this - dt.timedelta(days=1)).isoformat()}").text
+    assert "$32.22" in page and "INV-1" in page
+    # this month has no invoice yet: flagged as missing, not prorated
+    with Session() as s:
+        rc = U.render_cost(s, U.resolve_range(s, "month"))
+    assert rc["usd"] is None and rc["missing"] == [tm]
+    # removal is audited and admin only
+    assert emp.delete(f"/api/admin/usage/render-invoices/{pm}", headers=H).status_code == 403
+    assert boss.delete(f"/api/admin/usage/render-invoices/{pm}", headers=H).json()["deleted"] is True
+    with Session() as s:
+        assert U.recent_render_invoices(s) == []

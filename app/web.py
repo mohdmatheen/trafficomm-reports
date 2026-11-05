@@ -1035,9 +1035,23 @@ from . import usage as U  # noqa: E402
 COST_TYPE_LABEL = {"tokens": "Tokens", "web_search": "Web search", "code_execution": "Code execution", "session_usage": "Session usage", "other": "Other"}
 SOURCE_STATUS = {
     "ok": ("Synced", "ok"), "never": ("Not synced yet", "neutral"), "not_configured": ("Not connected", "neutral"),
-    "error": ("Sync failed", "bad"), "auth_error": ("Key rejected", "bad"), "unsupported": ("Unsupported", "warn"),
+    "error": ("Sync failed", "bad"), "auth_error": ("Key rejected", "bad"), "unsupported": ("Unsupported", "warn"), "manual": ("Entered by admin", "info"), "awaiting_entry": ("Awaiting entry", "warn"),
     "unmapped": ("Awaiting mapping", "warn"), "waiting": ("Backing off", "warn"),
 }
+
+
+def _month_label(m: str) -> str:
+    try:
+        return dt.date.fromisoformat(m + "-01").strftime("%b %Y")
+    except (ValueError, TypeError):
+        return m or ""
+
+
+def _invoice_months() -> dict:
+    from zoneinfo import ZoneInfo
+    t = dt.datetime.now(ZoneInfo(DISPLAY_TZ)).date().replace(day=1)
+    prev = (t - dt.timedelta(days=1)).replace(day=1)
+    return {"this_month": t.strftime("%Y-%m"), "default_invoice_month": prev.strftime("%Y-%m")}
 
 
 def _usage_ctx(s, user, rng, start, end, employee, client):
@@ -1050,6 +1064,7 @@ def _usage_ctx(s, user, rng, start, end, employee, client):
     return {"user": user, "r": r, "d": data, "people": sorted([(i, (current[i].name if i in current else n) or f"User {i}") for i, n in people], key=lambda x: x[1].lower()),
             "current_users": current, "clients": sorted(clients), "employee": emp_id, "client": client or "", "rng": r["key"],
             "COST_TYPE_LABEL": COST_TYPE_LABEL, "SOURCE_STATUS": SOURCE_STATUS, "to_inr": U.to_inr, "money": U.money,
+            "month_label": _month_label, **_invoice_months(),
             "nav": "usage", "crumbs": [("Administration", "/admin"), ("Usage & costs", None)], "tz": DISPLAY_TZ}
 
 
@@ -1093,6 +1108,34 @@ def usage_sync(request: Request):
         S.audit(s, admin.id, "usage_sync", "manual" if res["started"] else "debounced")
         s.commit()
     return res
+
+
+@app.put("/api/admin/usage/render-invoices")
+async def usage_render_invoice_put(request: Request):
+    admin = require_admin(request)
+    body = await request.json()
+    with Session() as s:
+        try:
+            inv = U.set_render_invoice(s, admin, str(body.get("month", "")), body.get("amount", ""), str(body.get("note", "")))
+        except U.InvoiceError as e:
+            raise S.UserError(str(e))
+        S.audit(s, admin.id, "render_invoice_set", f"{inv.month} {inv.amount_usd}")
+        s.commit()
+        return {"month": inv.month, "amount": str(inv.amount_usd)}
+
+
+@app.delete("/api/admin/usage/render-invoices/{month}")
+def usage_render_invoice_delete(request: Request, month: str):
+    admin = require_admin(request)
+    with Session() as s:
+        try:
+            ok = U.delete_render_invoice(s, month)
+        except U.InvoiceError as e:
+            raise S.UserError(str(e))
+        if ok:
+            S.audit(s, admin.id, "render_invoice_delete", month)
+        s.commit()
+        return {"deleted": ok}
 
 
 @app.get("/admin/usage/export.csv")

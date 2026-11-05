@@ -22,7 +22,7 @@ from sqlalchemy import func, select, text
 
 from .config import settings
 from .db import (AIRequest, AppSetting, CredentialMapping, FxRate, ProviderCostRow, ProviderUsageRow, ReconciliationRun,
-                 Session, SyncState, now)
+                 RenderInvoice, Session, SyncState, now)
 
 log = logging.getLogger("usage")
 
@@ -494,6 +494,77 @@ def maybe_scheduled_sync():
 # ---------------------------------------------------------------------------
 # 3. reconciliation and dashboard aggregation
 # ---------------------------------------------------------------------------
+# ------------------------------------------------------------------ Render invoices (entered by an admin)
+INVOICE_MAX = Decimal("1000000")
+
+
+class InvoiceError(ValueError):
+    pass
+
+
+def _month(m: str) -> str:
+    try:
+        d = dt.date.fromisoformat((m or "").strip()[:7] + "-01")
+    except ValueError:
+        raise InvoiceError("Choose the invoice month.")
+    if d < dt.date(2020, 1, 1) or d > now().date().replace(day=1):
+        raise InvoiceError("The invoice month can't be in the future.")
+    return d.strftime("%Y-%m")
+
+
+def set_render_invoice(s, admin, month: str, amount, note: str = "") -> RenderInvoice:
+    m = _month(month)
+    try:
+        amt = Decimal(str(amount).replace(",", "").replace("$", "").strip())
+    except Exception:  # noqa: BLE001
+        raise InvoiceError("Enter the invoice total in USD, for example 32.22.")
+    if not amt.is_finite() or amt < 0 or amt >= INVOICE_MAX:
+        raise InvoiceError("Enter the invoice total in USD, for example 32.22.")
+    if amt != amt.quantize(CENT):
+        raise InvoiceError("Use at most 2 decimal places.")
+    inv = s.scalar(select(RenderInvoice).where(RenderInvoice.month == m)) or RenderInvoice(month=m)
+    inv.amount_usd, inv.note = amt, (note or "").strip()[:300]
+    inv.entered_by, inv.entered_by_name, inv.entered_at = admin.id, admin.name or admin.email, now()
+    s.add(inv)
+    return inv
+
+
+def delete_render_invoice(s, month: str) -> bool:
+    inv = s.scalar(select(RenderInvoice).where(RenderInvoice.month == _month(month)))
+    if inv:
+        s.delete(inv)
+    return bool(inv)
+
+
+def _months_between(a: dt.date, b: dt.date) -> list[str]:
+    out, y, m = [], a.year, a.month
+    while (y, m) <= (b.year, b.month):
+        out.append(f"{y:04d}-{m:02d}")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def _inv(i) -> dict:
+    return {"month": i.month, "amount_usd": Decimal(str(i.amount_usd)), "note": i.note or "", "entered_by_name": i.entered_by_name,
+            "entered_at": i.entered_at}
+
+
+def render_cost(s, r: dict) -> dict:
+    """Invoice totals entered by an admin, for the calendar months the period touches. Never prorated."""
+    months = _months_between(r["from"], r["to"])
+    invs = {i.month: _inv(i) for i in s.scalars(select(RenderInvoice).where(RenderInvoice.month.in_(months)))}
+    entered = [invs[m] for m in months if m in invs]
+    missing = [m for m in months if m not in invs]
+    last = r["to"].replace(day=28) + dt.timedelta(days=4)
+    whole = r["from"].day == 1 and (last - dt.timedelta(days=last.day)) == r["to"]
+    return {"months": months, "entered": entered, "missing": missing, "whole_months": whole,
+            "usd": sum((i["amount_usd"] for i in entered), Decimal(0)) if entered else None}
+
+
+def recent_render_invoices(s, limit=12):
+    return [_inv(i) for i in s.scalars(select(RenderInvoice).order_by(RenderInvoice.month.desc()).limit(limit))]
+
+
 def latest_fx(s):
     return s.scalar(select(FxRate).where(FxRate.base == "USD", FxRate.quote == "INR").order_by(FxRate.retrieved_at.desc()))
 
@@ -583,15 +654,20 @@ def summary(s, r: dict, user_id: int | None = None, client: str | None = None) -
         claude["status"] = (an.status if an else "never")
 
     # --- Render: no billing API
-    render = {"status": "unsupported", "usd": None, "services": (sts.get("render").detail or {}).get("services", []) if sts.get("render") else [],
+    rc = render_cost(s, r)
+    render = {"status": "manual" if rc["usd"] is not None else "awaiting_entry", **rc, "invoices": recent_render_invoices(s), "services": (sts.get("render").detail or {}).get("services", []) if sts.get("render") else [],
               "metadata_status": sts.get("render").status if sts.get("render") else "not_configured", "billing_url": RENDER_BILLING_URL}
 
     # --- combined: only complete when every cost source is present, scoped and on the same basis
-    parts = [claude["usd"]]
-    confirmed = sum((p for p in parts if p is not None), Decimal(0)) if claude["usd"] is not None else None
-    complete = False  # Render billing is never available through a supported API
+    parts = [p for p in (claude["usd"], render["usd"]) if p is not None]
+    confirmed = sum(parts, Decimal(0)) if parts else None
+    # complete only when Claude is confirmed for the whole period and every month has a Render invoice
+    # covering exactly the period (invoices are monthly and never prorated)
+    complete = bool(claude["usd"] is not None and not claude.get("partial_period") and not claude.get("stale")
+                    and render["usd"] is not None and not render["missing"] and render["whole_months"])
     combined = {"usd": confirmed, "complete": complete,
-                "label": "Confirmed subtotal — incomplete coverage" if confirmed is not None else "Awaiting source"}
+                "label": ("Confirmed total" if complete else "Confirmed subtotal — incomplete coverage") if confirmed is not None else "Awaiting source",
+                "has_claude": claude["usd"] is not None, "has_render": render["usd"] is not None}
 
     # --- application activity (exact, recorded by this app)
     rq = select(AIRequest).where(AIRequest.started_at >= r["start"], AIRequest.started_at < r["end"])

@@ -8,14 +8,15 @@ Page: `/admin/usage`. Every route checks `require_admin` on the server and is se
 |---|---|---|
 | Live AI activity per employee | This app's own ledger (`ai_requests`) | Written by the server around every Claude call, including retries. Attributed to the signed-in employee who started the task or revision. Exact. |
 | Confirmed Claude cost | Anthropic Usage and Cost Analytics API (beta) | `GET /v1/organizations/analytics/cost` and `/usage`, header `anthropic-beta: analytics-usage-cost-2026-08-24`. Daily buckets, at most 31 days per request. Amounts are decimal strings in USD cents. |
-| Render cost | **Not supported** | Render's public API has no billing, invoice or charge endpoint. The page links to dashboard.render.com/billing and never shows a Render amount. |
+| Render cost | Invoice totals entered by an admin | Render's public API has no billing, invoice or charge endpoint, so an admin enters each monthly invoice total (USD) on the page. One entry per month, replaced when saved again, audited. Never prorated: a period counts the whole invoice of every month it touches, and months without an entry are flagged, not treated as $0. |
 | INR | Frankfurter (`api.frankfurter.dev`, ECB-based daily rate) | Display conversion only. USD stays the record. Rounded once, half-up. |
 
 Employee money is shown as **Unavailable**. All requests use one shared server key, and the provider reports
 cost per workspace, key and model, not per person. Costs are never split proportionally.
 
-Missing data is never shown as $0. The combined figure is always a "Confirmed subtotal", marked as incomplete
-coverage, because Render billing can't be read.
+Missing data is never shown as $0. The combined figure is a "Confirmed total" only when Claude cost is confirmed
+for the whole period, every month has a Render invoice, and the period is whole calendar months. Otherwise it is a
+"Confirmed subtotal — incomplete coverage" that says what is missing.
 
 ## Server environment variables
 

@@ -325,6 +325,18 @@ class FxRate(Base):
     __table_args__ = (UniqueConstraint("base", "quote", "source", "rate_date", name="uq_fx_day"),)
 
 
+class RenderInvoice(Base):
+    """A Render invoice total entered by an admin. Render has no billing API, so this is the only source."""
+    __tablename__ = "render_invoices"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    month: Mapped[str] = mapped_column(String(7), unique=True)  # YYYY-MM, the invoice's billing month
+    amount_usd: Mapped[object] = mapped_column(Numeric(14, 2))
+    note: Mapped[str] = mapped_column(String(300), default="")
+    entered_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    entered_by_name: Mapped[str] = mapped_column(String(200), default="")
+    entered_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class ReconciliationRun(Base):
     __tablename__ = "reconciliation_runs"
     id: Mapped[int] = mapped_column(primary_key=True)
