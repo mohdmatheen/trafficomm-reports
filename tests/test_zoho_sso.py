@@ -1,24 +1,24 @@
-"""Sign in with Zoho (SYNTHETIC: Zoho's token endpoint is replaced by a fake; no network)."""
-import base64
-import json
-import time
-from urllib.parse import parse_qs, unquote, urlparse
+"""Sign in with Zoho - the only sign-in method (SYNTHETIC: Zoho's token endpoint is replaced by a
+fake; no network, no real Zoho account)."""
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app import zoho as Z
 from app.config import settings
-from app.db import AuditLog, Base, Session, User, engine, reset_engine
+from app.db import AuditLog, Base, Session, Task, User, engine, reset_engine
+from tests import zoho_fake
 
 pytestmark = pytest.mark.web
-CID = "1000.TESTCLIENT"
 
 
-def _jwt(claims):
-    enc = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
-    return enc({"alg": "RS256"}) + "." + enc(claims) + ".sig"
+@pytest.fixture(scope="module")
+def monkeypatch_module():
+    mp = pytest.MonkeyPatch()
+    zoho_fake.configure(mp)
+    yield mp
+    mp.undo()
 
 
 @pytest.fixture(scope="module")
@@ -32,52 +32,29 @@ def app(monkeypatch_module):
     return a
 
 
-@pytest.fixture(scope="module")
-def monkeypatch_module():
-    mp = pytest.MonkeyPatch()
-    mp.setattr(settings, "zoho_client_id", CID)
-    mp.setattr(settings, "zoho_client_secret", "test-secret")
-    mp.setattr(settings, "zoho_allowed_domains", ["trafficomm.com"])
-    mp.setattr(settings, "zoho_admin_emails", ["matheen.m@trafficomm.com"])
-    mp.setattr(settings, "zoho_auto_provision", False)
-    mp.setattr(settings, "public_base_url", "https://reports.example.test")
-    yield mp
-    mp.undo()
+def zoho_login(app, monkeypatch, email, **kw):
+    return zoho_fake.sign_in(app, monkeypatch, email, **kw)
 
 
-def zoho_login(app, monkeypatch, email, *, aud=CID, verified=True, nonce_ok=True, server_param=None):
-    c = TestClient(app)
-    r = c.get("/auth/zoho?next=/tasks", follow_redirects=False)
-    assert r.status_code == 303
-    loc = urlparse(r.headers["location"])
-    q = parse_qs(loc.query)
-    assert loc.netloc == "accounts.zoho.in" and loc.path == "/oauth/v2/auth"
-    assert q["client_id"] == [CID] and q["redirect_uri"] == ["https://reports.example.test/auth/zoho/callback"]
-    assert "openid" in q["scope"][0] and "email" in q["scope"][0]
-    nonce = q["nonce"][0] if nonce_ok else "other"
-    claims = {"iss": "https://accounts.zoho.in", "aud": aud, "nonce": nonce, "exp": time.time() + 600,
-              "email": email, "email_verified": verified, "name": "Test Person"}
-    seen = {}
-
-    def fake_exchange(code, server, base, client=None):
-        seen["server"] = server
-        return {"access_token": "x", "id_token": _jwt(claims)}
-
-    monkeypatch.setattr(Z, "exchange_code", fake_exchange)
-    url = f"/auth/zoho/callback?code=abc&state={q['state'][0]}"
-    if server_param:
-        url += "&accounts-server=" + server_param
-    r = c.get(url, follow_redirects=False)
-    return c, r, seen
+H = {"X-Requested-With": "fetch"}
 
 
 def _err(r):
     return parse_qs(urlparse(r.headers["location"]).query).get("error", [""])[0]
 
 
-def test_login_page_shows_zoho(app):
+def test_login_page_is_zoho_only(app):
     r = TestClient(app).get("/login")
     assert "Sign in with Zoho" in r.text and "/auth/zoho" in r.text
+    for gone in ('type="password"', 'type="email"', "password instead", "Other sign-in options", "DESIGN CONCEPT"):
+        assert gone not in r.text
+    for gone in ("Forgot", "Google", "Microsoft", "Create account", "Sign up"):
+        assert gone not in r.text
+    for copy in ("Welcome back.", "Sign in to your reporting workspace.", "Authorized employees only.",
+                 "Internal workspace", "Built for your next report", "Less reporting work.", "More clarity.",
+                 "You’ll continue to Zoho to sign in.", "Need access? Contact your workspace administrator.",
+                 "Built for the Trafficomm team.", "Trafficomm Reporting Workspace", "/static/img/login-hero-"):
+        assert copy in r.text
 
 
 def test_boot_admin_gets_in_as_admin(app, monkeypatch):
@@ -89,18 +66,39 @@ def test_boot_admin_gets_in_as_admin(app, monkeypatch):
     assert c.get("/admin").status_code == 200
 
 
+def test_existing_password_account_links_and_keeps_history(app, monkeypatch):
+    """An account created under password sign-in links to Zoho by email: same row, role and tasks."""
+    with Session() as s:
+        from app.db import Client
+        u = User(email="omar@trafficomm.com", name="Omar", role="admin", password_hash="$2b$12$legacyhashlegacyhashlegacyhashlegacyhashlegacyhashlega")
+        s.add(u)
+        s.flush()
+        cl = s.scalar(select(Client))
+        s.add(Task(client_id=cl.id, owner_id=u.id, title="Legacy task", status="draft"))
+        s.commit()
+        uid = u.id
+    c, r, _ = zoho_login(app, monkeypatch, "OMAR@trafficomm.com")
+    assert r.headers["location"] == "/tasks"
+    with Session() as s:
+        assert s.scalars(select(User).where(User.email.ilike("omar@trafficomm.com"))).all()[0].id == uid
+        assert s.scalar(select(User.password_hash).where(User.id == uid)).startswith("$2b$")  # column left untouched
+    assert c.get("/admin").status_code == 200  # role kept
+    assert "Legacy task" in c.get("/tasks").text
+
+
 def test_unlisted_employee_denied_until_admin_grants(app, monkeypatch):
-    _, r, _ = zoho_login(app, monkeypatch, "sara@trafficomm.com")
-    assert r.headers["location"].startswith("/login?error=") and "access yet" in _err(r)
+    c0, r, _ = zoho_login(app, monkeypatch, "sara@trafficomm.com")
+    assert r.headers["location"] == "/login?error=no_access"
+    page = c0.get("/login?error=no_access").text
+    assert "have access yet" in page and "sara@trafficomm.com" in page
     with Session() as s:
         assert s.scalar(select(User).where(User.email == "sara@trafficomm.com")) is None
 
     admin, _, _ = zoho_login(app, monkeypatch, "matheen.m@trafficomm.com")
-    r = admin.post("/admin/users", data={"email": "Sara@trafficomm.com", "role": "employee"}, follow_redirects=False)
-    assert "Access granted" in unquote(r.headers["location"])
-    # non-Trafficomm emails can't be granted Zoho access
-    r = admin.post("/admin/users", data={"email": "x@gmail.com", "role": "employee"}, follow_redirects=False)
-    assert "can be granted" in unquote(r.headers["location"])
+    r = admin.post("/api/admin/users", headers=H, json={"email": "Sara@trafficomm.com", "role": "employee"})
+    assert r.status_code == 200 and "Access granted" in r.json()["message"] and "No email was sent" in r.json()["message"]
+    r = admin.post("/api/admin/users", headers=H, json={"email": "x@gmail.com", "role": "employee"})
+    assert r.status_code == 400 and "can be granted" in r.json()["detail"]
 
     c, r, _ = zoho_login(app, monkeypatch, "sara@trafficomm.com")
     assert r.headers["location"] == "/tasks"
@@ -108,40 +106,70 @@ def test_unlisted_employee_denied_until_admin_grants(app, monkeypatch):
 
     with Session() as s:
         sid = s.scalar(select(User.id).where(User.email == "sara@trafficomm.com"))
-    admin.post(f"/admin/users/{sid}/role", data={"role": "admin"})
+    assert admin.patch(f"/api/admin/users/{sid}", headers=H, json={"role": "admin"}).status_code == 200
     assert c.get("/admin").status_code == 200  # role is read from the DB on each request
 
-    admin.post(f"/admin/users/{sid}/toggle")  # revoke
+    assert admin.patch(f"/api/admin/users/{sid}", headers=H, json={"active": False}).status_code == 200  # revoke
     assert c.get("/", follow_redirects=False).status_code == 303  # existing session no longer valid
     _, r, _ = zoho_login(app, monkeypatch, "sara@trafficomm.com")
-    assert "revoked" in _err(r)
+    assert _err(r) == "revoked"
     with Session() as s:
         acts = [a.action for a in s.scalars(select(AuditLog).where(AuditLog.target == "sara@trafficomm.com"))]
     assert {"login_denied", "grant_access", "login_zoho", "set_role:admin", "revoke_access"} <= set(acts)
 
 
+def test_domain_alone_never_grants_access(app, monkeypatch):
+    for email in ("new.hire@trafficomm.com", "another@trafficomm.com"):
+        _, r, _ = zoho_login(app, monkeypatch, email)
+        assert _err(r) == "no_access"
+    with Session() as s:
+        assert s.scalar(select(User).where(User.email == "new.hire@trafficomm.com")) is None
+
+
 def test_other_domains_and_bad_tokens_rejected(app, monkeypatch):
     _, r, _ = zoho_login(app, monkeypatch, "someone@gmail.com")
-    assert "Only Trafficomm" in _err(r)
+    assert _err(r) == "unauthorized"
     _, r, _ = zoho_login(app, monkeypatch, "matheen.m@trafficomm.com", aud="1000.OTHERAPP")
-    assert "wasn't issued for this app" in _err(r)
+    assert _err(r) == "failed"
     _, r, _ = zoho_login(app, monkeypatch, "matheen.m@trafficomm.com", nonce_ok=False)
-    assert "expired" in _err(r)
+    assert _err(r) == "expired"
     _, r, _ = zoho_login(app, monkeypatch, "matheen.m@trafficomm.com", verified=False)
-    assert "verified" in _err(r)
+    assert _err(r) == "unauthorized"
     _, r, _ = zoho_login(app, monkeypatch, "matheen.m@trafficomm.com", server_param="https://evil.example.com")
-    assert "unexpected" in _err(r)
+    assert _err(r) == "failed"
 
 
-def test_other_zoho_data_centre_and_bad_state(app, monkeypatch):
+def test_cancel_failure_and_bad_state_messages(app):
+    c = TestClient(app)
+    c.get("/auth/zoho", follow_redirects=False)
+    r = c.get("/auth/zoho/callback?error=access_denied&state=x", follow_redirects=False)
+    assert _err(r) == "cancelled"
+    assert "Sign-in cancelled" in c.get(r.headers["location"]).text
+    c.get("/auth/zoho", follow_redirects=False)
+    r = c.get("/auth/zoho/callback?error=server_error", follow_redirects=False)
+    assert _err(r) == "failed"
+    assert "didn’t complete" in c.get(r.headers["location"]).text
+    r = TestClient(app).get("/auth/zoho/callback?code=abc&state=forged", follow_redirects=False)
+    assert _err(r) == "expired"
+    # free text in the URL is never echoed: unknown codes show the generic failure
+    t = TestClient(app).get("/login?error=Call+0800+to+verify+your+password").text
+    assert "0800" not in t and "didn’t complete" in t
+
+
+def test_other_zoho_data_centre(app, monkeypatch):
     _, r, seen = zoho_login(app, monkeypatch, "matheen.m@trafficomm.com", server_param="https://accounts.zoho.eu")
     assert r.headers["location"] == "/tasks" and seen["server"] == "https://accounts.zoho.eu"
-    r = TestClient(app).get("/auth/zoho/callback?code=abc&state=forged", follow_redirects=False)
-    assert "expired" in _err(r)
 
 
-def test_password_login_can_be_turned_off(app, monkeypatch):
-    monkeypatch.setattr(settings, "password_login", False)
-    r = TestClient(app).post("/login", data={"email": "admin@trafficomm.local", "password": "admin-dev-password"}, follow_redirects=False)
-    assert r.status_code == 403
-    assert "Sign in with a password" not in TestClient(app).get("/login").text
+def test_open_redirect_blocked(app, monkeypatch):
+    _, r, _ = zoho_login(app, monkeypatch, "matheen.m@trafficomm.com", next="//evil.example.com")
+    assert r.headers["location"] == "/"
+
+
+def test_not_configured_shows_admin_message_and_no_fallback(app, monkeypatch):
+    monkeypatch.setattr(settings, "zoho_client_secret", None)
+    c = TestClient(app)
+    assert c.get("/auth/zoho", follow_redirects=False).headers["location"] == "/login?error=not_configured"
+    page = c.get("/login").text
+    assert "isn’t available" in page and 'type="password"' not in page
+    assert c.post("/login", data={"email": "matheen.m@trafficomm.com", "password": "anything"}).status_code == 405

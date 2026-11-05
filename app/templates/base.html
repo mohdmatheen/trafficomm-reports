@@ -1,32 +1,75 @@
-<!doctype html>
+{% from "partials/ui.html" import icon, avatar, logo %}<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#191919">
 <title>{% block title %}Trafficomm Reporting Workspace{% endblock %}</title>
+<link rel="preload" href="/static/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/app.css">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <script src="/static/app.js" defer></script>
+{% block head %}{% endblock %}
 </head>
-<body data-page="{% block page %}{% endblock %}" {% block bodyattrs %}{% endblock %}>
-<header class="topbar">
-  <a class="brand" href="/"><img src="/static/logo.svg" alt=""><span><span class="wm">Trafficomm</span><span class="brand-tag">Reporting Workspace</span></span></a>
-  {% if user %}
-  <nav>
-    <a href="/" class="{% if self.page() == 'dashboard' %}on{% endif %}">Dashboard</a>
-    <a href="/tasks/new" class="btn btn-primary btn-sm">+ New task</a>
-    {% if user.role == 'admin' %}<a href="/admin" class="{% if self.page() == 'admin' %}on{% endif %}">Admin</a>{% endif %}
-    <a href="/account" class="who{% if self.page() == 'account' %} on{% endif %}">{{ user.name }}{% if user.role == 'admin' %} · admin{% endif %}</a>
-    <form method="post" action="/logout" class="inline"><button class="linkbtn">Sign out</button></form>
-  </nav>
-  {% endif %}
-</header>
-{% if user and ai_mocked %}
-<div class="banner-mock">AI mocked (rule-based): no ANTHROPIC_API_KEY is configured, so instruction interpretation and commentary use deterministic rules. All figures are calculated by the engine either way.</div>
-{% endif %}
-<main class="{% block mainclass %}container{% endblock %}">
-{% block content %}{% endblock %}
-</main>
-<div id="toast" class="toast" hidden></div>
+<body data-page="{% block page %}{% endblock %}" class="{% block bodyclass %}{% endblock %}" {% block bodyattrs %}{% endblock %}>
+{% include "partials/icons.html" %}
+{% block body %}
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="shell">
+  <aside class="sidebar" id="sidebar" aria-label="Primary">
+    <div class="sb-top">
+      <a class="sb-brand" href="/" aria-label="Trafficomm Reporting Workspace, overview">{{ logo(True) }}</a>
+      <button class="icon-btn sb-close" type="button" data-drawer-close aria-label="Close menu">{{ icon('x') }}</button>
+    </div>
+    {% if user %}
+    <nav class="sb-nav">
+      <a href="/" class="sb-link{% if nav == 'overview' %} on{% endif %}"{% if nav == 'overview' %} aria-current="page"{% endif %}>{{ icon('home') }}<span>Overview</span></a>
+      <a href="/tasks" class="sb-link{% if nav == 'tasks' %} on{% endif %}"{% if nav == 'tasks' %} aria-current="page"{% endif %}>{{ icon('layers') }}<span>Reporting tasks</span></a>
+      {% if user.role == 'admin' %}
+      <hr class="sb-sep">
+      <a href="/admin" class="sb-link{% if nav == 'admin' %} on{% endif %}"{% if nav == 'admin' %} aria-current="page"{% endif %}>{{ icon('gear') }}<span>Administration</span></a>
+      {% endif %}
+    </nav>
+    <div class="sb-foot">
+      <details class="user-menu">
+        <summary>
+          {{ avatar(user.name) }}
+          <span class="um-id"><span class="um-name">{{ user.name }}</span><span class="um-role">{{ 'Admin' if user.role == 'admin' else 'Employee' }}</span></span>
+          {{ icon('chevron-down', 'um-chev') }}
+        </summary>
+        <div class="um-panel">
+          <div class="um-email">{{ user.email }}</div>
+          <a href="/account" class="um-item">{{ icon('user') }}Your account</a>
+        </div>
+      </details>
+      <form method="post" action="/logout"><button class="sb-link sb-signout" type="submit">{{ icon('logout') }}<span>Sign out</span></button></form>
+    </div>
+    {% endif %}
+  </aside>
+  <div class="drawer-scrim" data-drawer-close hidden></div>
+  <div class="main-col">
+    <header class="topbar">
+      {% if user %}<button class="icon-btn menu-btn" type="button" data-drawer-open aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">{{ icon('menu') }}</button>{% endif %}
+      <a class="topbar-logo" href="/" aria-label="Trafficomm, overview">{{ logo(False) }}</a>
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <ol>
+          <li><a href="/">Workspace</a></li>
+          {% for label, href in (crumbs or []) %}
+          <li>{% if href %}<a href="{{ href }}">{{ label }}</a>{% else %}<span aria-current="page">{{ label }}</span>{% endif %}</li>
+          {% endfor %}
+        </ol>
+      </nav>
+      {% if user %}<span class="topbar-user" title="{{ user.email }}">{{ avatar(user.name) }}</span>{% endif %}
+    </header>
+    {% if user and ai_mocked %}
+    <div class="banner-mock" role="note">{{ icon('info') }}<span>AI is in rule-based mode: no ANTHROPIC_API_KEY is configured, so instructions and commentary use built-in rules. All figures are calculated by the engine either way.</span></div>
+    {% endif %}
+    <main id="main" class="{% block mainclass %}page{% endblock %}" tabindex="-1">
+    {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+{% endblock %}
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

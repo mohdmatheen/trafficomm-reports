@@ -25,7 +25,12 @@ _ACCOUNTS_RE = re.compile(r"^https://accounts\.(zoho\.[a-z]{2,3}(\.[a-z]{2})?|zo
 
 
 class ZohoError(Exception):
-    """A sign-in failure whose message is safe to show the user."""
+    """A sign-in failure. `code` picks the message shown on the sign-in page:
+    failed (provider problem), expired (state/nonce/expiry), unauthorized (identity not acceptable)."""
+
+    def __init__(self, msg: str, code: str = "failed"):
+        super().__init__(msg)
+        self.code = code
 
 
 def redirect_uri(request_base: str) -> str:
@@ -87,16 +92,16 @@ def identity(token_body: dict, nonce: str | None, server: str) -> dict:
     if not _ACCOUNTS_RE.match(iss) or settings.zoho_client_id not in auds:
         raise ZohoError("The Zoho sign-in token wasn't issued for this app.")
     if not nonce or claims.get("nonce") != nonce:
-        raise ZohoError("The sign-in session expired. Please try again.")
+        raise ZohoError("The sign-in session expired. Please try again.", "expired")
     if float(claims.get("exp", 0)) < time.time() - 60:
-        raise ZohoError("The sign-in session expired. Please try again.")
+        raise ZohoError("The sign-in session expired. Please try again.", "expired")
     email = str(claims.get("email") or "").strip().lower()
     if not email:
-        raise ZohoError("Your Zoho account didn't share an email address.")
+        raise ZohoError("Your Zoho account didn't share an email address.", "unauthorized")
     if claims.get("email_verified") in (False, "false"):
-        raise ZohoError("Your Zoho email address isn't verified.")
+        raise ZohoError("Your Zoho email address isn't verified.", "unauthorized")
     domain = email.rsplit("@", 1)[-1]
     if settings.zoho_allowed_domains and domain not in settings.zoho_allowed_domains:
-        raise ZohoError("Only Trafficomm Zoho accounts can sign in.")
+        raise ZohoError("Only Trafficomm Zoho accounts can sign in.", "unauthorized")
     name = str(claims.get("name") or " ".join(x for x in (claims.get("given_name"), claims.get("family_name")) if x) or email.split("@")[0])
     return {"email": email, "name": name[:120]}

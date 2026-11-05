@@ -1,49 +1,111 @@
 {% extends "base.html" %}
+{% from "partials/ui.html" import icon, status_badge, avatar, empty_state %}
 {% block page %}dashboard{% endblock %}
+{% block title %}{{ 'Reporting overview' if view == 'overview' else 'Reporting tasks' }} · Trafficomm{% endblock %}
 {% block content %}
+{% set base = '/' if view == 'overview' else '/tasks' %}
 <div class="page-head">
-  <div><h1>Reporting tasks</h1><p class="muted">{% if user.role == 'admin' %}All employees' tasks{% else %}Your tasks{% endif %}</p></div>
-  <a class="btn btn-primary" href="/tasks/new">+ New reporting task</a>
+  <div>
+    <h1>{{ 'Reporting overview' if view == 'overview' else 'Reporting tasks' }}</h1>
+    <p class="page-sub">{% if view == 'overview' %}Your team’s reporting, in one place.{% elif user.role == 'admin' %}Every reporting task in the workspace.{% else %}Your reporting tasks.{% endif %}</p>
+  </div>
+  <a class="btn btn-primary btn-lg" href="/tasks/new">{{ icon('plus') }}New reporting task</a>
 </div>
-<div class="stat-row">
-  {% set proc = namespace(n=0) %}{% for k in ['queued','inspecting','mapping','calculating','generating','validating'] %}{% set proc.n = proc.n + counts.get(k, 0) %}{% endfor %}
-  <a class="stat" href="/?status=processing"><b>{{ proc.n }}</b><span>Processing</span></a>
-  <a class="stat warn" href="/?status=awaiting_clarification"><b>{{ counts.get('awaiting_clarification', 0) }}</b><span>Need your answer</span></a>
-  <a class="stat ok" href="/?status=ready_for_review"><b>{{ counts.get('ready_for_review', 0) }}</b><span>Ready for review</span></a>
-  <a class="stat" href="/?status=approved"><b>{{ counts.get('approved', 0) }}</b><span>Approved</span></a>
-  <a class="stat bad" href="/?status=validation_blocked"><b>{{ counts.get('validation_blocked', 0) + counts.get('failed', 0) }}</b><span>Blocked / failed</span></a>
-</div>
-<form class="filters card" method="get" action="/">
-  <input type="search" name="q" value="{{ q }}" placeholder="Search title, brand or client">
-  <select name="status">
-    <option value="">Any status</option>
-    <option value="processing" {% if status == 'processing' %}selected{% endif %}>Processing</option>
-    {% for k, v in STATUS_LABEL.items() %}<option value="{{ k }}" {% if status == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
-  </select>
-  <select name="client"><option value="">Any client</option>{% for c in clients %}<option value="{{ c.id }}" {% if client == c.id|string %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select>
-  {% if owners %}<select name="owner"><option value="">Any owner</option>{% for o in owners %}<option value="{{ o.id }}" {% if owner == o.id|string %}selected{% endif %}>{{ o.name }}</option>{% endfor %}</select>{% endif %}
-  <button class="btn">Filter</button>
-  {% if q or status or client or owner %}<a href="/" class="linkbtn">Clear</a>{% endif %}
-</form>
-{% if not rows %}
-<div class="card empty"><h3>No tasks yet</h3><p class="muted">Create a task, upload the raw exports and describe the report you need.</p><a class="btn btn-primary" href="/tasks/new">Create your first task</a></div>
-{% else %}
-<div class="card flush">
-<table class="tbl">
-<thead><tr><th>Task</th><th>Client</th>{% if user.role == 'admin' %}<th>Owner</th>{% endif %}<th>Status</th><th>Version</th><th>Latest downloads</th><th>Updated</th><th></th></tr></thead>
-<tbody>
-{% for r in rows %}{% set t = r.t %}
-<tr>
-  <td><a href="{% if t.status == 'draft' %}/tasks/{{ t.id }}/edit{% else %}/tasks/{{ t.id }}{% endif %}" class="strong">{{ t.title or 'Untitled task' }}</a>{% if t.brand %}<div class="muted small">{{ t.brand }}</div>{% endif %}</td>
-  <td>{{ r.client }}</td>
-  {% if user.role == 'admin' %}<td>{{ r.owner }}</td>{% endif %}
-  <td><span class="pill st-{{ t.status }}">{{ STATUS_LABEL.get(t.status, t.status) }}</span></td>
-  <td>{% if r.version %}v{{ r.version.number }}{% else %}–{% endif %}</td>
-  <td class="dl">{% if r.latest_ready %}<span class="muted small">v{{ r.latest_ready.number }}:</span> {% for a in r.arts %}<a href="/artifacts/{{ a.id }}/download" title="{{ a.label }}" class="chip">{{ {'excel':'Excel','excel_consolidated':'Excel','deck_update':'PPTX','deck_new':'New PPTX','pdf':'PDF'}.get(a.kind, a.kind) }}</a>{% endfor %}{% else %}<span class="muted">–</span>{% endif %}</td>
-  <td class="muted small">{{ t.updated_at|ago }}</td>
-  <td>{% if t.status in ['ready_for_review','approved','validation_blocked'] %}<a class="btn btn-sm" href="/tasks/{{ t.id }}#feedback">Give feedback</a>{% elif t.status == 'awaiting_clarification' %}<a class="btn btn-sm btn-warn" href="/tasks/{{ t.id }}#questions">Answer</a>{% endif %}</td>
-</tr>
-{% endfor %}
-</tbody></table></div>
+
+{% if view == 'overview' %}
+<nav class="stat-row" aria-label="Filter tasks by status">
+  {% for key, label, ic, tone in [('processing','Processing','gear','neutral'),('needs_answer','Needs your answer','chat','warn'),('ready_for_review','Ready for review','check-circle','ok'),('approved','Approved','check-square','neutral'),('blocked','Blocked','alert','bad')] %}
+  {% set n = counts.get(key, 0) %}
+  <a class="stat tone-{{ tone }}{% if status == key %} on{% endif %}{% if tone == 'bad' and n %} hot{% endif %}" href="{{ '/' if status == key else '/?status=' ~ key }}#tasks"
+     {% if status == key %}aria-current="true"{% endif %} aria-label="{{ n }} {{ label }}{% if key == 'blocked' %} (validation blocked or failed){% endif %}{% if status == key %}, filter on{% endif %}">
+    <span class="stat-ic">{{ icon(ic) }}</span>
+    <span class="stat-txt"><b>{{ n }}</b><span>{{ label }}</span></span>
+  </a>
+  {% endfor %}
+</nav>
+
+{% if attention %}
+<section class="attn" aria-labelledby="attnTitle">
+  <span class="attn-ic">{{ icon('alert') }}</span>
+  <div class="attn-body">
+    <h2 id="attnTitle">{{ attention.count }} report{{ 's' if attention.count != 1 }} need{{ 's' if attention.count == 1 }} attention</h2>
+    <p>{% if attention.title_task %}<b>{{ attention.title_task }}</b>: {% endif %}{{ attention.detail }}</p>
+  </div>
+  <a class="btn btn-primary" href="{{ attention.href }}">{{ attention.label }}{{ icon('arrow-right') }}</a>
+</section>
+{% endif %}
+{% endif %}
+
+<section class="card task-panel" id="tasks" aria-labelledby="tasksTitle">
+  <div class="tp-head">
+    <h2 id="tasksTitle">Reporting tasks <span class="count">{{ rows|length }} task{{ 's' if rows|length != 1 }}{% if filtered %} shown{% endif %}</span></h2>
+    {% if user.role == 'admin' %}
+    <div class="seg" role="group" aria-label="Whose tasks">
+      <a href="{{ base }}?{% if status %}status={{ status }}&{% endif %}" class="{% if mine != '1' %}on{% endif %}" {% if mine != '1' %}aria-current="true"{% endif %}>All tasks</a>
+      <a href="{{ base }}?mine=1{% if status %}&status={{ status }}{% endif %}" class="{% if mine == '1' %}on{% endif %}" {% if mine == '1' %}aria-current="true"{% endif %}>My tasks</a>
+    </div>
+    {% endif %}
+  </div>
+  <form class="filters" method="get" action="{{ base }}" role="search">
+    {% if mine == '1' %}<input type="hidden" name="mine" value="1">{% endif %}
+    <label class="field-search"><span class="sr">Search tasks</span>{{ icon('search') }}<input type="search" name="q" value="{{ q }}" placeholder="Search tasks, brands or clients"></label>
+    <label class="sel"><span class="sr">Client</span><select name="client" data-autosubmit>
+      <option value="">All clients</option>{% for c in clients %}<option value="{{ c.id }}" {% if client == c.id|string %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></label>
+    <label class="sel"><span class="sr">Status</span><select name="status" data-autosubmit>
+      <option value="">All statuses</option>
+      <optgroup label="Groups">
+        <option value="processing" {% if status == 'processing' %}selected{% endif %}>Processing</option>
+        <option value="needs_answer" {% if status == 'needs_answer' %}selected{% endif %}>Needs your answer</option>
+        <option value="blocked" {% if status == 'blocked' %}selected{% endif %}>Blocked (validation or failed)</option>
+        <option value="attention" {% if status == 'attention' %}selected{% endif %}>Needs attention</option>
+      </optgroup>
+      <optgroup label="Status">{% for k, v in STATUS_LABEL.items() %}<option value="{{ k }}" {% if status == k %}selected{% endif %}>{{ v }}</option>{% endfor %}</optgroup>
+    </select></label>
+    {% if owners and mine != '1' %}<label class="sel"><span class="sr">Owner</span><select name="owner" data-autosubmit>
+      <option value="">All owners</option>{% for o in owners %}<option value="{{ o.id }}" {% if owner == o.id|string %}selected{% endif %}>{{ o.name }}</option>{% endfor %}</select></label>{% endif %}
+    <button class="btn" type="submit">Apply</button>
+    {% if filtered %}<a href="{{ base }}{% if mine == '1' %}?mine=1{% endif %}" class="btn btn-quiet">Clear filters</a>{% endif %}
+  </form>
+
+  {% if not rows %}
+    {% if filtered %}
+      {{ empty_state('No tasks match these filters', 'Try a different search, or clear the filters to see every task.', 'search') }}
+    {% else %}
+      {{ empty_state('No reporting tasks yet', 'Create a task, upload the raw exports and describe the report you need.', 'layers', '/tasks/new', 'New reporting task') }}
+    {% endif %}
+  {% else %}
+  <div class="tbl-wrap">
+  <table class="tbl task-tbl">
+    <caption class="sr">Reporting tasks</caption>
+    <thead><tr><th scope="col">Task</th><th scope="col">Client</th>{% if user.role == 'admin' %}<th scope="col">Owner</th>{% endif %}<th scope="col">Status</th><th scope="col">Downloads</th><th scope="col">Updated</th><th scope="col"><span class="sr">Action</span></th></tr></thead>
+    <tbody>
+    {% for r in rows %}{% set t = r.t %}
+    <tr>
+      <td class="c-task" data-label="Task"><div class="t-cell">
+        <span class="t-ic{% if r.deck %} deck{% endif %}">{{ icon('present' if r.deck else 'file') }}</span>
+        <span class="t-txt"><a href="{{ r.action.href if t.status == 'draft' else '/tasks/' ~ t.id }}" class="t-title">{{ t.title or 'Untitled task' }}</a>
+        <span class="t-sub">{{ t.brand or ('Draft' if t.status == 'draft' else 'Reporting task') }}{% if r.version %} · <span class="nowrap">Version {{ r.version.number }}</span>{% endif %}</span></span>
+      </div></td>
+      <td data-label="Client" class="c-client">{{ r.client }}</td>
+      {% if user.role == 'admin' %}<td data-label="Owner"><span class="owner">{{ avatar(r.owner, 'sm') }}{{ r.owner }}</span></td>{% endif %}
+      <td data-label="Status">{{ status_badge(t.status) }}</td>
+      <td data-label="Downloads" class="c-dl">{% if r.latest_ready and r.arts %}{% for a in r.arts %}<a href="/artifacts/{{ a.id }}/download" class="chip" title="Download {{ a.label }} (v{{ r.latest_ready.number }})">{{ icon('download') }}{{ ARTIFACT_SHORT.get(a.kind, a.kind) }}</a>{% endfor %}{% else %}<span class="muted" aria-label="none">–</span>{% endif %}</td>
+      <td data-label="Updated" class="muted nowrap"><time datetime="{{ t.updated_at.isoformat() if t.updated_at else '' }}">{{ t.updated_at|ago }}</time></td>
+      <td class="c-act"><a class="btn btn-sm {{ 'btn-primary' if r.action.primary else '' }}" href="{{ r.action.href }}">{{ r.action.label }}{{ icon('arrow-right') }}<span class="sr"> – {{ t.title or 'Untitled task' }}</span></a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</section>
+
+{% if view == 'overview' %}
+<ul class="cap-strip" aria-label="How the workspace works">
+  <li>{{ icon('upload') }}<span>Upload source reports</span></li>
+  <li>{{ icon('layers') }}<span>Build Excel &amp; PowerPoint</span></li>
+  <li>{{ icon('pencil') }}<span>Review and refine</span></li>
+</ul>
+<p class="page-foot">Internal workspace · Trafficomm</p>
 {% endif %}
 {% endblock %}

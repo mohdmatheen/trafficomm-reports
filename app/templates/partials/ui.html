@@ -1,0 +1,31 @@
+{# Shared UI macros: icons, status badges, avatars, empty states. #}
+{% macro icon(name, cls='') -%}
+<svg class="ic {{ cls }}" aria-hidden="true" focusable="false"><use href="#i-{{ name }}"/></svg>
+{%- endmacro %}
+
+{% set _TONE = {'draft':'neutral','queued':'info','inspecting':'info','mapping':'info','calculating':'info','generating':'info','validating':'info',
+               'awaiting_clarification':'warn','ready_for_review':'ok','approved':'ok-strong','validation_blocked':'bad','failed':'bad','cancelled':'neutral','blocked':'bad'} %}
+{% set _SHORT = {'queued':'Queued','approved':'Approved'} %}
+{% macro status_badge(status, label=None, short=False) -%}
+<span class="badge-st tone-{{ _TONE.get(status, 'neutral') }}"><span class="bdot" aria-hidden="true"></span>{{ label or (_SHORT.get(status) if short and _SHORT.get(status) else STATUS_LABEL.get(status, status)) }}</span>
+{%- endmacro %}
+
+{% macro avatar(name, cls='') -%}
+<span class="avatar {{ cls }}" aria-hidden="true">{{ name|initials }}</span>
+{%- endmacro %}
+
+{% macro empty_state(title, text, ic='file', action_href=None, action_label=None) -%}
+<div class="empty-state">
+  <span class="empty-ic">{{ icon(ic) }}</span>
+  <h3>{{ title }}</h3>
+  <p>{{ text }}</p>
+  {% if action_href %}<a class="btn btn-primary" href="{{ action_href }}">{{ icon('plus') }}{{ action_label }}</a>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro logo(light=True) -%}
+<span class="logo">
+  <svg class="logo-mark" viewBox="0 0 1140 665" aria-hidden="true" focusable="false"><path d="M302 190h239L301 573h236l-60 92H0z" fill="{{ '#ffffff' if light else '#1f1f1f' }}"/><path d="M537 573 782 190h239L777 573z" fill="#ea3e3a"/><path d="M601 95 660 0h480l-61 95z" fill="#ea3e3a"/></svg>
+  <span class="logo-text"><span class="logo-wm">Trafficomm</span><span class="logo-sub">Reporting Workspace</span></span>
+</span>
+{%- endmacro %}

@@ -10,44 +10,60 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app import jobs as J
-from app.db import Artifact, Base, Job, Session, Task, TaskVersion, engine, now, reset_engine
+from app.db import Artifact, Base, Job, Session, Task, TaskVersion, User, engine, now, reset_engine
+from tests import zoho_fake
 from tests.helpers import fx
 
 pytestmark = pytest.mark.web
 H = {"X-Requested-With": "fetch"}
 
 
+USERS = [("admin@trafficomm.local", "Workspace Admin", "admin"), ("employee@trafficomm.local", "Sara (Employee)", "employee"),
+         ("employee2@trafficomm.local", "Omar (Employee)", "employee")]
+
+
 @pytest.fixture(scope="module")
-def app_client():
+def mp():
+    m = pytest.MonkeyPatch()
+    zoho_fake.configure(m, domains=("trafficomm.com", "trafficomm.local"))
+    yield m
+    m.undo()
+
+
+@pytest.fixture(scope="module")
+def app_client(mp):
     reset_engine()
     Base.metadata.drop_all(engine())
     Base.metadata.create_all(engine())
     from scripts.seed import main as seed
     seed()
+    with Session() as s:  # people an admin has granted access to (no passwords exist)
+        for email, name, role in USERS:
+            s.add(User(email=email, name=name, role=role, password_hash="!"))
+        s.commit()
     from app.web import app
     return app
 
 
-def login(app, email, pw):
-    c = TestClient(app)
-    r = c.post("/login", data={"email": email, "password": pw}, follow_redirects=False)
-    assert r.status_code == 303
+def login(app, mp, email):
+    c, r, _ = zoho_fake.sign_in(app, mp, email)
+    assert r.status_code == 303 and not r.headers["location"].startswith("/login"), r.headers["location"]
     return c
 
 
 @pytest.fixture(scope="module")
-def emp(app_client):
-    return login(app_client, "employee@trafficomm.local", "employee-dev-password")
+def emp(app_client, mp):
+    return login(app_client, mp, "employee@trafficomm.local")
 
 
 @pytest.fixture(scope="module")
-def emp2(app_client):
-    return login(app_client, "employee2@trafficomm.local", "employee2-dev-password")
+def emp2(app_client, mp):
+    return login(app_client, mp, "employee2@trafficomm.local")
 
 
 @pytest.fixture(scope="module")
-def admin(app_client):
-    return login(app_client, "admin@trafficomm.local", "admin-dev-password")
+def admin(app_client, mp):
+    return login(app_client, mp, "admin@trafficomm.local")
 
 
 def drain():
@@ -176,7 +192,33 @@ def test_revision_with_additional_upload(emp, workflow):
     assert v3.change_summary["new_files"] == ["snapchat_acme_sept.csv"]
     plats = [r["platform"] for r in v3.result["summary"]["tables"]["platform"]["rows"]]
     assert "snapchat" in plats
-    assert len(emp.get(f"/tasks/{tid}").text.split('class="ver ')) - 1 == 3  # all versions listed
+    assert len(emp.get(f"/tasks/{tid}").text.split('class="vh-n"')) - 1 == 3  # all versions listed
+
+
+def test_task_page_versions_feedback_base_and_approval(emp, workflow):
+    tid = workflow
+    v1, _ = artifacts(tid, 1)
+    v2, _ = artifacts(tid, 2)
+    assert v2.base_version_id == v1.id  # revision records the explicit base version
+    # viewing an earlier version is explicit, and its approve/feedback targets that version
+    page = emp.get(f"/tasks/{tid}?v={v1.id}").text
+    assert "Viewing version 1" in page and "Feedback for" in page
+    assert f'value="{v1.id}" selected' in page or f'value="{v1.id}"' in page
+    # unknown or foreign version ids are refused
+    assert emp.post(f"/api/tasks/{tid}/approve", headers=H, json={"version_id": 999999}).status_code == 400
+    assert emp.post(f"/api/tasks/{tid}/feedback", headers=H, json={"text": "Add a breakdown by country", "base_version_id": 999999}).status_code == 400
+    # a second revision while one is processing is rejected, so a double click can't create two
+    r1 = emp.post(f"/api/tasks/{tid}/feedback", headers=H, json={"text": "Add a breakdown by country", "base_version_id": v1.id})
+    assert r1.status_code == 200 and r1.json()["ok"]
+    r2 = emp.post(f"/api/tasks/{tid}/feedback", headers=H, json={"text": "Add a breakdown by country", "base_version_id": v1.id})
+    assert r2.status_code == 400
+    drain()
+    if state(emp, tid)["status"] == "awaiting_clarification":
+        answer_all(emp, tid, {})
+        drain()
+    page = emp.get(f"/tasks/{tid}").text
+    for label in ("Files received", "Data prepared", "Report built", "Validation", "Review", "Approved", "Version history"):
+        assert label in page
 
 
 def test_unsupported_feedback_gets_explanation(emp, workflow):
@@ -297,34 +339,74 @@ def test_retention_deletes_old_tasks(admin, emp):
         t = s.get(Task, tid)
         t.updated_at = now() - dt.timedelta(days=400)
         s.commit()
-    r = admin.post("/admin/retention", data={"days": "180", "run": "1"}, follow_redirects=False)
-    assert r.status_code == 303
+    # saving the policy never deletes anything
+    r = admin.put("/api/admin/retention", headers=H, json={"days": 180})
+    assert r.status_code == 200 and r.json()["days"] == 180
+    with Session() as s:
+        assert s.get(Task, tid).deleted_at is None
+    for bad in (0, 3, 99999, "abc", None):
+        assert admin.put("/api/admin/retention", headers=H, json={"days": bad}).status_code == 400
+    p = admin.get("/api/admin/retention/preview").json()
+    assert p["days"] == 180 and p["count"] >= 1
+    # cleanup needs an explicit confirmation
+    assert admin.post("/api/admin/retention/run", headers=H, json={}).status_code == 400
+    assert admin.post("/api/admin/retention/run", headers=H, json={"confirm": True}).json()["deleted"] >= 1
     with Session() as s:
         assert s.get(Task, tid).deleted_at is not None
     assert emp.get(f"/tasks/{tid}").status_code == 404
 
 
-def test_password_change_and_admin_reset(app_client, admin):
-    r = admin.post("/admin/users", data={"email": "pwtest@trafficomm.local", "name": "PW Test", "role": "employee", "password": "first-password-1"}, follow_redirects=False)
-    assert r.status_code == 303
-    u = login(app_client, "pwtest@trafficomm.local", "first-password-1")
-    assert u.get("/account").status_code == 200
-    r = u.post("/account/password", data={"current": "wrong-password", "new": "second-password-2", "confirm": "second-password-2"}, follow_redirects=False)
-    assert "incorrect" in r.headers["location"]
-    r = u.post("/account/password", data={"current": "first-password-1", "new": "second-password-2", "confirm": "nope-nope-nope"}, follow_redirects=False)
-    assert "match" in r.headers["location"]
-    r = u.post("/account/password", data={"current": "first-password-1", "new": "second-password-2", "confirm": "second-password-2"}, follow_redirects=False)
-    assert "changed" in r.headers["location"]
-    bad = TestClient(app_client).post("/login", data={"email": "pwtest@trafficomm.local", "password": "first-password-1"}, follow_redirects=False)
-    assert bad.status_code == 401
-    login(app_client, "pwtest@trafficomm.local", "second-password-2")
-    from app.db import User
+def test_no_password_sign_in_paths(app_client, admin):
+    """Password sign-in is gone: legacy endpoints can't create a session, and no password UI is shown."""
+    anon = TestClient(app_client)
+    r = anon.post("/login", data={"email": "admin@trafficomm.local", "password": "admin-dev-password"}, follow_redirects=False)
+    assert r.status_code == 405 and "tc_session" not in r.cookies
+    assert anon.get("/", follow_redirects=False).headers["location"].startswith("/login")
+    for path in ("/account/password", "/admin/users/1/password"):
+        assert admin.post(path, data={"current": "x", "new": "y" * 12, "confirm": "y" * 12, "password": "y" * 12}, follow_redirects=False).status_code in (404, 405)
+    page = anon.get("/login").text
+    assert "Sign in with Zoho" in page
+    for gone in ('type="password"', 'name="password"', "Sign in with a password", "Other sign-in options", "DESIGN CONCEPT"):
+        assert gone not in page
+    assert 'type="password"' not in admin.get("/admin").text
+    assert 'type="password"' not in admin.get("/account").text
+    # granting access never takes a password
+    r = admin.post("/api/admin/users", headers=H, json={"email": "new.person@trafficomm.local", "role": "employee", "password": "ignored-password"})
+    assert r.status_code == 200, r.text
     with Session() as s:
-        uid = s.scalar(select(User.id).where(User.email == "pwtest@trafficomm.local"))
-    assert u.post(f"/admin/users/{uid}/password", data={"password": "admin-set-pw-3"}, follow_redirects=False).status_code == 403
-    r = admin.post(f"/admin/users/{uid}/password", data={"password": "short"}, follow_redirects=False)
-    assert "10" in r.headers["location"]
-    r = admin.post(f"/admin/users/{uid}/password", data={"password": "admin-set-pw-3"}, follow_redirects=False)
-    assert "updated" in r.headers["location"]
-    login(app_client, "pwtest@trafficomm.local", "admin-set-pw-3")
-    assert "Set password" in admin.get("/admin").text
+        assert s.scalar(select(User.password_hash).where(User.email == "new.person@trafficomm.local")) == "!"
+
+
+def test_legacy_password_session_rejected(app_client):
+    """A session cookie from the old password sign-in (no Zoho marker) is not accepted."""
+    from itsdangerous import TimestampSigner
+    import base64 as b64
+    import json as js
+    from app.config import settings
+    with Session() as s:
+        uid = s.scalar(select(User.id).where(User.email == "admin@trafficomm.local"))
+    raw = b64.b64encode(js.dumps({"uid": uid}).encode())
+    cookie = TimestampSigner(settings.secret_key).sign(raw).decode()
+    c = TestClient(app_client)
+    c.cookies.set("tc_session", cookie)
+    r = c.get("/admin", follow_redirects=False)
+    assert r.status_code == 303 and "session_expired" in r.headers["location"]
+
+
+def test_overview_counts_filters_and_sign_out(app_client, mp):
+    c = login(app_client, mp, "employee2@trafficomm.local")
+    page = c.get("/").text
+    assert "Reporting overview" in page and "Needs your answer" in page
+    assert "Bloom" not in page  # nothing from the design mock-up is hard-coded
+    with Session() as s:
+        uid = s.scalar(select(User.id).where(User.email == "employee2@trafficomm.local"))
+        mine = s.scalars(select(Task).where(Task.owner_id == uid, Task.deleted_at.is_(None))).all()
+    from app import service as S
+    ready = sum(1 for t in mine if t.status == "ready_for_review")
+    assert f'aria-label="{ready} Ready for review' in page
+    assert c.get("/tasks?status=blocked").status_code == 200
+    assert c.get("/tasks?q=zz-no-such-task").text.count("No tasks match") == 1
+    r = c.post("/logout", follow_redirects=False)
+    assert r.headers["location"] == "/login?error=signed_out"
+    r = c.get("/tasks/new", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/login?next=/tasks/new")

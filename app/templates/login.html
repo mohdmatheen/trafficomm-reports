@@ -1,24 +1,68 @@
 {% extends "base.html" %}
+{% from "partials/ui.html" import icon, logo %}
 {% block page %}login{% endblock %}
-{% block title %}Sign in · Trafficomm{% endblock %}
-{% block content %}
-<div class="login-card card">
-  <h1>Sign in</h1>
-  <p class="muted">Internal workspace for Trafficomm employees.</p>
-  {% if error %}<div class="alert alert-fail">{{ error }}</div>{% endif %}
-  {% if zoho_enabled %}
-  <a class="btn btn-primary btn-block" href="/auth/zoho?next={{ next|urlencode }}">Sign in with Zoho</a>
-  <p class="muted small center">Use your @trafficomm.com Zoho account.</p>
-  {% endif %}
-  {% if password_login %}
-  {% if zoho_enabled %}<details class="pw-login"><summary class="muted small">Sign in with a password instead</summary>{% endif %}
-  <form method="post" action="/login">
-    <input type="hidden" name="next" value="{{ next }}">
-    <label>Email<input type="email" name="email" required {% if not zoho_enabled %}autofocus {% endif %}autocomplete="username"></label>
-    <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
-    <button class="btn {{ 'btn-ghost' if zoho_enabled else 'btn-primary' }} btn-block">Sign in</button>
-  </form>
-  {% if zoho_enabled %}</details>{% endif %}
-  {% endif %}
+{% block bodyclass %}login-body{% endblock %}
+{% block title %}Sign in · Trafficomm Reporting Workspace{% endblock %}
+{% block head %}<link rel="preload" as="image" type="image/webp" imagesrcset="/static/img/login-hero-960.webp 960w, /static/img/login-hero-1280.webp 1280w, /static/img/login-hero-1600.webp 1600w" imagesizes="100vw" fetchpriority="high">{% endblock %}
+{% block body %}
+<div class="login">
+  {# Background photograph. TEMPORARY placeholder: see docs/login-background.md for the asset needed for final delivery. #}
+  <picture class="login-photo" aria-hidden="true">
+    <source type="image/webp" srcset="/static/img/login-hero-960.webp 960w, /static/img/login-hero-1280.webp 1280w, /static/img/login-hero-1600.webp 1600w" sizes="100vw">
+    <img src="/static/img/login-hero-1600.jpg" srcset="/static/img/login-hero-960.jpg 960w, /static/img/login-hero-1280.jpg 1280w, /static/img/login-hero-1600.jpg 1600w" sizes="100vw" alt="" width="1600" height="899" decoding="async" fetchpriority="high">
+  </picture>
+  <div class="login-shade" aria-hidden="true"></div>
+
+  <header class="login-head">
+    {{ logo(True) }}
+    <span class="login-chip">{{ icon('lock') }}Internal workspace</span>
+  </header>
+
+  <div class="login-main">
+    <section class="login-hero" aria-labelledby="heroHeading">
+      <span class="lh-rule" aria-hidden="true"></span>
+      <p class="lh-eyebrow">Built for your next report</p>
+      <h1 id="heroHeading" class="lh-title">Less reporting work. <span class="lh-break">More clarity.</span></h1>
+      <p class="lh-copy">Compile your data. Build your presentation. <span class="lh-break">Refine every report in one workspace.</span></p>
+      <ul class="lh-caps" aria-label="What you can do here">
+        <li>{{ icon('layers') }}<span>Compile reports</span></li>
+        <li>{{ icon('present') }}<span>Build presentations</span></li>
+        <li>{{ icon('pencil') }}<span>Review together</span></li>
+      </ul>
+    </section>
+
+    <main class="login-card" id="main" aria-labelledby="cardHeading">
+      <span class="lc-lock" aria-hidden="true">{{ icon('lock') }}</span>
+      <h2 id="cardHeading" class="lc-title">Welcome back.</h2>
+      <p class="lc-sub">Sign in to your reporting workspace.</p>
+
+      {% if notice %}
+      <div class="notice notice-{{ notice.tone }}" role="{{ 'alert' if notice.tone == 'error' else 'status' }}" data-notice="{{ notice.code }}">
+        {{ icon('alert' if notice.tone in ['error','warn'] else 'info') }}
+        <div><b>{{ notice.title }}</b><p>{{ notice.message }}{% if notice.email %} You signed in as <span class="nowrap">{{ notice.email }}</span>.{% endif %}</p></div>
+      </div>
+      {% endif %}
+
+      {% if zoho_enabled %}
+      <a class="btn btn-primary btn-xl btn-block lc-btn" id="zohoBtn" href="/auth/zoho?next={{ next|urlencode }}" aria-describedby="acctHint acctHint2">
+        <span class="btn-label">Sign in with Zoho</span>{{ icon('arrow-right') }}
+      </a>
+      <p class="lc-status" id="zohoStatus" role="status" aria-live="polite"></p>
+      {% else %}
+      <button class="btn btn-primary btn-xl btn-block lc-btn" type="button" disabled aria-describedby="acctHint">Sign in with Zoho</button>
+      {% endif %}
+      <p class="lc-hint" id="acctHint">Use your @{{ (domains or ['trafficomm.com'])[0] }} Zoho account.</p>
+      <p class="lc-hint2" id="acctHint2">You’ll continue to Zoho to sign in.</p>
+
+      <div class="lc-sep"></div>
+      <p class="lc-auth">{{ icon('lock') }}Authorized employees only.</p>
+      <p class="lc-help">Need access? Contact your workspace administrator.</p>
+    </main>
+  </div>
+
+  <footer class="login-foot">
+    <p>Built for the Trafficomm team.</p>
+    <p>Trafficomm Reporting Workspace</p>
+  </footer>
 </div>
 {% endblock %}

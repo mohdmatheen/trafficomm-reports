@@ -16,9 +16,9 @@ from sqlalchemy import func, or_, select
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import service as S
-from .auth import check_password, current_user, get_task_checked, hash_password, require_admin, require_user
+from .auth import current_user, get_task_checked, require_admin, require_user
 from .config import BASE_DIR, settings
-from .db import (AppSetting, Artifact, Client, Job, Message, Profile, Question, Session, StageEvent, Task, TaskFile, TaskVersion,
+from .db import (AppSetting, Artifact, AuditLog, Client, Job, Message, Profile, Question, Session, StageEvent, Task, TaskFile, TaskVersion,
                  User, init_db, now)
 from .engine import fields as F
 from .engine import fmt as FM
@@ -55,6 +55,21 @@ def _ago(t: dt.datetime | None) -> str:
 
 
 templates.env.filters["ago"] = _ago
+DISPLAY_TZ = os.environ.get("DISPLAY_TZ", "Asia/Kolkata")
+
+
+def _local(t, fmt="%d %b %Y, %H:%M"):
+    """Timestamps are stored in UTC; show them in the workspace display zone (IST by default)."""
+    if not t:
+        return ""
+    from zoneinfo import ZoneInfo
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.timezone.utc)
+    z = ZoneInfo(DISPLAY_TZ)
+    return t.astimezone(z).strftime(fmt) + (" IST" if DISPLAY_TZ == "Asia/Kolkata" else " " + t.astimezone(z).tzname())
+
+
+templates.env.filters["local"] = _local
 templates.env.filters["fmt_metric"] = lambda v, m, cur="": FM.fmt_metric(m, v, cur)
 templates.env.filters["mb"] = lambda n: f"{(n or 0) / 1024:.0f} KB" if (n or 0) < 1024 * 1024 else f"{n / 1024 / 1024:.1f} MB"
 templates.env.globals.update(STATUS_LABEL=S.STATUS_LABEL, PLATFORM_LABELS=F.PLATFORM_LABELS, METRIC_LABELS=METRIC_LABELS,
@@ -82,10 +97,14 @@ async def csrf_and_headers(request: Request, call_next):
 @app.exception_handler(HTTPException)
 async def http_exc(request: Request, exc: HTTPException):
     if exc.status_code == 401 and not request.url.path.startswith("/api/"):
-        return RedirectResponse("/login?next=" + request.url.path, status_code=303)
+        from urllib.parse import quote
+        had_session = bool(request.session.get("uid"))  # signed in before, but the session is no longer valid
+        request.session.clear()
+        return RedirectResponse("/login?next=" + quote(request.url.path, safe="/") + ("&error=session_expired" if had_session else ""), status_code=303)
     if request.url.path.startswith("/api/") or request.url.path.startswith("/d/"):
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
-    return templates.TemplateResponse(request, "error.html", {"user": current_user(request), "code": exc.status_code, "detail": exc.detail}, status_code=exc.status_code)
+    return templates.TemplateResponse(request, "error.html", {"user": current_user(request), "code": exc.status_code, "detail": exc.detail,
+                                                              "crumbs": [("Error", None)]}, status_code=exc.status_code)
 
 
 @app.exception_handler(S.UserError)
@@ -102,89 +121,103 @@ def healthz():
 
 
 # ---------------------------------------------------------------------------
-# Auth
+# Auth: Zoho is the only sign-in method. There is no password endpoint; POST /login is not routed
+# (405), so credentials sent to it can never create a session.
 # ---------------------------------------------------------------------------
-def _login_ctx(next: str = "/", error: str | None = None) -> dict:
-    return {"user": None, "next": next, "error": error, "zoho_enabled": settings.zoho_enabled,
-            "password_login": settings.password_login or not settings.zoho_enabled}
+LOGIN_NOTICES = {
+    # code -> (tone, title, message). Codes, never free text, travel in the URL.
+    "cancelled": ("info", "Sign-in cancelled", "You cancelled signing in with Zoho. You can try again whenever you’re ready."),
+    "failed": ("error", "Zoho sign-in didn’t complete", "We couldn’t finish signing you in with Zoho. Please try again in a moment."),
+    "unauthorized": ("error", "This account can’t access the workspace", "Sign in with your @trafficomm.com Zoho account. If you already did, ask your workspace administrator to grant you access."),
+    "no_access": ("error", "You don’t have access yet", "Your Zoho account is valid, but it hasn’t been granted access to this workspace. Ask your workspace administrator to add you."),
+    "revoked": ("error", "Your access has been removed", "Your access to the workspace was revoked. Contact your workspace administrator if this is unexpected."),
+    "expired": ("warn", "Your sign-in timed out", "The sign-in attempt expired before it finished. Please sign in again."),
+    "session_expired": ("warn", "Your session has expired", "For your security you’ve been signed out. Sign in again to continue where you left off."),
+    "signed_out": ("info", "You’re signed out", "You have signed out of the reporting workspace."),
+    "not_configured": ("error", "Sign-in isn’t available", "Zoho sign-in hasn’t been configured for this workspace. Contact your workspace administrator."),
+}
+
+
+def _login_ctx(request: Request, next: str = "/", error: str = "") -> dict:
+    code = error if error in LOGIN_NOTICES else ("failed" if error else "")
+    if not settings.zoho_enabled:
+        code = "not_configured"
+    notice = None
+    if code:
+        tone, title, msg = LOGIN_NOTICES[code]
+        notice = {"code": code, "tone": tone, "title": title, "message": msg, "email": request.session.pop("login_email", None)}
+    return {"user": None, "next": _safe_next(next), "notice": notice, "zoho_enabled": settings.zoho_enabled,
+            "domains": settings.zoho_allowed_domains}
 
 
 def _safe_next(next: str | None) -> str:
-    return next if next and next.startswith("/") and not next.startswith("//") else "/"
+    return next if next and next.startswith("/") and not next.startswith("//") and "\\" not in next else "/"
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, next: str = "/", error: str = ""):
-    return templates.TemplateResponse(request, "login.html", _login_ctx(next, error or None))
-
-
-@app.post("/login")
-def login(request: Request, email: str = Form(...), password: str = Form(...), next: str = Form("/")):
-    if not _login_ctx()["password_login"]:
-        return templates.TemplateResponse(request, "login.html", _login_ctx(next, "Password sign-in is turned off. Please sign in with Zoho."), status_code=403)
-    with Session() as s:
-        u = s.scalar(select(User).where(func.lower(User.email) == email.strip().lower()))
-        if not u or not u.active or not check_password(password, u.password_hash):
-            return templates.TemplateResponse(request, "login.html", _login_ctx(next, "Invalid email or password"), status_code=401)
-        request.session.clear()
-        request.session["uid"] = u.id
-        S.audit(s, u.id, "login", u.email)
-        s.commit()
-    return RedirectResponse(_safe_next(next), status_code=303)
+    if current_user(request):
+        return RedirectResponse(_safe_next(next), status_code=303)
+    return templates.TemplateResponse(request, "login.html", _login_ctx(request, next, error))
 
 
 @app.get("/auth/zoho")
 def zoho_start(request: Request, next: str = "/"):
     if not settings.zoho_enabled:
-        raise HTTPException(status_code=404, detail="Zoho sign-in isn't set up")
+        return RedirectResponse("/login?error=not_configured", status_code=303)
     request.session.clear()
     request.session["zoho_next"] = _safe_next(next)
     return RedirectResponse(Z.authorize_url(request.session, str(request.base_url)), status_code=303)
 
 
-def _zoho_fail(msg: str) -> RedirectResponse:
-    from urllib.parse import quote
-    return RedirectResponse("/login?error=" + quote(msg), status_code=303)
+def _zoho_fail(request: Request, code: str, email: str | None = None) -> RedirectResponse:
+    request.session.clear()
+    if email:
+        request.session["login_email"] = email  # shown once on the sign-in page, never put in the URL
+    return RedirectResponse("/login?error=" + code, status_code=303)
 
 
 @app.get("/auth/zoho/callback")
 def zoho_callback(request: Request, code: str = "", state: str = "", error: str = ""):
     if not settings.zoho_enabled:
-        raise HTTPException(status_code=404, detail="Zoho sign-in isn't set up")
+        return RedirectResponse("/login?error=not_configured", status_code=303)
     expected, nonce = request.session.pop("zoho_state", None), request.session.pop("zoho_nonce", None)
     nxt = request.session.pop("zoho_next", "/")
     if error:
-        return _zoho_fail("Zoho sign-in was cancelled.")
+        return _zoho_fail(request, "cancelled" if error == "access_denied" else "failed")
     if not code or not expected or not secrets.compare_digest(state, expected):
-        return _zoho_fail("The sign-in session expired. Please try again.")
+        return _zoho_fail(request, "expired")
     try:
         server = Z.accounts_server(request.query_params.get("accounts-server"))
         who = Z.identity(Z.exchange_code(code, server, str(request.base_url)), nonce, server)
     except Z.ZohoError as e:
-        log.info("zoho sign-in rejected: %s", type(e).__name__)
-        return _zoho_fail(str(e))
+        log.info("zoho sign-in rejected: %s (%s)", type(e).__name__, e.code)
+        return _zoho_fail(request, e.code)
     email, is_boot_admin = who["email"], who["email"] in settings.zoho_admin_emails
     with Session() as s:
+        # Existing accounts are linked by their (unique, case-insensitive) email. Nobody is created
+        # from a matching domain alone: only people an admin granted, or ZOHO_ADMIN_EMAILS.
         u = s.scalar(select(User).where(func.lower(User.email) == email))
         if u is None:
-            if not (is_boot_admin or settings.zoho_auto_provision):
+            if not is_boot_admin:
                 S.audit(s, None, "login_denied", email)
                 s.commit()
-                return _zoho_fail("You don't have access yet. Ask your Trafficomm admin to grant access to " + email + ".")
-            u = User(email=email, name=who["name"], role="admin" if is_boot_admin else "employee", password_hash="!")
+                return _zoho_fail(request, "no_access", email)
+            u = User(email=email, name=who["name"], role="admin", password_hash="!")
             s.add(u)
             s.flush()
             S.audit(s, u.id, "create_user_sso", email)
         if not u.active:
             S.audit(s, u.id, "login_denied", email)
             s.commit()
-            return _zoho_fail("Your access to the workspace has been revoked. Ask your Trafficomm admin.")
+            return _zoho_fail(request, "revoked", email)
         if is_boot_admin and u.role != "admin":
             u.role = "admin"
         if u.name in ("", u.email.split("@")[0]) and who["name"]:
             u.name = who["name"]
         request.session.clear()
         request.session["uid"] = u.id
+        request.session["via"] = "zoho"
         S.audit(s, u.id, "login_zoho", u.email)
         s.commit()
     return RedirectResponse(_safe_next(nxt), status_code=303)
@@ -193,52 +226,69 @@ def zoho_callback(request: Request, code: str = "", state: str = "", error: str 
 @app.post("/logout")
 def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/login", status_code=303)
+    return RedirectResponse("/login?error=signed_out", status_code=303)
 
 
 @app.get("/account", response_class=HTMLResponse)
-def account_page(request: Request, msg: str = "", error: str = ""):
+def account_page(request: Request):
     user = require_user(request)
-    return templates.TemplateResponse(request, "account.html", {"user": user, "msg": msg, "error": error})
-
-
-@app.post("/account/password")
-def account_password(request: Request, current: str = Form(...), new: str = Form(...), confirm: str = Form(...)):
-    user = require_user(request)
-    with Session() as s:
-        u = s.get(User, user.id)
-        if not check_password(current, u.password_hash):
-            return RedirectResponse("/account?error=Current password is incorrect", status_code=303)
-        if len(new) < 10:
-            return RedirectResponse("/account?error=New password must be at least 10 characters", status_code=303)
-        if new != confirm:
-            return RedirectResponse("/account?error=The new passwords don't match", status_code=303)
-        u.password_hash = hash_password(new)
-        S.audit(s, u.id, "change_password", u.email)
-        s.commit()
-    return RedirectResponse("/account?msg=Password changed", status_code=303)
+    return templates.TemplateResponse(request, "account.html", {"user": user, "nav": "account", "crumbs": [("Your account", None)]})
 
 
 # ---------------------------------------------------------------------------
-# Dashboard
+# Overview and task list
 # ---------------------------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, q: str = "", status: str = "", client: str = "", owner: str = ""):
-    user = require_user(request)
+# Overview status cards -> existing task statuses (meanings unchanged).
+STATUS_GROUPS = {
+    "processing": sorted(S.PROCESSING),
+    "needs_answer": ["awaiting_clarification"],
+    "ready_for_review": ["ready_for_review"],
+    "approved": ["approved"],
+    "blocked": ["validation_blocked", "failed"],
+}
+ARTIFACT_SHORT = {"excel": "Excel", "excel_consolidated": "Excel", "deck_update": "PPTX", "deck_new": "New PPTX", "pdf": "PDF"}
+
+
+def task_action(t: Task) -> dict:
+    """The next step for a task, from its real status."""
+    st = t.status
+    if st == "draft":
+        return {"label": "Continue", "href": f"/tasks/{t.id}/edit", "primary": False}
+    if st == "awaiting_clarification":
+        return {"label": "Answer questions", "href": f"/tasks/{t.id}#questions", "primary": True}
+    if st == "validation_blocked":
+        return {"label": "Review issue", "href": f"/tasks/{t.id}#validation", "primary": True}
+    if st == "failed":
+        return {"label": "Review issue", "href": f"/tasks/{t.id}#progress", "primary": True}
+    if st == "ready_for_review":
+        return {"label": "Review report", "href": f"/tasks/{t.id}#outputs", "primary": False}
+    return {"label": "Open workspace", "href": f"/tasks/{t.id}", "primary": False}
+
+
+def _initials(name: str) -> str:
+    parts = [p for p in (name or "").replace("(", " ").replace(")", " ").split() if p[:1].isalpha()]
+    return ((parts[0][0] + (parts[1][0] if len(parts) > 1 else "")) if parts else "?").upper()
+
+
+templates.env.filters["initials"] = _initials
+
+
+def _task_list(request: Request, user: User, view: str, q: str, status: str, client: str, owner: str, mine: str):
     with Session() as s:
-        stmt = select(Task).where(Task.deleted_at.is_(None))
-        if user.role != "admin":
-            stmt = stmt.where(Task.owner_id == user.id)
-        elif owner:
+        scope = [Task.deleted_at.is_(None)]
+        if user.role != "admin" or mine == "1":
+            scope.append(Task.owner_id == user.id)
+        stmt = select(Task).where(*scope)
+        if user.role == "admin" and owner and owner.isdigit() and mine != "1":
             stmt = stmt.where(Task.owner_id == int(owner))
-        if q:
+        if q.strip():
             like = f"%{q.strip()}%"
             stmt = stmt.join(Client, Client.id == Task.client_id).where(or_(Task.title.ilike(like), Task.brand.ilike(like), Client.name.ilike(like)))
-        if status == "processing":
-            stmt = stmt.where(Task.status.in_(list(S.PROCESSING)))
-        elif status:
+        if status in STATUS_GROUPS:
+            stmt = stmt.where(Task.status.in_(STATUS_GROUPS[status]))
+        elif status in S.STATUS_LABEL:
             stmt = stmt.where(Task.status == status)
-        if client:
+        if client.isdigit():
             stmt = stmt.where(Task.client_id == int(client))
         tasks = s.scalars(stmt.order_by(Task.updated_at.desc()).limit(200)).all()
         rows = []
@@ -247,14 +297,64 @@ def dashboard(request: Request, q: str = "", status: str = "", client: str = "",
                                     .order_by(TaskVersion.number.desc()).limit(1))
             arts = []
             if latest_ready:
-                arts = s.scalars(select(Artifact).where(Artifact.version_id == latest_ready.id, Artifact.kind.in_(["excel", "excel_consolidated", "deck_update", "deck_new", "pdf"]))).all()
+                arts = s.scalars(select(Artifact).where(Artifact.version_id == latest_ready.id, Artifact.kind.in_(list(ARTIFACT_SHORT)))).all()
             cur = s.get(TaskVersion, t.current_version_id) if t.current_version_id else None
-            rows.append({"t": t, "client": t.client.name, "owner": t.owner.name, "latest_ready": latest_ready, "arts": arts, "version": cur})
-        counts = dict(s.execute(select(Task.status, func.count()).where(Task.deleted_at.is_(None), *( [Task.owner_id == user.id] if user.role != "admin" else [])).group_by(Task.status)).all())
+            rows.append({"t": t, "client": t.client.name, "owner": t.owner.name, "latest_ready": latest_ready, "arts": arts, "version": cur,
+                         "action": task_action(t), "deck": "deck_update" in (t.deliverables or [])})
+        raw_counts = dict(s.execute(select(Task.status, func.count()).where(*scope).group_by(Task.status)).all())
+        counts = {k: sum(raw_counts.get(x, 0) for x in v) for k, v in STATUS_GROUPS.items()}
+        total = sum(raw_counts.values())
+        # tasks that need someone to act: questions to answer, validation blocked, failed
+        attn_tasks = s.scalars(select(Task).where(*scope, Task.status.in_(["awaiting_clarification", "validation_blocked", "failed"]))
+                               .order_by(Task.updated_at.desc()).limit(50)).all()
+        attention = None
+        if attn_tasks:
+            n_q = sum(1 for t in attn_tasks if t.status == "awaiting_clarification")
+            n_b = sum(1 for t in attn_tasks if t.status == "validation_blocked")
+            n_f = sum(1 for t in attn_tasks if t.status == "failed")
+            parts = []
+            if n_q:
+                parts.append(f"{n_q} waiting for answers to questions")
+            if n_b:
+                parts.append(f"{n_b} blocked by validation checks")
+            if n_f:
+                parts.append(f"{n_f} failed during processing")
+            if len(attn_tasks) == 1:
+                a = task_action(attn_tasks[0])
+                attention = {"count": 1, "detail": {"awaiting_clarification": "Answer the open questions so processing can continue.",
+                                                    "validation_blocked": "Some validation checks failed. Review them before the report can be used.",
+                                                    "failed": "Processing stopped with an error. Review it and retry."}[attn_tasks[0].status],
+                             "title_task": attn_tasks[0].title or "Untitled task", "label": a["label"], "href": a["href"]}
+            else:
+                only = {t.status for t in attn_tasks}
+                href = "/tasks?status=" + ("needs_answer" if only == {"awaiting_clarification"} else "blocked" if only <= {"validation_blocked", "failed"} else "attention")
+                detail = {"awaiting_clarification": "Answer the open questions so processing can continue.",
+                          "validation_blocked": "Validation checks failed. Review them before the reports can be used.",
+                          "failed": "Processing stopped with an error. Review each task and retry."}[attn_tasks[0].status] if len(only) == 1 else (", ".join(parts).capitalize() + ".")
+                attention = {"count": len(attn_tasks), "detail": detail, "label": "Review tasks", "href": href}
+        if status == "attention":
+            rows = [r for r in rows if r["t"].status in ("awaiting_clarification", "validation_blocked", "failed")]
         clients = s.scalars(select(Client).order_by(Client.name)).all()
         owners = s.scalars(select(User).order_by(User.name)).all() if user.role == "admin" else []
-    return templates.TemplateResponse(request, "dashboard.html", {"user": user, "rows": rows, "q": q, "status": status, "client": client, "owner": owner,
-                                                                   "clients": clients, "owners": owners, "counts": counts})
+    filtered = bool(q.strip() or status or client or (owner and mine != "1"))
+    ctx = {"user": user, "view": view, "rows": rows, "q": q, "status": status, "client": client, "owner": owner, "mine": mine,
+           "clients": clients, "owners": owners, "counts": counts, "total": total, "attention": attention, "filtered": filtered,
+           "STATUS_GROUPS": STATUS_GROUPS, "ARTIFACT_SHORT": ARTIFACT_SHORT,
+           "nav": "overview" if view == "overview" else "tasks",
+           "crumbs": [("Overview", None)] if view == "overview" else [("Reporting tasks", None)]}
+    return templates.TemplateResponse(request, "dashboard.html", ctx)
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request, q: str = "", status: str = "", client: str = "", owner: str = "", mine: str = ""):
+    user = require_user(request)
+    return _task_list(request, user, "overview", q, status, client, owner, mine)
+
+
+@app.get("/tasks", response_class=HTMLResponse)
+def task_list(request: Request, q: str = "", status: str = "", client: str = "", owner: str = "", mine: str = ""):
+    user = require_user(request)
+    return _task_list(request, user, "tasks", q, status, client, owner, mine)
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +370,19 @@ def new_task_page(request: Request):
     today = dt.date.today()
     first_this = today.replace(day=1)
     last_prev = first_this - dt.timedelta(days=1)
-    return templates.TemplateResponse(request, "new_task.html", {"user": user, "clients": clients, "profiles": profiles, "default_client": default_client,
-                                                                  "p_start": last_prev.replace(day=1), "p_end": last_prev})
+    return templates.TemplateResponse(request, "new_task.html", _builder_ctx(user, clients, profiles, default_client, None, [],
+                                                                            last_prev.replace(day=1), last_prev))
+
+
+CURRENCIES = ["AED", "USD", "SAR", "QAR", "KWD", "BHD", "OMR", "EGP", "EUR", "GBP", "INR"]
+
+
+def _builder_ctx(user, clients, profiles, default_client, draft, files, p_start, p_end) -> dict:
+    cur = (draft.currency if draft else "") or "AED"
+    return {"user": user, "clients": clients, "profiles": profiles, "default_client": default_client, "draft": draft, "draft_files": files,
+            "p_start": p_start, "p_end": p_end, "currencies": CURRENCIES if cur in CURRENCIES else [cur] + CURRENCIES, "currency": cur,
+            "max_upload_mb": settings.max_upload_bytes // (1024 * 1024), "nav": "tasks",
+            "crumbs": [("Reporting tasks", "/tasks"), ("Edit draft" if draft else "New report", None)]}
 
 
 def _date(v):
@@ -396,9 +507,12 @@ def submit(request: Request, task_id: int):
     user = require_user(request)
     with Session() as s:
         t = get_task_checked(s, user, task_id)
+        s.refresh(t, with_for_update=True)  # row lock: a double click / second tab can't queue a second job
+        if t.status != "draft":
+            raise S.UserError("This task was already submitted")
         files = s.scalars(select(TaskFile).where(TaskFile.task_id == t.id, TaskFile.removed.is_(False))).all()
         if "deck_update" in (t.deliverables or []) and not any(f.role == "client_deck" for f in files):
-            raise S.UserError("You selected 'Updated client PowerPoint' but no client PPTX is uploaded. Upload the deck in area C, or untick that deliverable.")
+            raise S.UserError("You selected 'Updated client PowerPoint' but no client PPTX is uploaded. Upload the deck under Client PowerPoint, or deselect that output.")
         v = S.submit_task(s, t, user)
         s.commit()
         return {"ok": True, "version": v.number, "url": f"/tasks/{t.id}"}
@@ -423,56 +537,213 @@ def task_state(request: Request, task_id: int):
         return _state_token(s, t)
 
 
-def workspace_ctx(s, user: User, t: Task) -> dict:
+# ---------------------------------------------------------------------------
+# Task workspace
+# ---------------------------------------------------------------------------
+TRACK = [("received", "Files received", ("uploaded", "inspecting")), ("prepared", "Data prepared", ("mapping", "awaiting_clarification")),
+         ("built", "Report built", ("calculating", "generating")), ("validation", "Validation", ("validating",)),
+         ("review", "Review", ("ready_for_review",)), ("approved", "Approved", ())]
+STAGE_ORDER = [k for k, _ in STAGES]
+OUTPUT_KINDS = ("excel", "excel_consolidated", "deck_update", "deck_new", "pdf")
+OUTPUT_TYPE = {"excel": "Excel workbook", "excel_consolidated": "Excel workbook", "deck_update": "PowerPoint deck", "deck_new": "PowerPoint deck", "pdf": "PDF"}
+PREVIEW_FOR = {"excel": ("template", "excel"), "excel_consolidated": ("excel", "template"), "deck_update": ("deck_update",), "deck_new": ("deck_new",)}
+PREVIEW_LABEL = {"deck_update": "Updated client deck", "deck_new": "New deck", "excel": "Excel report", "excel_consolidated": "Consolidated workbook", "template": "Populated template"}
+CHECK_GROUP = {"excel": "workbook", "template": "workbook", "deck": "presentation", "crossfile": "presentation", "labels": "presentation",
+               "deck_flags": "presentation", "deck_new": "presentation", "layout": "presentation"}
+CHECK_NEXT = {
+    "columns": "Check that the raw export includes the missing columns, then upload it with your feedback.",
+    "coverage": "Make sure every uploaded file belongs in this report, or upload the missing source data with your feedback.",
+    "period": "Check the reporting dates on the task and the dates in the exports.",
+    "overlaps": "Check whether the same data was uploaded twice.",
+    "currency": "Answer the currency question, or upload exports that state their currency.",
+    "reconciliation": "Don't send this version. Review the technical detail and request a revision.",
+    "rates": "Don't send this version. Review the technical detail and request a revision.",
+    "excel": "Download the workbook and check the values listed in the detail.",
+    "template": "Check the template cells listed in the detail.",
+    "deck": "Open the updated deck and check the slides listed in the detail.",
+    "crossfile": "Compare the workbook and the deck values listed in the detail before sharing.",
+    "labels": "Check the date range and labels on the deck.",
+    "deck_flags": "Review the flagged slides before sharing.",
+    "layout": "Check the slides listed for text that overflows its box.",
+    "commentary": "Review the commentary; untraceable statements were removed.",
+}
+
+
+def _check_group(c: dict) -> str:
+    cid = c.get("id", "")
+    if cid.startswith("open_"):
+        t = (c.get("title") or "").lower()
+        return "presentation" if any(w in t for w in ("deck", "powerpoint", "pptx", "slide")) else "workbook"
+    return CHECK_GROUP.get(cid, "data")
+
+
+def _track(v: TaskVersion | None, reached: set, t: Task) -> list[dict]:
+    """Stage tracker for one version, from its real status, stage and events (never inferred from files)."""
+    if not v:
+        return [{"key": k, "label": lbl, "state": "pending", "note": ""} for k, lbl, _ in TRACK]
+    V = (v.result or {}).get("validation") or {}
+    idx = STAGE_ORDER.index(v.stage) if v.stage in STAGE_ORDER else 0
+    out = []
+    for k, label, stages in TRACK:
+        st, note = "pending", ""
+        pos = [STAGE_ORDER.index(x) for x in stages]
+        here = v.stage in stages
+        passed = bool(pos) and max(pos) < idx
+        if k == "approved":
+            if t.approved_version_id == v.id:
+                st, note = "done", ("Approved " + _ago(v.approved_at)) if v.approved_at else "Approved"
+        elif v.status in ("failed", "cancelled"):
+            if here:
+                st, note = ("failed", "Failed") if v.status == "failed" else ("attention", "Cancelled")
+            elif passed:
+                st = "done"
+        elif v.status == "awaiting_clarification" and k == "prepared":
+            st, note = "attention", "Needs your answer"
+        elif k == "validation" and V:
+            st = {"blocked": "attention", "warnings": "done", "passed": "done"}.get(V.get("overall"), "done")
+            note = {"blocked": f"{V['counts'].get('fail', 0)} failed", "warnings": f"{V['counts'].get('warn', 0)} warning" + ("" if V["counts"].get("warn", 0) == 1 else "s"), "passed": "All passed"}.get(V.get("overall"), "")
+            if v.status in S.PROCESSING and here:
+                st, note = "active", "In progress"
+        elif k == "review":
+            if t.approved_version_id == v.id:
+                st, note = "done", "Reviewed"
+            elif v.status == "ready_for_review":
+                st, note = "active", "Waiting for your review"
+        elif here and v.status in S.PROCESSING:
+            st, note = "active", "In progress"
+        elif passed or (pos and any(x in reached for x in stages) and not here):
+            st = "done"
+        out.append({"key": k, "label": label, "state": st, "note": note})
+    return out
+
+
+def _attention(t: Task, v: TaskVersion | None, cur: TaskVersion | None, open_qs, job) -> dict | None:
+    if open_qs and v and cur and v.id == cur.id:
+        n = len(open_qs)
+        return {"tone": "warn", "icon": "chat", "title": f"{n} question{'s' if n != 1 else ''} need{'s' if n == 1 else ''} your answer",
+                "text": "Processing is paused until you answer. Inspection and mapping are saved.", "action": "Answer question" + ("s" if n != 1 else ""), "href": "#questions"}
+    if not v:
+        return None
+    V = (v.result or {}).get("validation") or {}
+    cnt = V.get("counts") or {}
+    if v.status == "failed":
+        err = v.error or (job.error if job and job.version_id == v.id else "") or "No error detail was recorded."
+        return {"tone": "error", "icon": "alert", "title": f"Processing failed for v{v.number}", "text": err[:400], "action": "View error", "tab": "diagnostics", "retry": cur is not None and v.id == cur.id}
+    if v.status == "cancelled":
+        return {"tone": "warn", "icon": "info", "title": f"Processing of v{v.number} was cancelled", "text": "Earlier versions are not affected. You can retry this version.", "retry": cur is not None and v.id == cur.id}
+    if v.status == "validation_blocked" or V.get("overall") == "blocked":
+        return {"tone": "error", "icon": "alert", "title": "Validation blocked this version",
+                "text": f"{cnt.get('fail', 0)} check{'s' if cnt.get('fail', 0) != 1 else ''} failed. Outputs are kept for inspection but must not be sent to the client.", "action": "View checks", "tab": "validation"}
+    if v.status == "ready_for_review" and t.approved_version_id != v.id:
+        if cnt.get("warn"):
+            return {"tone": "warn", "icon": "alert", "title": "Review validation before sharing",
+                    "text": f"{cnt['warn']} warning{'s' if cnt['warn'] != 1 else ''} to review. Open the validation results to see issues and affected outputs.", "action": "View checks", "tab": "validation"}
+        return {"tone": "info", "icon": "check-circle", "title": f"v{v.number} is ready for your review", "text": "All validation checks passed. Review the outputs, then approve or request changes.", "approve": v.id}
+    if v.status in S.PROCESSING:
+        return {"tone": "info", "icon": "clock", "busy": True, "title": f"Processing v{v.number}: {S.STATUS_LABEL.get(v.status, v.status)}",
+                "text": "This page updates automatically. You can leave and come back."}
+    return None
+
+
+def _activity(s, t: Task, versions, users) -> list[dict]:
+    """Every real event for the task, oldest first. actor: person or system."""
+    vno = {v.id: v.number for v in versions}
+    items = []
+    for f in s.scalars(select(TaskFile).where(TaskFile.task_id == t.id).order_by(TaskFile.id)).all():
+        items.append({"at": f.uploaded_at, "kind": "upload", "who": users.get(f.uploaded_by), "person": True, "v": f.added_in_version,
+                      "text": f"Uploaded {f.original_name}" + (" (later removed)" if f.removed else "")})
+    for v in versions:
+        items.append({"at": v.created_at, "kind": "revision" if v.kind == "revision" else "submit", "who": users.get(v.created_by), "person": True, "v": v.number,
+                      "text": (f"Requested revision v{v.number}" + (f" from v{vno.get(v.base_version_id)}" if v.base_version_id else "")) if v.kind == "revision" else "Submitted for processing"})
+        for e in s.scalars(select(StageEvent).where(StageEvent.version_id == v.id).order_by(StageEvent.id)).all():
+            items.append({"at": e.at, "kind": "validation" if e.stage == "validating" else "process", "who": "Workspace", "person": False, "v": v.number,
+                          "text": dict(STAGES).get(e.stage, e.stage) + (f": {e.detail}" if e.detail else "")})
+        if v.approved_at:
+            items.append({"at": v.approved_at, "kind": "approval", "who": users.get(v.approved_by), "person": True, "v": v.number, "text": f"Approved v{v.number}"})
+    for q in s.scalars(select(Question).where(Question.task_id == t.id, Question.answered_at.is_not(None))).all():
+        items.append({"at": q.answered_at, "kind": "clarification", "who": users.get(q.answered_by), "person": True, "v": vno.get(q.version_id),
+                      "text": f"Answered: {q.text[:140]} → {q.answer}"})
+    for m in s.scalars(select(Message).where(Message.task_id == t.id, Message.kind.in_(["feedback", "assistant", "system"])).order_by(Message.id)).all():
+        if m.kind == "feedback":
+            items.append({"at": m.created_at, "kind": "feedback", "who": users.get(m.author_id), "person": True, "v": vno.get(m.version_id), "text": "Feedback: " + m.text[:300]})
+        elif m.kind == "assistant":
+            items.append({"at": m.created_at, "kind": "system", "who": "Workspace assistant", "person": False, "v": vno.get(m.version_id), "text": m.text[:300]})
+    tz = dt.timezone.utc
+    items.sort(key=lambda i: (i["at"].replace(tzinfo=tz) if i["at"] and i["at"].tzinfo is None else i["at"]) or now())
+    return items
+
+
+def workspace_ctx(s, user: User, t: Task, view_id: int | None = None) -> dict:
     versions = s.scalars(select(TaskVersion).where(TaskVersion.task_id == t.id).order_by(TaskVersion.number.desc())).all()
     cur = versions[0] if versions else None
+    view = next((v for v in versions if v.id == view_id), None) or cur
     files = s.scalars(select(TaskFile).where(TaskFile.task_id == t.id, TaskFile.removed.is_(False)).order_by(TaskFile.id)).all()
-    events = s.scalars(select(StageEvent).where(StageEvent.version_id == cur.id).order_by(StageEvent.id)).all() if cur else []
+    events = s.scalars(select(StageEvent).where(StageEvent.version_id == view.id).order_by(StageEvent.id)).all() if view else []
     questions = s.scalars(select(Question).where(Question.version_id == cur.id).order_by(Question.id)).all() if cur else []
+    open_qs = [q for q in questions if q.status == "open"]
     msgs = s.scalars(select(Message).where(Message.task_id == t.id).order_by(Message.id)).all()
     users = {u.id: u.name for u in s.scalars(select(User)).all()}
-    art_by_v = {}
-    for v in versions:
-        art_by_v[v.id] = s.scalars(select(Artifact).where(Artifact.version_id == v.id).order_by(Artifact.id)).all()
+    art_by_v = {v.id: s.scalars(select(Artifact).where(Artifact.version_id == v.id).order_by(Artifact.id)).all() for v in versions}
     job = s.scalar(select(Job).where(Job.version_id == cur.id).order_by(Job.id.desc())) if cur else None
-    reached = {e.stage for e in events}
-    stage_rows = []
-    for key, label in STAGES:
-        ev = next((e for e in reversed(events) if e.stage == key), None)
-        state = "done" if ev else "todo"
-        if cur and cur.stage == key and t.status in S.PROCESSING | {"awaiting_clarification"}:
-            state = "active"
-        if key == "awaiting_clarification" and not ev:
-            state = "skipped" if cur and cur.stage in ("calculating", "generating", "validating", "ready_for_review") else "todo"
-        stage_rows.append({"key": key, "label": label, "state": state, "at": ev.at if ev else None, "detail": ev.detail if ev else ""})
-    result = (cur.result or {}) if cur else {}
-    # if current version is waiting, show the last completed version's outputs too
-    shown = cur
-    if cur and not art_by_v.get(cur.id):
-        shown = next((v for v in versions if art_by_v.get(v.id)), cur)
-    shown_result = (shown.result or {}) if shown else {}
-    arts = art_by_v.get(shown.id, []) if shown else []
-    deliverables = [a for a in arts if a.kind not in ("preview", "record")]
-    records = [a for a in arts if a.kind == "record"]
-    previews = {}
+    vjob = s.scalar(select(Job).where(Job.version_id == view.id).order_by(Job.id.desc())) if view else None
+    R = (view.result or {}) if view else {}
+    arts = art_by_v.get(view.id, []) if view else []
+    previews: dict[str, list] = {}
     for a in arts:
         if a.kind == "preview":
             previews.setdefault(a.meta["artifact_kind"], []).append(a)
-    return {"user": user, "t": t, "client": t.client.name, "owner": users.get(t.owner_id), "versions": versions, "cur": cur, "files": [S.file_summary(f) for f in files],
-            "events": events, "stage_rows": stage_rows, "questions": questions, "open_questions": [q for q in questions if q.status == "open"],
-            "msgs": msgs, "users": users, "art_by_v": art_by_v, "job": job, "result": result, "shown": shown, "shown_result": shown_result,
-            "deliverables": deliverables, "records": records, "previews": previews, "state": _state_token(s, t),
-            "processing": t.status in S.PROCESSING, "profile_name": t.profile.name if t.profile else None}
+    for k in previews:
+        previews[k].sort(key=lambda a: (a.meta or {}).get("page", 0))
+    outputs = []
+    for a in arts:
+        if a.kind not in OUTPUT_KINDS:
+            continue
+        available = storage.path_ok(a.stored_path) and os.path.exists(a.stored_path)
+        pkey = next((k for k in PREVIEW_FOR.get(a.kind, ()) if k in previews), None)
+        outputs.append({"a": a, "type": OUTPUT_TYPE.get(a.kind, a.kind), "icon": "present" if a.kind.startswith("deck") else ("file" if a.kind == "pdf" else "table"),
+                        "available": available, "preview": pkey, "ext": os.path.splitext(a.filename)[1].lstrip(".").upper()})
+    records = [a for a in arts if a.kind == "record"]
+    V = R.get("validation") or {}
+    groups = {"data": [], "workbook": [], "presentation": []}
+    for c in V.get("checks", []):
+        groups[_check_group(c)].append(dict(c, next=CHECK_NEXT.get(c.get("id")) if c.get("status") in ("fail", "warn") else None))
+    group_summary = {}
+    for g, cs in groups.items():
+        if cs:
+            n = {st: sum(1 for c in cs if c["status"] == st) for st in ("pass", "warn", "fail", "not_run")}
+            group_summary[g] = {"n": n, "total": len(cs), "state": "fail" if n["fail"] else "warn" if n["warn"] else "not_run" if n["not_run"] == len(cs) else "pass"}
+    if view and view.approved_at and t.approved_version_id == view.id:
+        review_state = ("ok", "Approved")
+    elif view and (view.status == "validation_blocked" or V.get("overall") == "blocked"):
+        review_state = ("bad", "Blocked: not for client use")
+    elif view and view.status == "ready_for_review":
+        review_state = ("warn", "Review required")
+    else:
+        review_state = ("neutral", S.STATUS_LABEL.get(view.status, view.status) if view else "")
+    role_groups = [("raw", "Raw reports", "table"), ("template", "Excel templates", "table"), ("client_deck", "Client PowerPoint", "present"),
+                   ("screenshots", "Screenshots and reference files", "image")]
+    fsum = [S.file_summary(f) for f in files]
+    files_by_role = {k: [f for f in fsum if (f["role"] == k or (k == "screenshots" and f["role"] == "creatives"))] for k, _, _ in role_groups}
+    feedback_bases = [v for v in versions if v.result or v.status in ("ready_for_review", "approved", "validation_blocked")]
+    can_feedback = bool(cur) and cur.status not in S.PROCESSING and t.status != "awaiting_clarification"
+    return {"user": user, "t": t, "client": t.client.name, "owner": users.get(t.owner_id), "versions": versions, "cur": cur, "view": view,
+            "files": fsum, "files_by_role": files_by_role, "role_groups": role_groups, "events": events,
+            "track": _track(view, {e.stage for e in events}, t), "attention": _attention(t, view, cur, open_qs, vjob or job),
+            "questions": questions, "open_questions": open_qs, "msgs": msgs, "users": users, "art_by_v": art_by_v, "job": job, "vjob": vjob,
+            "R": R, "V": V, "groups": groups, "group_summary": group_summary, "outputs": outputs, "records": records, "previews": previews,
+            "review_state": review_state, "activity": _activity(s, t, versions, users), "feedback_bases": feedback_bases, "can_feedback": can_feedback,
+            "state": _state_token(s, t), "processing": t.status in S.PROCESSING, "profile_name": t.profile.name if t.profile else None,
+            "PREVIEW_LABEL": PREVIEW_LABEL, "nav": "tasks", "crumbs": [("Reporting tasks", "/tasks"), (t.title or "Untitled task", None)]}
 
 
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)
-def workspace(request: Request, task_id: int):
+def workspace(request: Request, task_id: int, v: int | None = None):
     user = require_user(request)
     with Session() as s:
         t = get_task_checked(s, user, task_id)
         if t.status == "draft":
             return RedirectResponse(f"/tasks/{t.id}/edit", status_code=303)
-        ctx = workspace_ctx(s, user, t)
+        ctx = workspace_ctx(s, user, t, v)
         return templates.TemplateResponse(request, "workspace.html", ctx)
 
 
@@ -484,8 +755,7 @@ def edit_draft(request: Request, task_id: int):
         clients = s.scalars(select(Client).order_by(Client.id)).all()
         profiles = s.scalars(select(Profile).order_by(Profile.id)).all()
         files = [S.file_summary(f) for f in s.scalars(select(TaskFile).where(TaskFile.task_id == t.id, TaskFile.removed.is_(False))).all()]
-        return templates.TemplateResponse(request, "new_task.html", {"user": user, "clients": clients, "profiles": profiles, "default_client": t.client,
-                                                                      "draft": t, "draft_files": files, "p_start": t.period_start, "p_end": t.period_end})
+        return templates.TemplateResponse(request, "new_task.html", _builder_ctx(user, clients, profiles, t.client, t, files, t.period_start, t.period_end))
 
 
 @app.post("/api/tasks/{task_id}/answers")
@@ -508,6 +778,7 @@ async def feedback(request: Request, task_id: int):
         raise S.UserError("Describe what you would like to change")
     with Session() as s:
         t = get_task_checked(s, user, task_id)
+        s.refresh(t, with_for_update=True)  # row lock: a double click can't create two revisions
         fids = [int(x) for x in body.get("file_ids") or []]
         owned = {f.id for f in s.scalars(select(TaskFile).where(TaskFile.task_id == t.id, TaskFile.id.in_(fids))).all()}
         v, summary = S.create_revision(s, t, user, text[:8000], int(body["base_version_id"]) if body.get("base_version_id") else None, [f for f in fids if f in owned])
@@ -609,117 +880,147 @@ def preview(request: Request, artifact_id: int):
 # ---------------------------------------------------------------------------
 # Admin
 # ---------------------------------------------------------------------------
+ROLE_LABEL = {"admin": "Admin", "employee": "Employee"}
+PROFILE_LOCKED = {"click_metric": ("link_clicks",)}  # agency rule: clicks are always link clicks
+
+
+def _admin_users(s, me):
+    users = s.scalars(select(User).order_by(User.active.desc(), func.lower(User.name))).all()
+    last = dict(s.execute(select(AuditLog.user_id, func.max(AuditLog.at)).where(AuditLog.action == "login_zoho").group_by(AuditLog.user_id)).all())
+    rows = []
+    for u in users:
+        st = S.sign_in_status(u, last.get(u.id), settings.zoho_allowed_domains)
+        rows.append({"u": u, "me": u.id == me.id, "status": st, "last_login": last.get(u.id)})
+    return rows
+
+
+def _admin_ctx(s, user):
+    rows = _admin_users(s, user)
+    profiles = s.scalars(select(Profile).order_by(Profile.id)).all()
+    clients = {c.id: c.name for c in s.scalars(select(Client)).all()}
+    jobs = s.scalars(select(Job).order_by(Job.id.desc()).limit(20)).all()
+    titles = dict(s.execute(select(Task.id, Task.title).where(Task.id.in_({j.task_id for j in jobs} or {0}))).all())
+    active_admins = sum(1 for r in rows if r["u"].role == "admin" and r["u"].active)
+    return {"user": user, "rows": rows, "profiles": profiles, "clients": clients, "jobs": jobs, "job_titles": titles,
+            "retention": S.retention_days(s), "retention_min": S.RETENTION_MIN, "retention_max": S.RETENTION_MAX,
+            "zoho_enabled": settings.zoho_enabled, "allowed_domains": settings.zoho_allowed_domains,
+            "boot_admins": settings.zoho_admin_emails, "active_admins": active_admins, "ROLE_LABEL": ROLE_LABEL,
+            "locked": PROFILE_LOCKED, "nav": "admin", "crumbs": [("Administration", None)]}
+
+
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page(request: Request, msg: str = ""):
+def admin_page(request: Request, partial: str = ""):
     user = require_admin(request)
     with Session() as s:
-        users = s.scalars(select(User).order_by(User.id)).all()
-        profiles = s.scalars(select(Profile).order_by(Profile.id)).all()
-        clients = {c.id: c.name for c in s.scalars(select(Client)).all()}
-        jobs = s.scalars(select(Job).order_by(Job.id.desc()).limit(15)).all()
-        rd = S.retention_days(s)
-    import json as _json
-    return templates.TemplateResponse(request, "admin.html", {"user": user, "users": users, "profiles": profiles, "clients": clients, "jobs": jobs,
-                                                               "retention": rd, "msg": msg, "zoho_enabled": settings.zoho_enabled,
-                                                               "allowed_domains": settings.zoho_allowed_domains, "boot_admins": settings.zoho_admin_emails, "dumps": lambda o: _json.dumps(o, indent=2)})
+        ctx = _admin_ctx(s, user)
+    if partial == "users":
+        return templates.TemplateResponse(request, "partials/admin_users.html", ctx)
+    return templates.TemplateResponse(request, "admin.html", ctx)
 
 
-@app.post("/admin/users")
-def admin_add_user(request: Request, email: str = Form(...), name: str = Form(""), role: str = Form("employee"), password: str = Form("")):
-    """Grant access. With Zoho sign-in, no password is needed: the person signs in with their Zoho account."""
+def _user_json(u):
+    return {"id": u.id, "email": u.email, "name": u.name, "role": u.role, "active": u.active}
+
+
+@app.post("/api/admin/users")
+async def api_admin_grant(request: Request):
     admin = require_admin(request)
-    email = email.strip().lower()
-    if "@" not in email:
-        return RedirectResponse("/admin?msg=Enter a valid email", status_code=303)
-    domain = email.rsplit("@", 1)[-1]
-    if password and len(password) < 10:
-        return RedirectResponse("/admin?msg=Password must be at least 10 characters", status_code=303)
-    if not password:
-        if not settings.zoho_enabled:
-            return RedirectResponse("/admin?msg=Set an initial password (Zoho sign-in isn't set up yet)", status_code=303)
-        if settings.zoho_allowed_domains and domain not in settings.zoho_allowed_domains:
-            return RedirectResponse("/admin?msg=Only @" + " / @".join(settings.zoho_allowed_domains) + " emails can be granted Zoho access", status_code=303)
+    body = await request.json()
     with Session() as s:
-        u = s.scalar(select(User).where(func.lower(User.email) == email))
-        if u:
-            if u.active:
-                return RedirectResponse("/admin?msg=" + email + " already has access", status_code=303)
-            u.active = True
-            u.role = "admin" if role == "admin" else "employee"
-            S.audit(s, admin.id, "grant_access", email)
-            s.commit()
-            return RedirectResponse("/admin?msg=Access restored for " + email, status_code=303)
-        s.add(User(email=email, name=(name.strip() or email.split("@")[0])[:120], role="admin" if role == "admin" else "employee",
-                   password_hash=hash_password(password) if password else "!"))
-        S.audit(s, admin.id, "grant_access", email)
+        u, how = S.grant_access(s, admin, str(body.get("email") or ""), str(body.get("name") or ""), str(body.get("role") or "employee"))
         s.commit()
-    return RedirectResponse("/admin?msg=Access granted to " + email, status_code=303)
+        return {"ok": True, "user": _user_json(u), "result": how,
+                "message": ("Access restored for " if how == "restored" else "Access granted to ") + u.email + ". No email was sent."}
 
 
-@app.post("/admin/users/{uid}/role")
-def admin_set_role(request: Request, uid: int, role: str = Form(...)):
+@app.patch("/api/admin/users/{uid}")
+async def api_admin_update_user(request: Request, uid: int):
     admin = require_admin(request)
+    body = await request.json()
+    role = body.get("role")
+    if role is not None and role not in ROLE_LABEL:
+        raise S.UserError("Unknown role")
+    active = body.get("active")
+    if active is not None and not isinstance(active, bool):
+        raise S.UserError("Access must be true or false")
     with Session() as s:
-        u = s.get(User, uid)
-        if not u or u.id == admin.id:
-            return RedirectResponse("/admin?msg=You can't change your own role", status_code=303)
-        u.role = "admin" if role == "admin" else "employee"
-        S.audit(s, admin.id, "set_role:" + u.role, u.email)
+        u, changes = S.update_user_access(s, admin, uid, role, active)
         s.commit()
-    return RedirectResponse("/admin?msg=Role updated for " + u.email, status_code=303)
+        return {"ok": True, "user": _user_json(u), "changes": changes,
+                "message": (u.email + ": " + ", ".join(changes)) if changes else "No changes"}
 
 
-@app.post("/admin/users/{uid}/password")
-def admin_set_password(request: Request, uid: int, password: str = Form(...)):
+@app.put("/api/admin/retention")
+async def api_admin_retention(request: Request):
     admin = require_admin(request)
-    if len(password) < 10:
-        return RedirectResponse("/admin?msg=Password must be at least 10 characters", status_code=303)
+    body = await request.json()
     with Session() as s:
-        u = s.get(User, uid)
-        if not u:
-            return RedirectResponse("/admin?msg=User not found", status_code=303)
-        u.password_hash = hash_password(password)
-        S.audit(s, admin.id, "reset_password", u.email)
+        d = S.set_retention_days(s, admin.id, body.get("days"))
         s.commit()
-    return RedirectResponse("/admin?msg=Password updated", status_code=303)
+        p = S.retention_preview(s)
+    return {"ok": True, "days": d, "message": f"Retention policy saved: {d} days. Nothing was deleted.", "eligible": p["count"]}
 
 
-@app.post("/admin/users/{uid}/toggle")
-def admin_toggle_user(request: Request, uid: int):
-    admin = require_admin(request)
-    with Session() as s:
-        u = s.get(User, uid)
-        if u and u.id != admin.id:
-            u.active = not u.active
-            S.audit(s, admin.id, "grant_access" if u.active else "revoke_access", u.email)
-            s.commit()
-    return RedirectResponse("/admin", status_code=303)
-
-
-@app.post("/admin/profiles/{pid}")
-def admin_profile(request: Request, pid: int, settings_json: str = Form(...)):
-    admin = require_admin(request)
-    import json as _json
-    try:
-        data = _json.loads(settings_json)
-        assert isinstance(data, dict)
-    except Exception:  # noqa: BLE001
-        return RedirectResponse("/admin?msg=Profile JSON is invalid", status_code=303)
-    with Session() as s:
-        p = s.get(Profile, pid)
-        p.settings = data
-        S.audit(s, admin.id, "edit_profile", p.name)
-        s.commit()
-    return RedirectResponse("/admin?msg=Profile saved", status_code=303)
-
-
-@app.post("/admin/retention")
-def admin_retention(request: Request, days: int = Form(...), run: str = Form("")):
+@app.get("/api/admin/retention/preview")
+def api_admin_retention_preview(request: Request):
     require_admin(request)
     with Session() as s:
-        r = s.get(AppSetting, "retention_days") or AppSetting(key="retention_days", value=str(days))
-        r.value = str(max(1, days))
-        s.merge(r)
-        n = S.run_retention(s) if run else None
+        p = S.retention_preview(s)
+        d = S.retention_days(s)
+    return {"days": d, "count": p["count"], "cutoff": p["cutoff"].isoformat(), "oldest": p["oldest"].isoformat() if p["oldest"] else None}
+
+
+@app.post("/api/admin/retention/run")
+async def api_admin_retention_run(request: Request):
+    admin = require_admin(request)
+    body = await request.json()
+    if body.get("confirm") is not True:
+        raise S.UserError("Confirm the cleanup before running it")
+    with Session() as s:
+        n = S.run_retention(s)
+        S.audit(s, admin.id, "retention_run", f"{n} task(s) deleted")
         s.commit()
-    return RedirectResponse(f"/admin?msg=Retention set to {days} days" + (f"; {n} task(s) deleted" if n is not None else ""), status_code=303)
+    return {"ok": True, "deleted": n, "message": f"Cleanup finished: {n} task{'s' if n != 1 else ''} deleted."}
+
+
+def _validate_profile(old: dict, new) -> dict:
+    import json as _json
+    if not isinstance(new, dict):
+        raise S.UserError("Rules must be an object of settings")
+    if len(_json.dumps(new)) > 200_000:
+        raise S.UserError("Rules are too large")
+    for k in new:
+        if not isinstance(k, str) or not k.strip():
+            raise S.UserError("Every setting needs a name")
+    for k, v in new.items():
+        if k in old and old[k] is not None and v is not None:
+            ot, nt = type(old[k]), type(v)
+            if ot in (int, float) and nt in (int, float):
+                continue
+            if ot is not nt:
+                raise S.UserError(f"“{k}” must stay a {dict(str='text', int='number', float='number', bool='yes/no', dict='group', list='list').get(ot.__name__, ot.__name__)}")
+        if k in PROFILE_LOCKED and v not in PROFILE_LOCKED[k]:
+            raise S.UserError(f"“{k}” is fixed by agency rules ({' / '.join(PROFILE_LOCKED[k])})")
+    if "default_currency" in new and new["default_currency"] is not None:
+        c = new["default_currency"]
+        if not (isinstance(c, str) and len(c) == 3 and c.isalpha()):
+            raise S.UserError("Default currency must be a 3-letter code such as AED")
+        new["default_currency"] = c.upper()
+    return new
+
+
+@app.put("/api/admin/profiles/{pid}")
+async def api_admin_profile(request: Request, pid: int):
+    admin = require_admin(request)
+    body = await request.json()
+    with Session() as s:
+        p = s.get(Profile, pid, with_for_update=True)
+        if not p:
+            raise HTTPException(404, "Not found")
+        if body.get("updated_at") and p.updated_at and body["updated_at"] != p.updated_at.isoformat():
+            raise S.UserError("These rules were changed by someone else. Reload to see the latest version before saving.")
+        p.settings = _validate_profile(dict(p.settings or {}), body.get("settings"))
+        p.updated_at = dt.datetime.now(dt.timezone.utc)
+        S.audit(s, admin.id, "edit_profile", p.name)
+        s.commit()
+        return {"ok": True, "updated_at": p.updated_at.isoformat(), "message": f"Rules saved for {p.name}. They apply to new and revised reports."}

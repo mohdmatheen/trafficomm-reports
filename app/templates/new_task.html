@@ -1,88 +1,187 @@
 {% extends "base.html" %}
+{% from "partials/ui.html" import icon %}
 {% block page %}new_task{% endblock %}
-{% block title %}{% if draft %}Edit draft{% else %}New task{% endif %} · Trafficomm{% endblock %}
-{% block bodyattrs %}data-task-id="{{ draft.id if draft else '' }}"{% endblock %}
+{% block title %}{% if draft %}Edit draft{% else %}Build your report{% endif %} · Trafficomm{% endblock %}
+{% block bodyattrs %}data-task-id="{{ draft.id if draft else '' }}" data-max-mb="{{ max_upload_mb }}"{% endblock %}
+{% block mainclass %}page page-builder{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>{% if draft %}Draft task{% else %}New reporting task{% endif %}</h1>
-  <p class="muted">Changes save automatically as a draft. Raw files are stored unchanged; outputs are always new files.</p></div>
-  <div class="save-state muted small" id="saveState">Not saved yet</div>
+  <div>
+    <h1>Build your report</h1>
+    <p class="page-sub">Add your brief and source files. We’ll take it from here.</p>
+  </div>
+  <div class="save-wrap">
+    <span class="badge-st tone-neutral"><span class="bdot" aria-hidden="true"></span>Draft</span>
+    <span class="save-state" id="saveState" role="status" aria-live="polite" data-state="{{ 'saved' if draft else 'idle' }}">{{ 'Saved' if draft else 'Not saved yet' }}</span>
+  </div>
 </div>
-<form id="taskForm" class="grid-2" autocomplete="off">
-  <section class="card">
-    <h2>1. Report details</h2>
-    <label>Client
-      <select name="client_id">{% for c in clients %}<option value="{{ c.id }}" {% if default_client and c.id == default_client.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select>
-    </label>
-    <div hidden>{# the client's reporting rules are picked automatically from the selected client #}
+
+<nav class="steps" aria-label="Report sections">
+  <a href="#sec-details" class="on" aria-current="true"><b>01</b><span>Report details</span></a>
+  <a href="#sec-instructions"><b>02</b><span>Instructions</span></a>
+  <a href="#sec-files"><b>03</b><span>Source files</span></a>
+  <a href="#sec-outputs"><b>04</b><span>Outputs</span></a>
+</nav>
+
+<form id="taskForm" class="builder" autocomplete="off" novalidate>
+  <div class="b-col">
+    <section class="card b-card" id="sec-details" aria-labelledby="h-details">
+      <header class="card-h"><span class="card-ic">{{ icon('file') }}</span><div><h2 id="h-details">Report details</h2><p>Set the scope for this reporting task.</p></div></header>
+      <div class="field">
+        <label for="f-client">Client</label>
+        <select id="f-client" name="client_id">{% for c in clients %}<option value="{{ c.id }}" {% if default_client and c.id == default_client.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select>
+      </div>
+      <div hidden>{# the client's reporting rules are picked automatically from the selected client #}
         <select name="profile_id" aria-hidden="true" tabindex="-1">{% for p in profiles %}<option value="{{ p.id }}" data-client="{{ p.client_id }}" {% if draft and draft.profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select>
-    </div>
-    <label>Task title<input name="title" required maxlength="300" placeholder="e.g. Brighton College – September 2026 performance" value="{{ draft.title if draft else '' }}"></label>
-    <label>Brand / campaign <span class="muted">(optional)</span><input name="brand" maxlength="300" placeholder="e.g. Brighton College Abu Dhabi" value="{{ draft.brand if draft else '' }}"></label>
-    <div class="row2">
-      <label>Reporting period start<input type="date" name="period_start" value="{{ p_start or '' }}"></label>
-      <label>Reporting period end<input type="date" name="period_end" value="{{ p_end or '' }}"></label>
-    </div>
-    <details {% if draft and draft.comparison_start %}open{% endif %}><summary>Comparison period (optional)</summary>
-    <div class="row2">
-      <label>Comparison start<input type="date" name="comparison_start" value="{{ draft.comparison_start if draft and draft.comparison_start else '' }}"></label>
-      <label>Comparison end<input type="date" name="comparison_end" value="{{ draft.comparison_end if draft and draft.comparison_end else '' }}"></label>
-    </div>
-    <p class="muted small">Upload comparison-period exports in area A as well; rows are split by date.</p>
-    </details>
-    <div class="row2">
-      <label>Reporting currency<input name="currency" maxlength="3" value="{{ draft.currency if draft else 'AED' }}" placeholder="AED"></label>
-      <label>USD → AED rate<input name="fx_usd_aed" inputmode="decimal" value="{{ draft.fx_usd_aed if draft and draft.fx_usd_aed else '3.6725' }}" placeholder="3.6725">
-        <span class="muted small" style="font-weight:400">Snapchat and TikTok spend (USD) is converted at this rate</span></label>
-    </div>
-    <fieldset class="deliverables">
-      <legend>Deliverables</legend>
+      </div>
+      <div class="field">
+        <label for="f-title">Task title</label>
+        <input id="f-title" name="title" required maxlength="300" placeholder="e.g. Brighton College – September 2026 performance" value="{{ draft.title if draft else '' }}" aria-describedby="err-title">
+        <p class="f-err" id="err-title" hidden></p>
+      </div>
+      <div class="field">
+        <label for="f-brand">Brand / campaign <span class="opt">(optional)</span></label>
+        <input id="f-brand" name="brand" maxlength="300" placeholder="e.g. Brighton College Abu Dhabi" value="{{ draft.brand if draft else '' }}">
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="f-ps">Reporting start</label>
+          <input id="f-ps" type="date" name="period_start" value="{{ p_start or '' }}" aria-describedby="hint-ps err-period">
+          <p class="f-hint" id="hint-ps" data-date-for="f-ps"></p>
+        </div>
+        <div class="field">
+          <label for="f-pe">Reporting end</label>
+          <input id="f-pe" type="date" name="period_end" value="{{ p_end or '' }}" aria-describedby="hint-pe err-period">
+          <p class="f-hint" id="hint-pe" data-date-for="f-pe"></p>
+        </div>
+      </div>
+      <p class="f-err" id="err-period" hidden></p>
+      {% set has_cmp = draft and (draft.comparison_start or draft.comparison_end) %}
+      <button type="button" class="add-link" id="cmpToggle" aria-expanded="{{ 'true' if has_cmp else 'false' }}" aria-controls="cmpFields">{{ icon('plus') }}<span>{{ 'Remove comparison period' if has_cmp else 'Add comparison period' }}</span> <span class="opt">Optional</span></button>
+      <div id="cmpFields" class="cmp" {% if not has_cmp %}hidden{% endif %}>
+        <div class="row2">
+          <div class="field"><label for="f-cs">Comparison start</label><input id="f-cs" type="date" name="comparison_start" value="{{ draft.comparison_start if draft and draft.comparison_start else '' }}" aria-describedby="hint-cs"><p class="f-hint" id="hint-cs" data-date-for="f-cs"></p></div>
+          <div class="field"><label for="f-ce">Comparison end</label><input id="f-ce" type="date" name="comparison_end" value="{{ draft.comparison_end if draft and draft.comparison_end else '' }}" aria-describedby="hint-ce"><p class="f-hint" id="hint-ce" data-date-for="f-ce"></p></div>
+        </div>
+        <p class="f-hint">Upload comparison-period exports with the raw reports as well; rows are split by date.</p>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="f-cur">Reporting currency</label>
+          <select id="f-cur" name="currency">{% for c in currencies %}<option value="{{ c }}" {% if c == currency %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+        </div>
+        <div class="field">
+          <label for="f-fx">USD → AED rate</label>
+          <input id="f-fx" name="fx_usd_aed" inputmode="decimal" value="{{ draft.fx_usd_aed if draft and draft.fx_usd_aed else '3.6725' }}" placeholder="3.6725" aria-describedby="hint-fx err-fx">
+          <p class="f-err" id="err-fx" hidden></p>
+        </div>
+      </div>
+      <p class="f-hint" id="hint-fx">Applied to spend in USD when the report is in AED. A currency stated in an export is always kept; Snapchat and TikTok exports that state none are read as USD.</p>
+      <p class="f-hint detected" id="detectedCur" hidden></p>
+    </section>
+
+    <section class="card b-card" id="sec-outputs" aria-labelledby="h-outputs">
+      <header class="card-h"><span class="card-ic">{{ icon('layers') }}</span><div><h2 id="h-outputs">Output files</h2><p>Choose what you need delivered.</p></div></header>
       {% set dsel = (draft.deliverables if draft else ['excel']) or [] %}
-      {% for k, v in DELIVERABLE_LABELS.items() if k in ['excel', 'deck_update'] %}
-      <label class="check"><input type="checkbox" name="deliverables" value="{{ k }}" {% if k in dsel %}checked{% endif %}> {{ v }}
-        <span class="muted small">{{ {'excel':'Structured tabs; or your template populated (area B)','deck_update':'Your deck (area C) with figures updated, design kept','deck_new':'','pdf':''}[k] }}</span></label>
-      {% endfor %}
-    </fieldset>
-  </section>
-  <section class="card">
-    <h2>2. Instructions</h2>
-    <label class="sr">Instructions</label>
-    <textarea name="instructions" rows="9" placeholder="Paste the client brief or your instructions. e.g.&#10;Update the September deck with the new figures. Use link clicks. Break down by school and creative. Add short commentary.">{{ draft.instructions if draft else '' }}</textarea>
-    <p class="muted small">Instructions are interpreted into a plan you can see in the workspace. Text inside uploaded files is never treated as instructions.</p>
-    <h2>3. Files</h2>
-    <div class="dropzones">
-      <div class="dropzone" data-role="raw" data-accept=".csv,.xlsx">
-        <input type="file" multiple accept=".csv,.xlsx" hidden>
-        <div class="dz-head"><b>A. Raw data</b><span class="muted small">CSV / XLSX exports · multiple files · Meta, TikTok, Snapchat, Google, LinkedIn…</span></div>
-        <div class="dz-hint">Drop files here or <button type="button" class="linkbtn dz-pick">browse</button></div>
-        <ul class="filelist"></ul>
+      <fieldset class="opt-cards" aria-describedby="err-outputs">
+        <legend class="sr">Outputs</legend>
+        <label class="opt-card">
+          <input type="checkbox" name="deliverables" value="excel" {% if 'excel' in dsel %}checked{% endif %}>
+          <span class="oc-check" aria-hidden="true">{{ icon('check') }}</span>
+          <span class="oc-ic">{{ icon('table') }}</span>
+          <span class="oc-txt"><b>{{ DELIVERABLE_LABELS['excel'] }}</b><span>Structured workbook, or your uploaded template populated.</span></span>
+        </label>
+        <label class="opt-card">
+          <input type="checkbox" name="deliverables" value="deck_update" {% if 'deck_update' in dsel %}checked{% endif %}>
+          <span class="oc-check" aria-hidden="true">{{ icon('check') }}</span>
+          <span class="oc-ic">{{ icon('present') }}</span>
+          <span class="oc-txt"><b>{{ DELIVERABLE_LABELS['deck_update'] }}</b><span>Figures updated in your existing client deck; design and client slides kept.</span></span>
+        </label>
+      </fieldset>
+      <p class="f-err" id="err-outputs" hidden></p>
+      <p class="f-hint">The updated PowerPoint needs the client deck uploaded under Client PowerPoint.</p>
+    </section>
+  </div>
+
+  <div class="b-col">
+    <section class="card b-card" id="sec-instructions" aria-labelledby="h-instr">
+      <header class="card-h"><span class="card-ic">{{ icon('pencil') }}</span><div><h2 id="h-instr">Instructions</h2><p>Paste the client brief or describe the report you need.</p></div></header>
+      <label for="f-instr" class="sr">Instructions</label>
+      <textarea id="f-instr" name="instructions" rows="7" placeholder="Update the deck with the latest figures. Use link clicks, break down by school and creative, and add short commentary." aria-describedby="hint-instr">{{ draft.instructions if draft else '' }}</textarea>
+      <p class="f-hint" id="hint-instr">Include required metrics, breakdowns and formatting preferences.</p>
+    </section>
+
+    <section class="card b-card" id="sec-files" aria-labelledby="h-files">
+      <header class="card-h"><span class="card-ic">{{ icon('layers') }}</span><div><h2 id="h-files">Source files</h2><p>Keep raw data, templates and creative references separate.</p></div></header>
+      <div class="zones">
+        <div class="dropzone dz-raw" data-role="raw" data-accept=".csv,.xlsx" data-multiple="1" id="zone-raw">
+          <input type="file" multiple accept=".csv,.xlsx" class="sr" tabindex="-1" aria-hidden="true">
+          <div class="dz-main">
+            <span class="dz-ic">{{ icon('upload') }}</span>
+            <div class="dz-txt">
+              <div class="dz-title"><b>Raw reports</b><span class="req">Required</span></div>
+              <div class="dz-hint">Drop files here or <button type="button" class="dz-pick">browse files</button></div>
+              <div class="dz-meta">CSV, XLSX · Multiple files · Meta, TikTok, Snapchat, Google, LinkedIn… · up to {{ max_upload_mb }} MB each</div>
+            </div>
+          </div>
+          <p class="f-err" id="err-raw" hidden></p>
+          <ul class="filelist" aria-live="polite"></ul>
+        </div>
+        <div class="zone-pair">
+          <div class="dropzone" data-role="template" data-accept=".xlsx">
+            <input type="file" accept=".xlsx" class="sr" tabindex="-1" aria-hidden="true">
+            <div class="dz-main">
+              <span class="dz-ic xl">{{ icon('table') }}</span>
+              <div class="dz-txt">
+                <div class="dz-title"><b>Excel template</b><span class="tag-opt">Optional</span></div>
+                <div class="dz-hint"><button type="button" class="dz-pick">Upload template</button></div>
+                <div class="dz-meta">XLSX · formulas are preserved</div>
+              </div>
+            </div>
+            <ul class="filelist" aria-live="polite"></ul>
+          </div>
+          <div class="dropzone" data-role="client_deck" data-accept=".pptx" id="zone-deck">
+            <input type="file" accept=".pptx" class="sr" tabindex="-1" aria-hidden="true">
+            <div class="dz-main">
+              <span class="dz-ic">{{ icon('present') }}</span>
+              <div class="dz-txt">
+                <div class="dz-title"><b>Client PowerPoint</b><span class="tag-opt" id="deckTag">Optional</span></div>
+                <div class="dz-hint"><button type="button" class="dz-pick">Upload existing deck</button></div>
+                <div class="dz-meta">PPTX · required for an updated deck</div>
+              </div>
+            </div>
+            <p class="f-err" id="err-deck" hidden></p>
+            <ul class="filelist" aria-live="polite"></ul>
+          </div>
+        </div>
+        <div class="dropzone" data-role="screenshots" data-accept=".png,.jpg,.jpeg,.zip" data-multiple="1">
+          <input type="file" multiple accept=".png,.jpg,.jpeg,.zip" class="sr" tabindex="-1" aria-hidden="true">
+          <div class="dz-main">
+            <span class="dz-ic">{{ icon('image') }}</span>
+            <div class="dz-txt">
+              <div class="dz-title"><b>Screenshots</b><span class="tag-opt">Optional</span></div>
+              <div class="dz-hint">Drop images or <button type="button" class="dz-pick">browse files</button></div>
+              <div class="dz-meta">PNG, JPG, ZIP · Match filenames to creative names or slide numbers (e.g. BWA-Static-EN.png or “slide 5.png”). Placed with a black border.</div>
+            </div>
+          </div>
+          <ul class="filelist" aria-live="polite"></ul>
+        </div>
       </div>
-      <div class="dropzone" data-role="template" data-accept=".xlsx">
-        <input type="file" accept=".xlsx" hidden>
-        <div class="dz-head"><b>B. Excel template</b><span class="muted small">Optional · XLSX · formulas are preserved</span></div>
-        <div class="dz-hint">Drop a template or <button type="button" class="linkbtn dz-pick">browse</button></div>
-        <ul class="filelist"></ul>
-      </div>
-      <div class="dropzone" data-role="client_deck" data-accept=".pptx">
-        <input type="file" accept=".pptx" hidden>
-        <div class="dz-head"><b>C. Client PowerPoint</b><span class="muted small">Optional · PPTX to update · design and client slides are kept</span></div>
-        <div class="dz-hint">Drop the deck or <button type="button" class="linkbtn dz-pick">browse</button></div>
-        <ul class="filelist"></ul>
-      </div>
-      <div class="dropzone" data-role="screenshots" data-accept=".png,.jpg,.jpeg,.zip">
-        <input type="file" multiple accept=".png,.jpg,.jpeg,.zip" hidden>
-        <div class="dz-head"><b>D. Screenshots</b><span class="muted small">Optional · PNG / JPG or a ZIP · name each like the creative on its slide (e.g. BWA-Static-EN.png) or "slide 5.png" · placed with a black border</span></div>
-        <div class="dz-hint">Drop screenshots or <button type="button" class="linkbtn dz-pick">browse</button></div>
-        <ul class="filelist"></ul>
+    </section>
+  </div>
+
+  <div id="formError" class="notice notice-error" role="alert" hidden></div>
+  <div class="action-bar" role="region" aria-label="Submit">
+    <div class="ab-note">{{ icon('lock') }}<div><b>Original files stay unchanged.</b><span>Outputs are saved as new versions.</span></div></div>
+    <div class="ab-actions">
+      <button type="button" class="btn btn-quiet" id="deleteDraft" {% if not draft %}hidden{% endif %}>Delete draft</button>
+      <a class="btn" href="/tasks">Back to tasks</a>
+      <div class="ab-submit">
+        <button type="submit" class="btn btn-primary btn-lg" id="submitBtn" aria-describedby="submitHint">Submit for processing{{ icon('arrow-right') }}</button>
+        <p class="ab-hint" id="submitHint" aria-live="polite"></p>
       </div>
     </div>
-    <div id="deckMissing" class="alert alert-warn" hidden>You chose <b>Updated client PowerPoint</b> but no PPTX is in area C. Upload the client deck, or untick that deliverable.</div>
-    <div id="formError" class="alert alert-fail" hidden></div>
-    <div class="submit-row">
-      {% if draft %}<button type="button" class="btn btn-ghost" id="deleteDraft">Delete draft</button>{% endif %}
-      <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">Submit for processing</button>
-    </div>
-  </section>
+  </div>
 </form>
 <script type="application/json" id="draftFiles">{{ (draft_files or [])|tojson }}</script>
 {% endblock %}

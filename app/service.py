@@ -282,6 +282,105 @@ def retention_days(s) -> int:
     return int(r.value) if r else settings.retention_days_default
 
 
+RETENTION_MIN, RETENTION_MAX = 7, 3650
+
+
+def set_retention_days(s, admin_id, days) -> int:
+    try:
+        d = int(str(days).strip())
+    except (TypeError, ValueError):
+        raise UserError(f"Enter a whole number of days between {RETENTION_MIN} and {RETENTION_MAX}")
+    if not RETENTION_MIN <= d <= RETENTION_MAX:
+        raise UserError(f"Enter a whole number of days between {RETENTION_MIN} and {RETENTION_MAX}")
+    r = s.get(AppSetting, "retention_days")
+    old = r.value if r else str(settings.retention_days_default)
+    if r:
+        r.value = str(d)
+    else:
+        s.add(AppSetting(key="retention_days", value=str(d)))
+    audit(s, admin_id, "set_retention", f"{old} -> {d} days")
+    return d
+
+
+def retention_preview(s) -> dict:
+    """What a cleanup run would delete right now (same query as run_retention)."""
+    cutoff = now() - dt.timedelta(days=retention_days(s))
+    q = select(Task).where(Task.updated_at < cutoff, Task.deleted_at.is_(None))
+    old = s.scalars(q.order_by(Task.updated_at)).all()
+    return {"count": len(old), "cutoff": cutoff, "oldest": old[0].updated_at if old else None}
+
+
+# ---------------------------------------------------------------------------
+# Admin: access management (Zoho-only; no passwords)
+# ---------------------------------------------------------------------------
+def _lock_admin_changes(s):
+    """Serialise role/access changes so two admins can't demote each other at the same time."""
+    from sqlalchemy import text
+    s.execute(text("SELECT pg_advisory_xact_lock(724001)"))
+
+
+def grant_access(s, admin, email: str, name: str = "", role: str = "employee"):
+    email = (email or "").strip().lower()
+    if "@" not in email or email.startswith("@") or email.endswith("@") or " " in email:
+        raise UserError("Enter a valid company email address")
+    domain = email.rsplit("@", 1)[-1]
+    if settings.zoho_allowed_domains and domain not in settings.zoho_allowed_domains:
+        raise UserError("Only @" + " / @".join(settings.zoho_allowed_domains) + " emails can be granted access")
+    role = "admin" if role == "admin" else "employee"
+    _lock_admin_changes(s)
+    from sqlalchemy import func
+    u = s.scalar(select(User).where(func.lower(User.email) == email))
+    if u:
+        if u.active:
+            raise UserError(f"{email} already has access")
+        u.active, u.role = True, role
+        audit(s, admin.id, "grant_access", email)
+        return u, "restored"
+    u = User(email=email, name=(name.strip() or email.split("@")[0])[:120], role=role, password_hash="!")
+    s.add(u)
+    s.flush()
+    audit(s, admin.id, "grant_access", email)
+    return u, "granted"
+
+
+def update_user_access(s, admin, uid: int, role: str | None = None, active: bool | None = None):
+    _lock_admin_changes(s)
+    u = s.get(User, uid, with_for_update=True)
+    if not u:
+        raise UserError("Unknown user")
+    if u.id == admin.id:
+        raise UserError("You can't change your own role or access. Ask another admin.")
+    new_role = u.role if role is None else ("admin" if role == "admin" else "employee")
+    new_active = u.active if active is None else bool(active)
+    losing_admin = u.role == "admin" and u.active and not (new_role == "admin" and new_active)
+    if losing_admin:
+        others = s.scalars(select(User.id).where(User.role == "admin", User.active.is_(True), User.id != u.id).with_for_update()).all()
+        if not others:
+            raise UserError("The workspace must keep at least one active admin")
+    changes = []
+    if new_role != u.role:
+        changes.append(f"role {u.role} -> {new_role}")
+        audit(s, admin.id, "set_role:" + new_role, u.email)
+    if new_active != u.active:
+        changes.append("access restored" if new_active else "access revoked")
+        audit(s, admin.id, "grant_access" if new_active else "revoke_access", u.email)
+    u.role, u.active = new_role, new_active
+    return u, changes
+
+
+def sign_in_status(u, last_login, allowed_domains) -> dict:
+    """Only claims Zoho when the audit log records a completed Zoho sign-in for this account."""
+    domain = u.email.rsplit("@", 1)[-1].lower()
+    if allowed_domains and domain not in allowed_domains:
+        return {"key": "legacy", "label": "Legacy account", "tone": "warn",
+                "detail": f"@{domain} can't sign in with Zoho. Grant the person's company email instead."}
+    if not u.active:
+        return {"key": "revoked", "label": "Can't sign in", "tone": "neutral", "detail": "Access revoked"}
+    if last_login:
+        return {"key": "zoho", "label": "Signed in with Zoho", "tone": "ok", "detail": "Last sign-in", "at": last_login}
+    return {"key": "eligible", "label": "Eligible", "tone": "info", "detail": "Hasn't signed in yet"}
+
+
 def run_retention(s) -> int:
     cutoff = now() - dt.timedelta(days=retention_days(s))
     old = s.scalars(select(Task).where(Task.updated_at < cutoff, Task.deleted_at.is_(None))).all()

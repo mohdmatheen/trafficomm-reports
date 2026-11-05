@@ -32,12 +32,6 @@ services:
         value: trafficomm.com
       - key: ZOHO_ADMIN_EMAILS
         value: matheen.m@trafficomm.com
-      - key: SEED_ADMIN_PASSWORD
-        sync: false
-      - key: SEED_EMPLOYEE_PASSWORD
-        sync: false
-      - key: SEED_EMPLOYEE2_PASSWORD
-        sync: false
 databases:
   - name: trafficomm-db
     plan: basic-256mb
