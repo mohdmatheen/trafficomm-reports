@@ -32,7 +32,11 @@ class Settings:
     soffice: str = field(default_factory=lambda: _env("SOFFICE_BIN", "soffice"))
     cookie_secure: bool = field(default_factory=lambda: _env("COOKIE_SECURE", "0") == "1")
     # Zoho sign-in (OAuth 2.0 / OpenID Connect): the only sign-in method. Needs client id + secret.
-    public_base_url: str = field(default_factory=lambda: (_env("PUBLIC_BASE_URL") or "").rstrip("/"))
+    # Render pull-request previews get their own onrender.com URL; use it there so the Zoho callback returns to
+    # the preview instead of production. Otherwise PUBLIC_BASE_URL, then Render's own URL, then the request host.
+    public_base_url: str = field(default_factory=lambda: (
+        (_env("RENDER_EXTERNAL_URL") if _env("IS_PULL_REQUEST", "false").lower() == "true" and _env("RENDER_EXTERNAL_URL") else _env("PUBLIC_BASE_URL"))
+        or _env("RENDER_EXTERNAL_URL") or "").rstrip("/"))
     zoho_client_id: str | None = field(default_factory=lambda: _env("ZOHO_CLIENT_ID"))
     zoho_client_secret: str | None = field(default_factory=lambda: _env("ZOHO_CLIENT_SECRET"))
     zoho_accounts_url: str = field(default_factory=lambda: (_env("ZOHO_ACCOUNTS_URL") or "https://accounts.zoho.in").rstrip("/"))  # Trafficomm's Zoho org is on the India data centre

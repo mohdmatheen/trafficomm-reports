@@ -1,0 +1,40 @@
+# TEMPORARY staging Blueprint for verifying PR #6 (Zoho-only sign-in + redesign) before production.
+# Separate service and database: it never touches production data. Delete both in Render after verification.
+# Render: New > Blueprint > repo mohdmatheen/trafficomm-reports, branch zoho-only-redesign,
+#         Blueprint file path: deploy/render.staging.yaml
+services:
+  - type: web
+    name: trafficomm-staging
+    runtime: docker
+    dockerfilePath: ./deploy/Dockerfile
+    branch: zoho-only-redesign
+    autoDeploy: true
+    plan: standard   # same size as production so report processing behaves the same
+    region: frankfurt
+    healthCheckPath: /healthz
+    disk:
+      name: storage
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: {name: trafficomm-staging-db, property: connectionString}
+      - key: STORAGE_DIR
+        value: /data/storage
+      - key: COOKIE_SECURE
+        value: "1"
+      - key: SECRET_KEY
+        generateValue: true
+      # PUBLIC_BASE_URL is deliberately unset: the app uses Render's RENDER_EXTERNAL_URL for the Zoho callback.
+      - key: ZOHO_CLIENT_ID
+        sync: false
+      - key: ZOHO_CLIENT_SECRET
+        sync: false
+      - key: ZOHO_ALLOWED_DOMAINS
+        value: trafficomm.com
+      - key: ZOHO_ADMIN_EMAILS
+        value: matheen.m@trafficomm.com
+databases:
+  - name: trafficomm-staging-db
+    plan: basic-256mb
+    region: frankfurt
