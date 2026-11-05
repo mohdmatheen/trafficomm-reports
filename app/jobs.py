@@ -160,6 +160,7 @@ def worker_loop(once: bool = False, idle_exit: float | None = None):
     last_recover = 0.0
     idle_since = time.time()
     last_retention = 0.0
+    last_usage_sync = time.time() - 50  # first provider sync shortly after start
     while True:
         if time.time() - last_recover > 15:
             recover_stale()
@@ -170,6 +171,13 @@ def worker_loop(once: bool = False, idle_exit: float | None = None):
                 run_retention(s)
                 s.commit()
             last_retention = time.time()
+        if time.time() - last_usage_sync > 60:
+            try:
+                from .usage import maybe_scheduled_sync
+                maybe_scheduled_sync()
+            except Exception:  # noqa: BLE001 - cost reporting must never stop report processing
+                log.exception("usage sync failed")
+            last_usage_sync = time.time()
         job = claim(worker_id)
         if job:
             run_one(job, worker_id)

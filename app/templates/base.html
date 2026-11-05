@@ -27,7 +27,11 @@
       <a href="/tasks" class="sb-link{% if nav == 'tasks' %} on{% endif %}"{% if nav == 'tasks' %} aria-current="page"{% endif %}>{{ icon('layers') }}<span>Reporting tasks</span></a>
       {% if user.role == 'admin' %}
       <hr class="sb-sep">
-      <a href="/admin" class="sb-link{% if nav == 'admin' %} on{% endif %}"{% if nav == 'admin' %} aria-current="page"{% endif %}>{{ icon('gear') }}<span>Administration</span></a>
+      <a href="/admin" class="sb-link{% if nav in ('admin', 'usage') %} on{% endif %}"{% if nav == 'admin' %} aria-current="page"{% endif %}>{{ icon('gear') }}<span>Administration</span></a>
+      <div class="sb-sub">
+        <a href="/admin" class="sb-sublink{% if nav == 'admin' %} on{% endif %}">Users &amp; access</a>
+        <a href="/admin/usage" class="sb-sublink{% if nav == 'usage' %} on{% endif %}"{% if nav == 'usage' %} aria-current="page"{% endif %}>Usage &amp; costs</a>
+      </div>
       {% endif %}
     </nav>
     <div class="sb-foot">

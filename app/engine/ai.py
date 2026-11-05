@@ -277,19 +277,51 @@ class AnthropicProvider:
 
     def __init__(self):
         import anthropic
-        self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=3, timeout=120)
+        # Retries are done here (not inside the SDK) so every attempt is recorded in the usage ledger.
+        self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=0, timeout=120)
         self.model = settings.anthropic_model
         self.name = f"Claude ({self.model})"
         self.fallback = RuleProvider()
+        self.attribution = None      # usage.Attribution, set by the caller from the authenticated user / job
+        self.request_ids: list[int] = []
+        self.max_attempts = 3
 
-    def _parse(self, schema, user: str, max_tokens=4000):
-        resp = self.client.messages.parse(
-            model=self.model, max_tokens=max_tokens, system=SYSTEM,
-            output_config={"effort": "low"},
-            messages=[{"role": "user", "content": user}], output_format=schema)
-        if resp.stop_reason == "refusal":
-            raise RuntimeError("model refused")
-        return resp.parsed_output
+    def _parse(self, schema, user: str, max_tokens=4000, step="request"):
+        import time
+
+        import anthropic
+
+        from .. import usage
+        first = None
+        attribution = getattr(self, "attribution", None)
+        max_attempts = getattr(self, "max_attempts", 3)
+        if not isinstance(getattr(self, "request_ids", None), list):
+            self.request_ids = []
+        for attempt in range(1, max_attempts + 1):
+            rid = usage.record_start(attribution, step, self.model, attempt, first)
+            first = first or rid
+            if rid:
+                self.request_ids.append(rid)
+            try:
+                resp = self.client.messages.parse(
+                    model=self.model, max_tokens=max_tokens, system=SYSTEM,
+                    output_config={"effort": "low"},
+                    messages=[{"role": "user", "content": user}], output_format=schema)
+            except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.InternalServerError,
+                    getattr(anthropic, "OverloadedError", anthropic.InternalServerError)) as e:
+                usage.record_finish(rid, status="failed", error=e)
+                if attempt == max_attempts:
+                    raise
+                time.sleep(min(20, 2 ** attempt))
+                continue
+            except Exception as e:  # noqa: BLE001
+                usage.record_finish(rid, status="failed", error=e)
+                raise
+            if resp.stop_reason == "refusal":
+                usage.record_finish(rid, status="refused", resp=resp)
+                raise RuntimeError("model refused")
+            usage.record_finish(rid, status="succeeded", resp=resp)
+            return resp.parsed_output
 
     def interpret_instructions(self, text, deliverables, headers) -> Plan:
         try:
@@ -297,7 +329,7 @@ class AnthropicProvider:
                     f"Column headers found in uploads (data):\n<untrusted>{json.dumps(headers[:200])}</untrusted>\n"
                     f"Employee instructions:\n<untrusted>{text[:6000]}</untrusted>\n"
                     "Read the instructions into the Plan. Only set conversion_metric/click_metric if explicitly requested.")
-            return self._parse(Plan, user)
+            return self._parse(Plan, user, step="instructions")
         except Exception as e:  # noqa: BLE001
             log.warning("AI instruction parsing failed (%s); using rule fallback", type(e).__name__)
             p = self.fallback.interpret_instructions(text, deliverables, headers)
@@ -309,7 +341,7 @@ class AnthropicProvider:
             user = (f"New files uploaded with this feedback: {has_new_files}\nSupported ops: {RevisionOp.model_fields['op'].annotation}\n"
                     f"Dimension keys: {DIMS}. Section keys: summary, platform, brand, creative, market, comparison, insights, recommendations, methodology.\n"
                     f"Employee feedback:\n<untrusted>{feedback[:4000]}</untrusted>\nMap it to ops; use 'unsupported' for anything else.")
-            return self._parse(RevisionPlan, user)
+            return self._parse(RevisionPlan, user, step="feedback")
         except Exception as e:  # noqa: BLE001
             log.warning("AI feedback parsing failed (%s); using rule fallback", type(e).__name__)
             return self.fallback.interpret_feedback(feedback, has_new_files)
@@ -322,7 +354,7 @@ class AnthropicProvider:
                     f"Comparison period available: {bool(calc.comparison)}.\n<facts>{json.dumps(compact, default=str)}</facts>\n"
                     "Write 4-8 observations, 1-3 interpretations (as hypotheses), 1-3 recommendations. Every number must come from a cited fact, "
                     "formatted with thousands separators and 2 decimals for rates/money.")
-            c = self._parse(Commentary, user, 6000)
+            c = self._parse(Commentary, user, 6000, step="commentary")
             return [{"type": s.type, "text": s.text, "evidence": s.fact_ids} for s in c.statements]
         except Exception as e:  # noqa: BLE001
             log.warning("AI commentary failed (%s); using rule fallback", type(e).__name__)
@@ -421,7 +453,7 @@ class HybridProvider(AnthropicProvider):
             user = (f"New files uploaded with this feedback: {has_new_files}\nSupported ops: {RevisionOp.model_fields['op'].annotation}\n"
                     f"Dimension keys: {DIMS}. Section keys: summary, platform, brand, creative, market, comparison, insights, recommendations, methodology.\n"
                     f"Employee feedback:\n<untrusted>{feedback[:4000]}</untrusted>\nMap it to ops; use 'unsupported' for anything else.")
-            out = self._parse(RevisionPlan, user)
+            out = self._parse(RevisionPlan, user, step="feedback")
             self._log("Feedback", "claude", "New kind of change the built-in rules couldn't map - read by Claude")
             return out
         except Exception as e:  # noqa: BLE001
@@ -441,7 +473,7 @@ class HybridProvider(AnthropicProvider):
                     f"Comparison period available: {bool(calc.comparison)}.\n<facts>{json.dumps(compact, default=str)}</facts>\n"
                     "Write 4-8 observations, 1-3 interpretations (as hypotheses), 1-3 recommendations. Every number must come from a cited fact, "
                     "formatted with thousands separators and 2 decimals for rates/money.")
-            c = self._parse(Commentary, user, 6000)
+            c = self._parse(Commentary, user, 6000, step="commentary")
             out = [{"type": s.type, "text": s.text, "evidence": s.fact_ids} for s in c.statements]
         except Exception as e:  # noqa: BLE001
             log.warning("AI commentary failed (%s); using rule fallback", type(e).__name__)

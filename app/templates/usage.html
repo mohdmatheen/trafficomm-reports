@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% from "partials/ui.html" import icon %}
+{% block page %}usage{% endblock %}
+{% block title %}Usage &amp; costs · Trafficomm{% endblock %}
+{% block bodyattrs %}data-usage-stream="/api/admin/usage/stream"{% endblock %}
+
+{% macro usd(v) %}{% if v is none %}—{% else %}${{ '{:,.2f}'.format(money(v)) }}{% endif %}{% endmacro %}
+{% macro inr(v) %}{% set x = to_inr(v, d.rate) %}{% if x is none %}INR unavailable{% else %}₹{{ '{:,.2f}'.format(x) }}{% endif %}{% endmacro %}
+{% macro badge(st) %}{% set b = SOURCE_STATUS.get(st, (st|replace('_',' ')|capitalize, 'neutral')) %}<span class="badge-st tone-{{ b[1] }}"><span class="bdot" aria-hidden="true"></span>{{ b[0] }}</span>{% endmacro %}
+
+{% block content %}
+{% set c = d.claude %}{% set an = d.states.get('anthropic') %}{% set fxs = d.states.get('fx') %}
+<div class="page-head">
+  <div><h1>Usage &amp; costs</h1><p class="page-sub">Platform costs, employee usage and reconciliation.</p></div>
+  <span class="chip-ind chip-red">{{ icon('lock') }}Admin only</span>
+</div>
+
+<form class="uc-filters" method="get" action="/admin/usage" id="ucFilters">
+  <div class="field"><label for="uc-range">Date</label>
+    <select id="uc-range" name="range" data-autosubmit>{% for k, l in [('today','Today'),('month','This month'),('custom','Custom'),('all','Since tracking began')] %}<option value="{{ k }}" {{ 'selected' if rng == k }}>{{ l }}</option>{% endfor %}</select></div>
+  <div class="field uc-custom" {% if rng != 'custom' %}hidden{% endif %}><label for="uc-start">From</label><input id="uc-start" type="date" name="start" value="{{ r['from'] }}"></div>
+  <div class="field uc-custom" {% if rng != 'custom' %}hidden{% endif %}><label for="uc-end">To</label><input id="uc-end" type="date" name="end" value="{{ r['to'] }}"></div>
+  <div class="field"><label for="uc-emp">Employee</label>
+    <select id="uc-emp" name="employee" data-autosubmit><option value="">All employees</option>{% for i, n in people %}<option value="{{ i }}" {{ 'selected' if employee == i }}>{{ n }}{% if i in current_users and not current_users[i].active %} (revoked){% endif %}</option>{% endfor %}</select></div>
+  <div class="field"><label for="uc-client">Client</label>
+    <select id="uc-client" name="client" data-autosubmit><option value="">All clients</option>{% for cl in clients %}<option {{ 'selected' if client == cl }}>{{ cl }}</option>{% endfor %}</select></div>
+  <div class="uc-scope" title="Which provider workspaces or API keys count as this app">{{ icon('layers') }}<span><b>Reporting workspace</b><br><span class="small">{% if d.cfg.api_key_ids %}Scoped by API key{% elif d.cfg.workspace_ids %}Scoped by workspace{% else %}Scope not mapped yet{% endif %}</span></span></div>
+  <noscript><button class="btn">Apply</button></noscript>
+  <button type="button" class="btn uc-sync" id="ucSync">{{ icon('refresh') }}Sync now</button>
+</form>
+<p class="uc-status small" id="ucStatus">
+  {% if an and an.status == 'ok' %}{{ icon('check-circle') }}Auto-sync on. Claude costs last fetched <time datetime="{{ an.last_success_at.isoformat() }}">{{ an.last_success_at|local }}</time>. Costs update when the provider publishes them, usually within 4 hours.
+  {% elif d.cfg.admin_key %}{{ icon('alert') }}Auto-sync on, but the last Claude cost sync didn’t succeed. Showing the last successful data.
+  {% else %}{{ icon('info') }}Claude cost reporting isn’t connected. Application activity below is recorded live.{% endif %}
+  Period: {{ r['from'].strftime('%d %b %Y') }} – {{ r['to'].strftime('%d %b %Y') }} (IST).
+</p>
+
+<div class="uc-cards">
+  <section class="card uc-card {{ 'uc-red' if c.usd is not none }}" aria-labelledby="k1">
+    <span class="uc-ic">{{ icon('chat') }}</span>
+    <div><h2 id="k1">Confirmed Claude cost</h2>
+    {% if c.usd is not none %}
+      <p class="uc-big">{{ usd(c.usd) }}</p><p class="uc-inr">{{ inr(c.usd) }}</p>
+      <p class="small muted">Provider-reported accrued usage, this app’s {{ 'API keys' if d.cfg.api_key_ids else 'workspace' }} only. Not a final bill.</p>
+      {% if c.partial_period %}<span class="pill pill-warn">{{ icon('clock') }}Provider data through {{ c.data_through|local if c.data_through else 'unknown' }}</span>{% endif %}
+      {% if c.stale %}<span class="pill pill-warn">{{ icon('alert') }}Stale: last good sync {{ an.last_success_at|local }}</span>{% endif %}
+    {% elif c.status == 'unmapped' %}
+      <p class="uc-big uc-muted">Awaiting mapping</p><p class="small muted">Costs were fetched, but no workspace or API key is mapped to this app, so none can be confirmed as this app’s.</p>
+    {% elif c.status == 'not_configured' %}
+      <p class="uc-big uc-muted">Not connected</p><p class="small muted">Set the reporting key on the server to read provider-reported cost.</p>
+    {% else %}
+      <p class="uc-big uc-muted">Unavailable</p><p class="small muted">{{ (an.last_error if an else '') or 'Waiting for the first successful sync.' }}</p>
+    {% endif %}</div>
+  </section>
+  <section class="card uc-card" aria-labelledby="k2">
+    <span class="uc-ic uc-ic-soft">{{ icon('table') }}</span>
+    <div><h2 id="k2">Render cost</h2><p class="uc-big uc-muted">Awaiting source</p><p class="small muted">Not included in any total.</p>
+    <span class="pill pill-warn">{{ icon('alert') }}Billing sync unsupported</span></div>
+  </section>
+  <section class="card uc-card" aria-labelledby="k3">
+    <span class="uc-ic uc-ic-soft">{{ icon('layers') }}</span>
+    <div><h2 id="k3">Confirmed subtotal</h2>
+    {% if d.combined.usd is not none %}<p class="uc-big">{{ usd(d.combined.usd) }}</p><p class="uc-inr">{{ inr(d.combined.usd) }}</p>
+      <p class="small muted">{{ d.combined.label }}</p>
+      <span class="pill pill-warn">{{ icon('alert') }}Partial total · Render excluded</span>
+    {% else %}<p class="uc-big uc-muted">Unavailable</p><p class="small muted">No confirmed provider cost yet. Missing data isn’t counted as $0.</p>{% endif %}</div>
+  </section>
+</div>
+
+<div class="notice notice-warn" role="note">{{ icon('alert') }}<div><p><b>Total incomplete:</b> Render billing can’t be synced, because Render’s public API has no billing or invoice endpoint. Missing data isn’t treated as $0.{% if c.usd is none %} Claude cost isn’t confirmed yet either.{% endif %}</p></div></div>
+
+<section class="card ad-card" aria-labelledby="h-emp" id="activity">
+  <header class="ad-head"><span class="card-ic">{{ icon('user') }}</span>
+    <div><h2 id="h-emp">Usage by employee</h2><p>This app’s AI requests only, recorded by the server as each request finishes. Each request is attributed to the employee who started it, including revisions. Select an employee for task details.</p></div>
+    <a class="btn btn-sm" href="/admin/usage/export.csv?range={{ rng }}&start={{ r['from'] }}&end={{ r['to'] }}">{{ icon('download') }}Export CSV</a>
+  </header>
+  <div id="activityBody" aria-live="polite">{% include "partials/usage_activity.html" %}</div>
+</section>
+
+<div class="ad-grid uc-grid">
+<section class="card ad-card" aria-labelledby="h-fresh">
+  <header class="ad-head"><span class="card-ic">{{ icon('clock') }}</span><div><h2 id="h-fresh">Source freshness</h2><p>A successful fetch doesn’t mean the provider’s data is current.</p></div></header>
+  <div class="tbl-wrap"><table class="tbl compact uc-fresh">
+    <thead><tr><th scope="col">Source</th><th scope="col">Last successful fetch</th><th scope="col">Data through</th><th scope="col">Status</th></tr></thead>
+    <tbody>
+      <tr><th scope="row">Claude costs</th><td>{{ an.last_success_at|local if an and an.last_success_at else '—' }}</td><td>{{ an.data_refreshed_at|local if an and an.data_refreshed_at else '—' }}</td><td>{{ badge('unmapped' if c.status == 'unmapped' else (an.status if an else ('not_configured' if not d.cfg.admin_key else 'never'))) }}</td></tr>
+      <tr><th scope="row">Live app activity</th><td colspan="2" id="lastActivity">{% if d.last_activity %}Latest request <time datetime="{{ d.last_activity.isoformat() }}">{{ d.last_activity|local }}</time>{% else %}No requests recorded yet{% endif %}</td><td><span class="badge-st tone-ok" id="streamBadge"><span class="bdot" aria-hidden="true"></span>Recorded live</span></td></tr>
+      <tr><th scope="row">Render billing</th><td>—</td><td>Not available</td><td>{{ badge('unsupported') }}</td></tr>
+      <tr><th scope="row">Render services</th><td>{{ d.states.render.last_success_at|local if d.states.get('render') and d.states.render.last_success_at else '—' }}</td><td>Metadata only</td><td>{{ badge(d.render.metadata_status) }}</td></tr>
+      <tr><th scope="row">Exchange rate</th><td>{{ fxs.last_success_at|local if fxs and fxs.last_success_at else '—' }}</td><td>{{ d.fx.rate_date if d.fx else '—' }}</td><td>{{ badge(fxs.status if fxs else 'never') }}</td></tr>
+    </tbody></table></div>
+  {% if an and an.last_error %}<p class="small f-err">{{ an.last_error }}{% if an.next_allowed_at %} Next attempt after {{ an.next_allowed_at|local }}.{% endif %}</p>{% endif %}
+  <p class="small muted">Claude cost data typically appears within 4 hours and can take up to 24. Values can be revised until about 7 days after month end, so recent days are refetched on every sync.</p>
+</section>
+
+<section class="card ad-card" aria-labelledby="h-render">
+  <header class="ad-head"><span class="card-ic">{{ icon('table') }}</span><div><h2 id="h-render">Render infrastructure</h2><p>Shared infrastructure. No per-employee allocation is applied.</p></div></header>
+  <p><b>Monetary billing: unsupported.</b> Render’s public API has service, deploy, metrics and log endpoints, but no billing, invoice or charge endpoints. A confirmed amount can’t be read automatically, so none is shown.</p>
+  <p><a href="{{ d.render.billing_url }}" target="_blank" rel="noopener">Open Render billing {{ icon('arrow-right') }}<span class="sr"> (opens in a new tab)</span></a></p>
+  {% if d.render.services %}
+  <ul class="plain small uc-svcs">{% for sv in d.render.services %}<li><b>{{ sv.name }}</b> · {{ sv.type }}{% if sv.plan %} · plan {{ sv.plan }}{% endif %}{% if sv.region %} · {{ sv.region }}{% endif %}{% if sv.suspended == 'suspended' %} · suspended{% endif %}</li>{% endfor %}</ul>
+  <p class="small muted">Service details from the Render API. A plan name isn’t a bill.</p>
+  {% else %}<p class="small muted">Render service details aren’t connected (optional: RENDER_API_KEY and RENDER_SERVICE_IDS).</p>{% endif %}
+</section>
+</div>
+
+{% if c.usd is not none %}
+<section class="card ad-card" aria-labelledby="h-break">
+  <header class="ad-head"><span class="card-ic">{{ icon('chat') }}</span><div><h2 id="h-break">Claude cost breakdown</h2><p>Provider-reported, this app’s scope, UTC days {{ r.provider_start.strftime('%d %b') }} – {{ r.provider_last.strftime('%d %b %Y') }}. Includes tool charges such as web search when the provider reports them.</p></div></header>
+  <div class="uc-break">
+    <div><h3>By charge type</h3><table class="tbl compact"><tbody>{% for k, v in c.by_type %}<tr><th scope="row">{{ COST_TYPE_LABEL.get(k, k) }}</th><td class="num">{{ usd(v) }}</td></tr>{% else %}<tr><td class="muted">No charges in this period.</td></tr>{% endfor %}</tbody></table></div>
+    <div><h3>By model</h3><table class="tbl compact"><tbody>{% for k, v in c.by_model %}<tr><th scope="row">{{ k }}</th><td class="num">{{ usd(v) }}</td></tr>{% else %}<tr><td class="muted">No charges in this period.</td></tr>{% endfor %}</tbody></table></div>
+  </div>
+  {% if c.excluded_usd or c.unmapped_usd %}<p class="small muted">Separated, not included: {{ usd(c.excluded_usd) }} from other workspaces or keys{% if c.unmapped_usd %}, {{ usd(c.unmapped_usd) }} unmapped (no API key, for example Console usage){% endif %}.</p>{% endif %}
+</section>
+{% endif %}
+
+<section class="card ad-card uc-recon" aria-labelledby="h-fx">
+  <header class="ad-head"><span class="card-ic">{{ icon('shield') }}</span><div><h2 id="h-fx">Currency &amp; reconciliation</h2><p>USD is the provider’s currency and the financial record. INR is a converted display value, not your card or bank debit.</p></div></header>
+  <div class="uc-recon-grid">
+    <div><h3>Exchange rate</h3>
+      {% if d.fx %}<p class="uc-rate">$1 = ₹{{ '{:,.4f}'.format(d.rate) }}</p>
+      <p class="small">Source: {{ d.fx.source }}. Rate date {{ d.fx.rate_date }}; fetched {{ d.fx.retrieved_at|local }}.</p>
+      <p class="small muted">Policy: every amount is converted at this latest rate, then rounded half-up to 2 decimals.{% if fxs and fxs.status != 'ok' %} The latest fetch failed, so this is the last known rate.{% endif %}</p>
+      {% else %}<p class="uc-big uc-muted">INR unavailable</p><p class="small muted">No exchange rate fetched yet. USD amounts are unaffected.</p>{% endif %}
+    </div>
+    <div><h3>Reconciliation</h3>
+      {% set rc = d.recon.result if d.recon else none %}
+      {% if rc %}
+      <p class="small">Provider-refreshed period {{ rc.period[0][:10] }} – {{ rc.period[1][:10] }} (UTC), this app’s scope.</p>
+      <table class="tbl compact"><thead><tr><th scope="col"></th><th scope="col" class="num">Provider</th><th scope="col" class="num">App recorded</th><th scope="col" class="num">Difference</th></tr></thead><tbody>
+        <tr><th scope="row">Successful requests</th><td class="num">{{ '{:,}'.format(rc.provider.requests) }}</td><td class="num">{{ '{:,}'.format(rc.app.requests) }}</td><td class="num">{{ '{:+,}'.format(rc.difference.requests) }}</td></tr>
+        <tr><th scope="row">Input tokens (incl. cache)</th><td class="num">{{ '{:,}'.format(rc.provider.input_tokens) }}</td><td class="num">{{ '{:,}'.format(rc.app.input_tokens) }}</td><td class="num">{{ '{:+,}'.format(rc.difference.input_tokens) }}</td></tr>
+        <tr><th scope="row">Output tokens</th><td class="num">{{ '{:,}'.format(rc.provider.output_tokens) }}</td><td class="num">{{ '{:,}'.format(rc.app.output_tokens) }}</td><td class="num">{{ '{:+,}'.format(rc.difference.output_tokens) }}</td></tr>
+      </tbody></table>
+      <p class="small muted">A positive difference is usage on this app’s key that the app didn’t record, for example before tracking began or from outside the app. It’s shown as-is, not spread across employees.</p>
+      {% else %}<p class="small muted">Reconciliation runs after the first successful provider sync with a mapped scope.</p>{% endif %}
+    </div>
+  </div>
+  <details class="uc-defs"><summary>How each figure is defined</summary>
+    <dl>
+      <dt>Request attempts</dt><dd>Every call this app made to Claude, including retries and failures.</dd>
+      <dt>Successful requests</dt><dd>Attempts that returned a usable answer. Retries of one logical request are linked to its first attempt.</dd>
+      <dt>Tasks</dt><dd>Distinct reporting tasks with at least one request by that employee in the period, whether or not the task is finished.</dd>
+      <dt>Tokens</dt><dd>Input (uncached), cache reads, cache writes and output, as returned by the provider for each request.</dd>
+      <dt>Awaiting provider cost</dt><dd>Successful requests completed after the provider’s latest data refresh, so their cost isn’t in the provider data yet.</dd>
+      <dt>Confirmed cost</dt><dd>Amounts the provider reports for this app’s mapped workspace or API keys. Never estimated from token counts here.</dd>
+      <dt>Since tracking began</dt><dd>From {{ d.tracking_started|local }}. Activity before that date wasn’t recorded. Provider cost data is available from 1 January 2026 and within the last 365 days.</dd>
+    </dl>
+  </details>
+</section>
+{% endblock %}
