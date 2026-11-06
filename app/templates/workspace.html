@@ -146,7 +146,7 @@
       <h2 id="pvT">Report preview</h2>
       {% if previews|length > 1 %}
       <div class="seg seg-sm" role="group" aria-label="Preview type">
-        {% for k in previews %}<button type="button" data-pv-switch="{{ k }}" aria-pressed="{{ 'true' if loop.first else 'false' }}">{{ 'Deck' if k.startswith('deck') else 'Workbook' }}{% if previews|length > 2 %}: {{ PREVIEW_LABEL.get(k, k) }}{% endif %}</button>{% endfor %}
+        {% for k in previews %}<button type="button" data-pv-switch="{{ k }}" aria-pressed="{{ 'true' if loop.first else 'false' }}">{{ 'Deck' if k.startswith('deck') else 'Workbook' }}{% if pv_named %}: {{ PREVIEW_LABEL.get(k, k) }}{% endif %}</button>{% endfor %}
       </div>
       {% endif %}
     </div>
@@ -318,15 +318,15 @@
     {% endfor %}
     {% if R.get('overlaps') %}<details class="dg"><summary>Duplicates and overlaps ({{ R.overlaps|length }})</summary><ul class="small">{% for o in R.overlaps %}<li><b>{{ o.type.replace('_',' ') }}</b>: {{ o.files|join(' ↔ ') }}{% if o.rows %} · {{ o.rows }} rows{% endif %}{% if o.resolution %} · resolved: {{ o.resolution }}{% endif %}</li>{% endfor %}</ul></details>{% endif %}
     {% if R.get('exclusions') %}<details class="dg"><summary>Excluded rows ({{ R.exclusions|length }})</summary><div class="scroll-x"><table class="tbl compact"><thead><tr><th>File</th><th>Scope</th><th>Reason</th></tr></thead><tbody>{% for e in R.exclusions[:80] %}<tr><td>{{ e.file }}{% if e.sheet %} <span class="muted small">{{ e.sheet }}</span>{% endif %}</td><td>{{ e.scope }}</td><td>{{ e.reason }}</td></tr>{% endfor %}</tbody></table></div>{% if R.exclusions|length > 80 %}<p class="muted small">Showing the first 80. The full list is in the processing record.</p>{% endif %}</details>{% endif %}
-    {% if R.get('deck') %}
-    <details class="dg"><summary>Client deck slide map ({{ R.deck.slide_map|length }} slides)</summary>
-      <p class="muted small">{{ R.deck.changes|length }} cells changed · {{ R.deck.unchanged_cells }} already correct{% if R.deck.range_text %} · range label "{{ R.deck.range_text }}"{% endif %}</p>
+    {% for D in ([R.deck] if R.get('deck') else []) + (R.get('extra_decks') or []) %}
+    <details class="dg"><summary>Client deck slide map{% if D.name %}: {{ D.name }}{% endif %} ({{ D.slide_map|length }} slides)</summary>
+      <p class="muted small">{{ D.changes|length }} cells changed · {{ D.unchanged_cells }} already correct{% if D.range_text %} · range label "{{ D.range_text }}"{% endif %}</p>
       <div class="scroll-x"><table class="tbl compact"><thead><tr><th>#</th><th>Slide</th><th>Type</th><th>Matched to</th><th>Status</th></tr></thead><tbody>
-      {% for m in R.deck.slide_map %}<tr class="sm-{{ m.status }}"><td>{{ m.slide }}</td><td>{{ m.title }}</td><td class="small muted">{{ (m.classification or '').replace('_',' ') }}</td><td class="small">{{ m.entity or '–' }}</td><td><span class="tag">{{ m.status }}{% if m.changes %} · {{ m.changes }} cells{% endif %}</span></td></tr>{% endfor %}
+      {% for m in D.slide_map %}<tr class="sm-{{ m.status }}"><td>{{ m.slide }}</td><td>{{ m.title }}</td><td class="small muted">{{ (m.classification or '').replace('_',' ') }}</td><td class="small">{{ m.entity or '–' }}</td><td><span class="tag">{{ m.status }}{% if m.changes %} · {{ m.changes }} cells{% endif %}</span></td></tr>{% endfor %}
       </tbody></table></div>
-      {% if R.deck.flags %}<h3>Needs review</h3><ul class="small">{% for f in R.deck.flags %}<li class="sev-{{ f.severity }}">{% if f.slide %}Slide {{ f.slide }}: {% endif %}{{ f.message }}</li>{% endfor %}</ul>{% endif %}
+      {% if D.flags %}<h3>Needs review</h3><ul class="small">{% for f in D.flags %}<li class="sev-{{ f.severity }}">{% if f.slide %}Slide {{ f.slide }}: {% endif %}{{ f.message }}</li>{% endfor %}</ul>{% endif %}
     </details>
-    {% endif %}
+    {% endfor %}
     {% if R.get('template') %}
     <details class="dg"><summary>Excel template</summary>
       <ul class="small">{% for w in R.template.written[:20] %}<li>{{ w if w is string else w|tojson }}</li>{% endfor %}</ul>

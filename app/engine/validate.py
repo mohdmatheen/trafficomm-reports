@@ -66,7 +66,62 @@ def independent_file_sums(f: dict) -> dict:
     return sums
 
 
+def _deck_checks(deck_update: dict, excel: dict | None) -> list[dict]:
+    checks: list[dict] = []
+    prs = Presentation(deck_update["path"])
+    bad, ok = [], 0
+    for ch in deck_update["changes"]:
+        if ch.get("metric") in ("thumbnail", "chart") or ch.get("row") is None:
+            continue
+        slide = prs.slides[ch["slide"] - 1]
+        sh = next((s for s in slide.shapes if s.name == ch["shape"] and getattr(s, "has_table", False) and s.has_table), None)
+        if not sh:
+            continue
+        hdr = [c.text.replace("​", "").strip() for c in sh.table.rows[0].cells]
+        ci = hdr.index(ch["col"]) if ch["col"] in hdr else None
+        got = sh.table.cell(ch["row"], ci).text.strip() if ci is not None else None
+        if got != ch["new"]:
+            bad.append(f"Slide {ch['slide']} {ch['col']}: '{got}' != expected '{ch['new']}'")
+        else:
+            ok += 1
+    # cross-file: deck values vs Excel creative table values
+    xbad, xok = [], 0
+    if excel and excel.get("written", {}).get("creative"):
+        ex_creative = {}
+        for key, vals in excel["written"]["creative"].items():
+            ex_creative[key[-1]] = ex_creative.get(key[-1], []) + [vals]
+        for ch in deck_update["changes"]:
+            if ch.get("metric") in ("impressions", "link_clicks", "clicks", "reach", "views", "video_plays_3s"):
+                ent = next((m["entity"] for m in deck_update["slide_map"] if m["slide"] == ch["slide"]), None)
+                if not ent:
+                    continue
+                creative = ent.split(" – ")[-1]
+                brand = ent.split(" – ")[0]
+                cands = [k for k in excel["written"]["creative"] if k[-1] == creative and (k[0] == brand or len(k) < 3)]
+                if not cands:
+                    continue
+                v = excel["written"]["creative"][cands[0]].get("clicks" if ch["metric"] == "link_clicks" else ch["metric"])
+                want = FM.CellStyle(ch["new"]).format(v, 0, deck_update.get("na", "-"))
+                if want != ch["new"]:
+                    xbad.append(f"Slide {ch['slide']} {ch['col']}: deck '{ch['new']}' vs Excel {v}")
+                else:
+                    xok += 1
+    checks.append(_chk("deck", "Updated deck read-back", "fail" if bad else "pass",
+                       f"Deck reopened; {ok} updated table cells verified", bad))
+    checks.append(_chk("crossfile", "Excel vs PowerPoint consistency", "fail" if xbad else ("pass" if xok else "not_run"),
+                       f"{xok} deck figures matched the Excel creative table" if xok else "No overlapping figures to compare (Excel not generated or no creative table)", xbad))
+    lab = [ch for ch in deck_update["changes"] if ch.get("metric") in ("range", "period_label")]
+    checks.append(_chk("labels", "Dates and labels", "pass" if lab or deck_update.get("range_text") else "warn",
+                       f"Period labels set to '{deck_update.get('range_text')}' on {len([c for c in deck_update['changes'] if c.get('metric') == 'range'])} table cells; cover/period text updated: {len([c for c in deck_update['changes'] if c.get('metric') == 'period_label'])}",
+                       [f"Slide {c['slide']}: '{c['old']}' -> '{c['new']}'" for c in deck_update["changes"] if c.get("metric") == "period_label"]))
+    flags = [f for f in deck_update.get("flags", []) if f["severity"] == "warning"]
+    checks.append(_chk("deck_flags", "Deck items needing review", "warn" if flags else "pass",
+                       f"{len(flags)} item(s) could not be updated automatically" if flags else "All recognised reporting content updated", [f["message"] for f in deck_update.get("flags", [])]))
+    return checks
+
+
 def run_validation(*, files: list[dict], norm, calc, excel: dict | None, deck_update: dict | None, deck_new: dict | None,
+                   extra_decks: list[dict] | None = None,
                    template: dict | None, commentary_dropped: list[str], render: dict, layout_issues: list[dict], ctx: dict) -> dict:
     checks = []
     df = norm.df
@@ -246,57 +301,17 @@ def run_validation(*, files: list[dict], norm, calc, excel: dict | None, deck_up
         if st == "pass" and template.get("unsupported"):
             st = "warn"
         checks.append(_chk("template", "Excel template population", st, "Template populated without overwriting formulas; recalculated with LibreOffice", det + [d for c in tchk for d in c.get("details", [])]))
-    # 10 deck read-back + cross-file consistency
-    if deck_update and deck_update.get("path"):
-        prs = Presentation(deck_update["path"])
-        bad, ok = [], 0
-        for ch in deck_update["changes"]:
-            if ch.get("metric") in ("thumbnail", "chart") or ch.get("row") is None:
-                continue
-            slide = prs.slides[ch["slide"] - 1]
-            sh = next((s for s in slide.shapes if s.name == ch["shape"] and getattr(s, "has_table", False) and s.has_table), None)
-            if not sh:
-                continue
-            hdr = [c.text.replace("​", "").strip() for c in sh.table.rows[0].cells]
-            ci = hdr.index(ch["col"]) if ch["col"] in hdr else None
-            got = sh.table.cell(ch["row"], ci).text.strip() if ci is not None else None
-            if got != ch["new"]:
-                bad.append(f"Slide {ch['slide']} {ch['col']}: '{got}' != expected '{ch['new']}'")
-            else:
-                ok += 1
-        # cross-file: deck values vs Excel creative table values
-        xbad, xok = [], 0
-        if excel and excel.get("written", {}).get("creative"):
-            ex_creative = {}
-            for key, vals in excel["written"]["creative"].items():
-                ex_creative[key[-1]] = ex_creative.get(key[-1], []) + [vals]
-            for ch in deck_update["changes"]:
-                if ch.get("metric") in ("impressions", "link_clicks", "clicks", "reach", "views", "video_plays_3s"):
-                    ent = next((m["entity"] for m in deck_update["slide_map"] if m["slide"] == ch["slide"]), None)
-                    if not ent:
-                        continue
-                    creative = ent.split(" – ")[-1]
-                    brand = ent.split(" – ")[0]
-                    cands = [k for k in excel["written"]["creative"] if k[-1] == creative and (k[0] == brand or len(k) < 3)]
-                    if not cands:
-                        continue
-                    v = excel["written"]["creative"][cands[0]].get("clicks" if ch["metric"] == "link_clicks" else ch["metric"])
-                    want = FM.CellStyle(ch["new"]).format(v, 0, deck_update.get("na", "-"))
-                    if want != ch["new"]:
-                        xbad.append(f"Slide {ch['slide']} {ch['col']}: deck '{ch['new']}' vs Excel {v}")
-                    else:
-                        xok += 1
-        checks.append(_chk("deck", "Updated deck read-back", "fail" if bad else "pass",
-                           f"Deck reopened; {ok} updated table cells verified", bad))
-        checks.append(_chk("crossfile", "Excel vs PowerPoint consistency", "fail" if xbad else ("pass" if xok else "not_run"),
-                           f"{xok} deck figures matched the Excel creative table" if xok else "No overlapping figures to compare (Excel not generated or no creative table)", xbad))
-        lab = [ch for ch in deck_update["changes"] if ch.get("metric") in ("range", "period_label")]
-        checks.append(_chk("labels", "Dates and labels", "pass" if lab or deck_update.get("range_text") else "warn",
-                           f"Period labels set to '{deck_update.get('range_text')}' on {len([c for c in deck_update['changes'] if c.get('metric') == 'range'])} table cells; cover/period text updated: {len([c for c in deck_update['changes'] if c.get('metric') == 'period_label'])}",
-                           [f"Slide {c['slide']}: '{c['old']}' -> '{c['new']}'" for c in deck_update["changes"] if c.get("metric") == "period_label"]))
-        flags = [f for f in deck_update.get("flags", []) if f["severity"] == "warning"]
-        checks.append(_chk("deck_flags", "Deck items needing review", "warn" if flags else "pass",
-                           f"{len(flags)} item(s) could not be updated automatically" if flags else "All recognised reporting content updated", [f["message"] for f in deck_update.get("flags", [])]))
+    # 10 deck read-back + cross-file consistency (one set per updated deck)
+    all_decks = [d for d in [deck_update, *(extra_decks or [])] if d and d.get("path")]
+    for n, d in enumerate(all_decks):
+        dchecks = _deck_checks(d, excel)
+        if len(all_decks) > 1:
+            for c in dchecks:
+                c["title"] = f"{c['title']}: {d.get('name')}"
+                c["message"] = f"{d.get('name')}: {c['message']}"
+                if n:
+                    c["deck_index"] = n + 1
+        checks += dchecks
     if deck_new and deck_new.get("path"):
         prs = Presentation(deck_new["path"])
         bad, ok = [], 0

@@ -417,3 +417,24 @@ def test_overview_counts_filters_and_sign_out(app_client, mp):
     assert r.headers["location"] == "/login?error=signed_out"
     r = c.get("/tasks/new", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("/login?next=/tasks/new")
+
+
+def test_multiple_client_decks_end_to_end(emp, tmp_path):
+    import shutil
+    page = emp.get("/tasks/new", follow_redirects=True)
+    assert 'data-role="client_deck" data-accept=".pptx" data-multiple="1"' in page.text  # picker accepts several decks
+    second = tmp_path / "acme_ksa_deck.pptx"
+    shutil.copy(fx("acme_client_deck.pptx"), second)
+    tid, _ = new_task(emp, [(fx("meta_acme_sept.csv"), "raw"), (fx("acme_client_deck.pptx"), "client_deck"), (str(second), "client_deck")],
+                      deliverables=("excel", "deck_update"), title="Acme two decks")
+    assert emp.post(f"/api/tasks/{tid}/submit", headers=H).status_code == 200
+    drain()
+    if state(emp, tid)["status"] == "awaiting_clarification":
+        answer_all(emp, tid, {"conversion_metric": "leads_meta_form"})
+        drain()
+    assert state(emp, tid)["status"] == "ready_for_review"
+    _, arts = artifacts(tid, 1)
+    decks = sorted(a.kind for a in arts if a.kind.startswith("deck_update"))
+    assert decks == ["deck_update", "deck_update_2"]
+    ws = emp.get(f"/tasks/{tid}").text
+    assert "acme_ksa_deck.pptx" in ws and "Updated client deck 2" in ws

@@ -248,6 +248,9 @@ STATUS_GROUPS = {
     "blocked": ["validation_blocked", "failed"],
 }
 ARTIFACT_SHORT = {"excel": "Excel", "excel_consolidated": "Excel", "deck_update": "PPTX", "deck_new": "New PPTX", "pdf": "PDF"}
+# a task can carry several client decks: the first is "deck_update", the others "deck_update_2", "deck_update_3", ...
+EXTRA_DECK_KINDS = tuple(f"deck_update_{n}" for n in range(2, 21))
+ARTIFACT_SHORT.update({k: f"PPTX {k.rsplit('_', 1)[1]}" for k in EXTRA_DECK_KINDS})
 
 
 def task_action(t: Task) -> dict:
@@ -575,6 +578,11 @@ OUTPUT_KINDS = ("excel", "excel_consolidated", "deck_update", "deck_new", "pdf")
 OUTPUT_TYPE = {"excel": "Excel workbook", "excel_consolidated": "Excel workbook", "deck_update": "PowerPoint deck", "deck_new": "PowerPoint deck", "pdf": "PDF"}
 PREVIEW_FOR = {"excel": ("template", "excel"), "excel_consolidated": ("excel", "template"), "deck_update": ("deck_update",), "deck_new": ("deck_new",)}
 PREVIEW_LABEL = {"deck_update": "Updated client deck", "deck_new": "New deck", "excel": "Excel report", "excel_consolidated": "Consolidated workbook", "template": "Populated template"}
+OUTPUT_KINDS += EXTRA_DECK_KINDS
+for _k in EXTRA_DECK_KINDS:
+    OUTPUT_TYPE[_k] = "PowerPoint deck"
+    PREVIEW_FOR[_k] = (_k,)
+    PREVIEW_LABEL[_k] = f"Updated client deck {_k.rsplit('_', 1)[1]}"
 CHECK_GROUP = {"excel": "workbook", "template": "workbook", "deck": "presentation", "crossfile": "presentation", "labels": "presentation",
                "deck_flags": "presentation", "deck_new": "presentation", "layout": "presentation"}
 CHECK_NEXT = {
@@ -760,7 +768,7 @@ def workspace_ctx(s, user: User, t: Task, view_id: int | None = None) -> dict:
             "R": R, "V": V, "groups": groups, "group_summary": group_summary, "outputs": outputs, "records": records, "previews": previews,
             "review_state": review_state, "activity": _activity(s, t, versions, users), "feedback_bases": feedback_bases, "can_feedback": can_feedback,
             "state": _state_token(s, t), "processing": t.status in S.PROCESSING, "profile_name": t.profile.name if t.profile else None,
-            "PREVIEW_LABEL": PREVIEW_LABEL, "nav": "tasks", "crumbs": [("Reporting tasks", "/tasks"), (t.title or "Untitled task", None)]}
+            "PREVIEW_LABEL": PREVIEW_LABEL, "pv_named": len(previews) > 2 or any(k in EXTRA_DECK_KINDS for k in previews), "nav": "tasks", "crumbs": [("Reporting tasks", "/tasks"), (t.title or "Untitled task", None)]}
 
 
 @app.get("/tasks/{task_id}", response_class=HTMLResponse)
