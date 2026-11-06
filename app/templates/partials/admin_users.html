@@ -6,20 +6,21 @@
   <span class="au-count muted small" id="auCount" aria-live="polite">{{ rows|length }} people</span>
 </div>
 {% set legacy = rows|selectattr('status.key','equalto','legacy')|list %}
-{% if legacy %}<div class="notice notice-warn">{{ icon('alert') }}<div><b>{{ legacy|length }} legacy account{{ 's' if legacy|length != 1 }} can’t sign in</b><p>These were created for password sign-in, which has been removed. Their tasks and history are kept. To let the person in, grant access to their @{{ allowed_domains[0] if allowed_domains else 'company' }} email.</p></div></div>{% endif %}
+{% if legacy %}<div class="notice notice-warn">{{ icon('alert') }}<div><b>{{ legacy|length }} legacy account{{ 's' if legacy|length != 1 }} can’t sign in</b><p>These were created for password sign-in, which has been removed. Open Manage to delete one; its tasks move to you. To let the person in, grant access to their @{{ allowed_domains[0] if allowed_domains else 'company' }} email.</p></div></div>{% endif %}
 <div class="tbl-wrap">
 <table class="tbl au-tbl">
   <caption class="sr">Workspace users</caption>
-  <thead><tr><th scope="col">User</th><th scope="col">Role</th><th scope="col">Access</th><th scope="col">Sign-in</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+  <thead><tr><th scope="col">User</th><th scope="col">Role</th><th scope="col">Clients</th><th scope="col">Access</th><th scope="col">Sign-in</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
   <tbody>
   {% for r in rows %}{% set u = r.u %}
   <tr data-au-row data-name="{{ u.name|lower }}" data-email="{{ u.email|lower }}" data-role="{{ u.role }}" data-access="{{ 'active' if u.active else 'revoked' }}" data-legacy="{{ '1' if r.status.key == 'legacy' else '' }}">
     <td data-label="User"><span class="owner">{{ avatar(u.name, 'sm') }}<span><b>{{ u.name }}</b>{% if r.me %} <span class="you-badge">You</span>{% endif %}<br><span class="muted small break">{{ u.email }}</span></span></span></td>
     <td data-label="Role">{{ ROLE_LABEL.get(u.role, u.role) }}{% if u.email in boot_admins %}<span class="muted small" title="Set by ZOHO_ADMIN_EMAILS on the server"> · server admin</span>{% endif %}</td>
+    <td data-label="Clients" class="au-clients">{% if u.role == 'admin' %}<span class="muted small">All clients</span>{% elif r.client_names %}{{ r.client_names|join(', ') }}{% else %}<span class="tag tag-warn">No clients</span>{% endif %}</td>
     <td data-label="Access"><span class="badge-st tone-{{ 'ok' if u.active else 'neutral' }}"><span class="bdot" aria-hidden="true"></span>{{ 'Active' if u.active else 'Revoked' }}</span></td>
     <td data-label="Sign-in"><span class="badge-st tone-{{ r.status.tone }}"><span class="bdot" aria-hidden="true"></span>{{ r.status.label }}</span>
       <span class="muted small au-detail">{{ r.status.detail }}{% if r.status.at %} · <time datetime="{{ r.status.at.isoformat() }}">{{ r.status.at|local }}</time>{% endif %}</span></td>
-    <td class="c-act">{% if not r.me %}<button type="button" class="btn btn-sm" data-manage='{"id": {{ u.id }}, "name": {{ u.name|tojson|forceescape }}, "email": {{ u.email|tojson|forceescape }}, "role": "{{ u.role }}", "active": {{ 'true' if u.active else 'false' }}, "legacy": {{ 'true' if r.status.key == 'legacy' else 'false' }}, "lastAdmin": {{ 'true' if (u.role == 'admin' and u.active and active_admins <= 1) else 'false' }}}'>Manage<span class="sr"> {{ u.name }}</span></button>{% else %}<span class="muted small">Ask another admin</span>{% endif %}</td>
+    <td class="c-act">{% if not r.me %}<button type="button" class="btn btn-sm" data-manage='{"id": {{ u.id }}, "name": {{ u.name|tojson|forceescape }}, "email": {{ u.email|tojson|forceescape }}, "role": "{{ u.role }}", "active": {{ 'true' if u.active else 'false' }}, "legacy": {{ 'true' if r.status.key == 'legacy' else 'false' }}, "lastAdmin": {{ 'true' if (u.role == 'admin' and u.active and active_admins <= 1) else 'false' }}, "clients": {{ r.client_ids|tojson }}}'>Manage<span class="sr"> {{ u.name }}</span></button>{% else %}<span class="muted small">Ask another admin</span>{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>

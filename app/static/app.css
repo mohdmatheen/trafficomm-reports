@@ -987,3 +987,9 @@ th[aria-sort=descending] .th-sort::after{content:" ↓"}
 .rinv-form .field-err{flex-basis:100%;margin:0;color:var(--red-ink)}
 .rinv-tbl td:last-child{white-space:nowrap;text-align:right}
 .rinv-tbl th[scope=row]{font-weight:600;text-align:left}.rinv-n{font-weight:400}.rinv-by{display:block;font-weight:400;font-size:12px;color:var(--text-2)}
+/* clients & per-client access */
+.cl-boxes [data-boxes],.cl-boxes [data-cl-users]{max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:4px 12px}
+.cl-boxes label.check{gap:8px}
+.cl-tbl tr.is-archived td{color:var(--text-2)}
+.au-clients{max-width:260px}
+.dlg-danger{display:flex;gap:6px;flex-wrap:wrap}

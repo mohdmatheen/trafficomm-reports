@@ -15,6 +15,11 @@ from app.profiles import ATC_PROFILE, GENERIC_PROFILE
 def main():
     init_db()
     with Session() as s:
+        if s.scalar(select(Client.id).limit(1)):
+            # clients are managed on the Admin page once they exist (renames must not bring the originals back)
+            s.commit()
+            print("seed complete (clients already exist)")
+            return
         atc = s.scalar(select(Client).where(Client.name == "Around The Clock Media"))
         if not atc:
             atc = Client(name="Around The Clock Media", short="ATC")

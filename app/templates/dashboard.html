@@ -7,9 +7,9 @@
 <div class="page-head">
   <div>
     <h1>{{ 'Reporting overview' if view == 'overview' else 'Reporting tasks' }}</h1>
-    <p class="page-sub">{% if view == 'overview' %}Your team’s reporting, in one place.{% elif user.role == 'admin' %}Every reporting task in the workspace.{% else %}Your reporting tasks.{% endif %}</p>
+    <p class="page-sub">{% if view == 'overview' %}Your team’s reporting, in one place.{% elif user.role == 'admin' %}Every reporting task in the workspace.{% else %}Reporting tasks for the clients you’re assigned to.{% endif %}</p>
   </div>
-  <a class="btn btn-primary btn-lg" href="/tasks/new">{{ icon('plus') }}New reporting task</a>
+  {% if not no_clients %}<a class="btn btn-primary btn-lg" href="/tasks/new">{{ icon('plus') }}New reporting task</a>{% endif %}
 </div>
 
 {% if view == 'overview' %}
@@ -39,7 +39,7 @@
 <section class="card task-panel" id="tasks" aria-labelledby="tasksTitle">
   <div class="tp-head">
     <h2 id="tasksTitle">Reporting tasks <span class="count">{{ rows|length }} task{{ 's' if rows|length != 1 }}{% if filtered %} shown{% endif %}</span></h2>
-    {% if user.role == 'admin' %}
+    {% if not no_clients %}
     <div class="seg" role="group" aria-label="Whose tasks">
       <a href="{{ base }}?{% if status %}status={{ status }}&{% endif %}" class="{% if mine != '1' %}on{% endif %}" {% if mine != '1' %}aria-current="true"{% endif %}>All tasks</a>
       <a href="{{ base }}?mine=1{% if status %}&status={{ status }}{% endif %}" class="{% if mine == '1' %}on{% endif %}" {% if mine == '1' %}aria-current="true"{% endif %}>My tasks</a>
@@ -68,7 +68,9 @@
   </form>
 
   {% if not rows %}
-    {% if filtered %}
+    {% if no_clients %}
+      {{ empty_state('No clients assigned yet', 'You haven’t been given access to any clients. Ask a workspace admin to assign you the clients you work on.', 'lock') }}
+    {% elif filtered %}
       {{ empty_state('No tasks match these filters', 'Try a different search, or clear the filters to see every task.', 'search') }}
     {% else %}
       {{ empty_state('No reporting tasks yet', 'Create a task, upload the raw exports and describe the report you need.', 'layers', '/tasks/new', 'New reporting task') }}
@@ -77,7 +79,7 @@
   <div class="tbl-wrap">
   <table class="tbl task-tbl">
     <caption class="sr">Reporting tasks</caption>
-    <thead><tr><th scope="col">Task</th><th scope="col">Client</th>{% if user.role == 'admin' %}<th scope="col">Owner</th>{% endif %}<th scope="col">Status</th><th scope="col">Downloads</th><th scope="col">Updated</th><th scope="col"><span class="sr">Action</span></th></tr></thead>
+    <thead><tr><th scope="col">Task</th><th scope="col">Client</th><th scope="col">Owner</th><th scope="col">Status</th><th scope="col">Downloads</th><th scope="col">Updated</th><th scope="col"><span class="sr">Action</span></th></tr></thead>
     <tbody>
     {% for r in rows %}{% set t = r.t %}
     <tr>
@@ -87,7 +89,7 @@
         <span class="t-sub">{{ t.brand or ('Draft' if t.status == 'draft' else 'Reporting task') }}{% if r.version %} · <span class="nowrap">Version {{ r.version.number }}</span>{% endif %}</span></span>
       </div></td>
       <td data-label="Client" class="c-client">{{ r.client }}</td>
-      {% if user.role == 'admin' %}<td data-label="Owner"><span class="owner">{{ avatar(r.owner, 'sm') }}{{ r.owner }}</span></td>{% endif %}
+      <td data-label="Owner"><span class="owner">{{ avatar(r.owner, 'sm') }}{{ r.owner }}</span></td>
       <td data-label="Status">{{ status_badge(t.status) }}</td>
       <td data-label="Downloads" class="c-dl">{% if r.latest_ready and r.arts %}{% for a in r.arts %}<a href="/artifacts/{{ a.id }}/download" class="chip" title="Download {{ a.label }} (v{{ r.latest_ready.number }})">{{ icon('download') }}{{ ARTIFACT_SHORT.get(a.kind, a.kind) }}</a>{% endfor %}{% else %}<span class="muted" aria-label="none">–</span>{% endif %}</td>
       <td data-label="Updated" class="muted nowrap"><time datetime="{{ t.updated_at.isoformat() if t.updated_at else '' }}">{{ t.updated_at|ago }}</time></td>

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request
 
-from .db import Session, Task, User
+from sqlalchemy import select
+
+from .db import Client, Session, Task, User, UserClient
 
 
 def current_user(request: Request) -> User | None:
@@ -35,15 +37,33 @@ def require_admin(request: Request) -> User:
     return u
 
 
-def can_access_task(user: User, task: Task | None) -> bool:
+def allowed_client_ids(s, user: User) -> set[int] | None:
+    """Clients the user may see and work on. None means every client (admins)."""
+    if user.role == "admin":
+        return None
+    return set(s.scalars(select(UserClient.client_id).where(UserClient.user_id == user.id)).all())
+
+
+def visible_clients(s, user: User, include_archived: bool = True) -> list[Client]:
+    stmt = select(Client).order_by(Client.name)
+    if not include_archived:
+        stmt = stmt.where(Client.archived.is_(False))
+    allowed = allowed_client_ids(s, user)
+    if allowed is not None:
+        stmt = stmt.where(Client.id.in_(allowed or {0}))
+    return list(s.scalars(stmt).all())
+
+
+def can_access_task(user: User, task: Task | None, allowed: set[int] | None) -> bool:
+    """Admins see every task. Employees see every task of the clients they are assigned to."""
     if task is None or task.deleted_at is not None:
         return False
-    return user.role == "admin" or task.owner_id == user.id
+    return user.role == "admin" or (allowed is not None and task.client_id in allowed)
 
 
 def get_task_checked(s, user: User, task_id: int) -> Task:
     t = s.get(Task, task_id)
-    if not can_access_task(user, t):
+    if not can_access_task(user, t, allowed_client_ids(s, user)):
         # 404 (not 403) so task existence isn't revealed to other users
         raise HTTPException(status_code=404, detail="Task not found")
     return t

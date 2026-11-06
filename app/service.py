@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from .config import settings
 from .db import (AppSetting, Artifact, AuditLog, Client, Job, Message, Profile, Question, Session, StageEvent, Task, TaskFile,
-                 TaskVersion, User, now)
+                 TaskVersion, User, UserClient, now)
 from .engine import ai as AI
 from .engine.inspect import inspect_file
 from .pipeline import Cancelled, VersionInput, run_version
@@ -322,7 +322,7 @@ def _lock_admin_changes(s):
     s.execute(text("SELECT pg_advisory_xact_lock(724001)"))
 
 
-def grant_access(s, admin, email: str, name: str = "", role: str = "employee"):
+def grant_access(s, admin, email: str, name: str = "", role: str = "employee", client_ids=None):
     email = (email or "").strip().lower()
     if "@" not in email or email.startswith("@") or email.endswith("@") or " " in email:
         raise UserError("Enter a valid company email address")
@@ -338,12 +338,152 @@ def grant_access(s, admin, email: str, name: str = "", role: str = "employee"):
             raise UserError(f"{email} already has access")
         u.active, u.role = True, role
         audit(s, admin.id, "grant_access", email)
+        if client_ids is not None:
+            set_user_clients(s, admin, u, client_ids)
         return u, "restored"
     u = User(email=email, name=(name.strip() or email.split("@")[0])[:120], role=role, password_hash="!")
     s.add(u)
     s.flush()
     audit(s, admin.id, "grant_access", email)
+    if client_ids is not None:
+        set_user_clients(s, admin, u, client_ids)
     return u, "granted"
+
+
+# ---------------------------------------------------------------------------
+# Clients and per-client access
+# ---------------------------------------------------------------------------
+def _ids(values) -> set[int]:
+    if values is None:
+        return set()
+    if not isinstance(values, (list, tuple, set)):
+        raise UserError("Clients must be a list")
+    out = set()
+    for v in values:
+        try:
+            out.add(int(v))
+        except (TypeError, ValueError):
+            raise UserError("Unknown client")
+    return out
+
+
+def set_user_clients(s, admin, u: User, client_ids) -> list[str]:
+    """Replace the clients an employee can work on. Returns human-readable changes."""
+    want = _ids(client_ids)
+    names = dict(s.execute(select(Client.id, Client.name)).all())
+    if want - set(names):
+        raise UserError("Unknown client")
+    have = set(s.scalars(select(UserClient.client_id).where(UserClient.user_id == u.id)).all())
+    changes = []
+    for cid in sorted(want - have, key=lambda c: names[c].lower()):
+        s.add(UserClient(user_id=u.id, client_id=cid))
+        audit(s, admin.id, "grant_client", f"{u.email}: {names[cid]}")
+        changes.append("added " + names[cid])
+    gone = have - want
+    if gone:
+        from sqlalchemy import delete
+        s.execute(delete(UserClient).where(UserClient.user_id == u.id, UserClient.client_id.in_(gone)))
+        for cid in sorted(gone, key=lambda c: names.get(c, "").lower()):
+            audit(s, admin.id, "revoke_client", f"{u.email}: {names.get(cid, cid)}")
+            changes.append("removed " + names.get(cid, str(cid)))
+    return changes
+
+
+def set_client_users(s, admin, c: Client, user_ids) -> list[str]:
+    """Replace which employees can work on one client (admins always can and are ignored)."""
+    want = _ids(user_ids)
+    emps = {u.id: u for u in s.scalars(select(User).where(User.role != "admin"))}
+    want &= set(emps)
+    have = set(s.scalars(select(UserClient.user_id).where(UserClient.client_id == c.id)).all())
+    changes = []
+    for uid in want - have:
+        s.add(UserClient(user_id=uid, client_id=c.id))
+        audit(s, admin.id, "grant_client", f"{emps[uid].email}: {c.name}")
+        changes.append("added " + emps[uid].name)
+    gone = (have - want) & set(emps)
+    if gone:
+        from sqlalchemy import delete
+        s.execute(delete(UserClient).where(UserClient.client_id == c.id, UserClient.user_id.in_(gone)))
+        for uid in gone:
+            audit(s, admin.id, "revoke_client", f"{emps[uid].email}: {c.name}")
+            changes.append("removed " + emps[uid].name)
+    return changes
+
+
+def _client_fields(name, short) -> tuple[str, str]:
+    name = " ".join(str(name or "").split())[:200]
+    short = " ".join(str(short or "").split())[:30]
+    if not name:
+        raise UserError("Enter the client’s name")
+    return name, short
+
+
+def create_client(s, admin, name: str, short: str = "", user_ids=None) -> Client:
+    from copy import deepcopy
+    from sqlalchemy import func
+    from .profiles import GENERIC_PROFILE
+    name, short = _client_fields(name, short)
+    if s.scalar(select(Client.id).where(func.lower(Client.name) == name.lower())):
+        raise UserError(f"A client called “{name}” already exists")
+    c = Client(name=name, short=short, archived=False)
+    s.add(c)
+    s.flush()
+    # every client gets its own editable reporting rules, starting from the generic multi-platform rules
+    rules = deepcopy(GENERIC_PROFILE)
+    rules["name"] = f"{name} rules"
+    s.add(Profile(client_id=c.id, name=f"{name} rules", settings=rules))
+    audit(s, admin.id, "create_client", name)
+    if user_ids:
+        set_client_users(s, admin, c, user_ids)
+    return c
+
+
+def update_client(s, admin, cid: int, name=None, short=None, archived=None, user_ids=None) -> tuple[Client, list[str]]:
+    from sqlalchemy import func
+    c = s.get(Client, cid, with_for_update=True)
+    if not c:
+        raise UserError("Unknown client")
+    changes = []
+    if name is not None or short is not None:
+        n, sh = _client_fields(c.name if name is None else name, c.short if short is None else short)
+        if n != c.name:
+            if s.scalar(select(Client.id).where(func.lower(Client.name) == n.lower(), Client.id != c.id)):
+                raise UserError(f"A client called “{n}” already exists")
+            audit(s, admin.id, "rename_client", f"{c.name} -> {n}")
+            changes.append(f"renamed to {n}")
+            c.name = n
+        if sh != c.short:
+            changes.append("short name updated")
+            c.short = sh
+    if archived is not None and bool(archived) != c.archived:
+        c.archived = bool(archived)
+        audit(s, admin.id, "archive_client" if c.archived else "restore_client", c.name)
+        changes.append("archived" if c.archived else "restored")
+    if user_ids is not None:
+        changes += set_client_users(s, admin, c, user_ids)
+    return c, changes
+
+
+def delete_user(s, admin, uid: int) -> tuple[str, int]:
+    """Delete an account. Their tasks move to the admin who deletes them, so no report is lost."""
+    from sqlalchemy import delete
+    from .db import reassign_user_records
+    _lock_admin_changes(s)
+    u = s.get(User, uid, with_for_update=True)
+    if not u:
+        raise UserError("Unknown user")
+    if u.id == admin.id:
+        raise UserError("You can't delete your own account. Ask another admin.")
+    if u.role == "admin" and u.active:
+        others = s.scalars(select(User.id).where(User.role == "admin", User.active.is_(True), User.id != u.id).with_for_update()).all()
+        if not others:
+            raise UserError("The workspace must keep at least one active admin")
+    moved = reassign_user_records(s, u.id, admin.id)
+    s.execute(delete(UserClient).where(UserClient.user_id == u.id))
+    email = u.email
+    s.delete(u)
+    audit(s, admin.id, "delete_user", f"{email} ({moved} task(s) moved to {admin.email})")
+    return email, moved
 
 
 def update_user_access(s, admin, uid: int, role: str | None = None, active: bool | None = None):

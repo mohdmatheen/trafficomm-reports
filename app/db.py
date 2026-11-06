@@ -34,6 +34,17 @@ class Client(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
     short: Mapped[str] = mapped_column(String(30), default="")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)  # hidden from new tasks; existing tasks stay visible
+
+
+class UserClient(Base):
+    """Which clients an employee may work on. Admins see every client and need no rows here."""
+    __tablename__ = "user_clients"
+    __table_args__ = (UniqueConstraint("user_id", "client_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
+    granted_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Profile(Base):
@@ -387,3 +398,51 @@ def init_db():
     from sqlalchemy import text
     with engine().begin() as c:
         c.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS fx_usd_aed DOUBLE PRECISION"))
+        c.execute(text("ALTER TABLE clients ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE"))
+    migrate_access()
+
+
+LEGACY_DOMAIN = "trafficomm.local"
+
+
+def reassign_user_records(s, from_id: int, to_id: int) -> int:
+    """Move everything a user owns or created to another user, so the user row can be deleted.
+    Plain integer references (answered_by, approved_by, audit rows, usage ledger) are left as history."""
+    from sqlalchemy import update
+    n = s.execute(update(Task).where(Task.owner_id == from_id).values(owner_id=to_id)).rowcount or 0
+    s.execute(update(TaskFile).where(TaskFile.uploaded_by == from_id).values(uploaded_by=to_id))
+    s.execute(update(TaskVersion).where(TaskVersion.created_by == from_id).values(created_by=to_id))
+    return n
+
+
+def migrate_access():
+    """One-time data steps for per-client access, safe to run from several processes at once.
+
+    1. When per-client access is first introduced, every existing employee keeps access to every
+       existing client, so nobody loses their work on deploy. Admins then narrow it on the Admin page.
+    2. Accounts from the removed password sign-in (@trafficomm.local) are deleted. Their tasks move
+       to the first Zoho admin so no report is lost. Skipped until a Zoho admin exists."""
+    from sqlalchemy import delete, func, text
+    from .config import settings as cfg
+    with Session() as s:
+        if s.bind.dialect.name == "postgresql":
+            s.execute(text("SELECT pg_advisory_xact_lock(724002)"))
+        if not s.get(AppSetting, "client_access_v1"):
+            clients = s.scalars(select(Client.id)).all()
+            for uid in s.scalars(select(User.id).where(User.role != "admin")).all():
+                for cid in clients:
+                    s.add(UserClient(user_id=uid, client_id=cid))
+            s.add(AppSetting(key="client_access_v1", value=now().isoformat()))
+        legacy = s.scalars(select(User).where(func.lower(User.email).like("%@" + LEGACY_DOMAIN))).all()
+        if legacy:
+            admins = s.scalars(select(User).where(User.role == "admin", User.active.is_(True),
+                                                  func.lower(User.email).notlike("%@" + LEGACY_DOMAIN)).order_by(User.id)).all()
+            boot = [a for a in admins if a.email.lower() in cfg.zoho_admin_emails]
+            heir = (boot or admins or [None])[0]
+            if heir is not None:
+                for u in legacy:
+                    moved = reassign_user_records(s, u.id, heir.id)
+                    s.execute(delete(UserClient).where(UserClient.user_id == u.id))
+                    s.add(AuditLog(user_id=None, action="delete_legacy_user", target=f"{u.email} ({moved} task(s) moved to {heir.email})"))
+                    s.delete(u)
+        s.commit()
