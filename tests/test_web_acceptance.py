@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app import jobs as J
-from app.db import Artifact, Base, Job, Session, Task, TaskVersion, User, engine, now, reset_engine
+from app.db import Artifact, Base, Client, Job, Session, Task, TaskVersion, User, UserClient, engine, now, reset_engine
 from tests import zoho_fake
 from tests.helpers import fx
 
@@ -40,6 +40,13 @@ def app_client(mp):
     with Session() as s:  # people an admin has granted access to (no passwords exist)
         for email, name, role in USERS:
             s.add(User(email=email, name=name, role=role, password_hash="!"))
+        s.flush()
+        # Sara works on every client; Omar only on the generic client (so he can't see Sara's ATC tasks)
+        atc = s.scalar(select(Client.id).where(Client.short == "ATC"))
+        gen = s.scalar(select(Client.id).where(Client.short == "GEN"))
+        sara = s.scalar(select(User.id).where(User.email == "employee@trafficomm.local"))
+        omar = s.scalar(select(User.id).where(User.email == "employee2@trafficomm.local"))
+        s.add_all([UserClient(user_id=sara, client_id=atc), UserClient(user_id=sara, client_id=gen), UserClient(user_id=omar, client_id=gen)])
         s.commit()
     from app.web import app
     return app

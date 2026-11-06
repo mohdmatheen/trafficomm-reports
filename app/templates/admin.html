@@ -39,7 +39,7 @@
 
 {% block content %}
 <div class="page-head">
-  <div><h1>Workspace administration</h1><p class="page-sub">Manage access, reporting rules and workspace operations.</p></div>
+  <div><h1>Workspace administration</h1><p class="page-sub">Manage access, clients, reporting rules and workspace operations.</p></div>
   <span class="chip-ind">{{ icon('shield') }}Zoho-only sign-in</span>
 </div>
 {% if not zoho_enabled %}<div class="notice notice-error" role="alert">{{ icon('alert') }}<div><b>Zoho sign-in isn’t configured</b><p>Set ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET on the server. Zoho is the only sign-in method, so nobody can sign in until it is configured.</p></div></div>{% endif %}
@@ -51,6 +51,14 @@
     <button type="button" class="btn btn-primary" data-open="grantDlg">{{ icon('plus') }}Grant access</button>
   </header>
   <div id="usersBody">{% include "partials/admin_users.html" %}</div>
+</section>
+
+<section class="card ad-card" aria-labelledby="h-clients">
+  <header class="ad-head"><span class="card-ic">{{ icon('layers') }}</span>
+    <div><h2 id="h-clients">Clients</h2><p>Employees only see the clients they’re assigned to: the tasks, reports and downloads for those clients, and only those clients when they start a new report. Admins see every client.</p></div>
+    <button type="button" class="btn btn-primary" data-client-new>{{ icon('plus') }}Add client</button>
+  </header>
+  <div id="clientsBody">{% include "partials/admin_clients.html" %}</div>
 </section>
 
 <div class="ad-grid">
@@ -126,6 +134,12 @@
   </ul>
 </section>
 
+{% macro client_boxes(prefix) %}
+    <fieldset class="field cl-boxes" data-client-boxes><legend>Client access</legend>
+      <p class="muted small" data-admin-note hidden>Admins see every client, so no selection is needed.</p>
+      <div data-boxes>{% for c in all_clients %}<label class="check"><input type="checkbox" name="client" value="{{ c.id }}"> {{ c.name }}{% if c.archived %} <span class="muted small">(archived)</span>{% endif %}</label>{% else %}<p class="muted small">No clients yet. Add one under Clients.</p>{% endfor %}</div>
+    </fieldset>
+{% endmacro %}
 {# ---- dialogs ---- #}
 <dialog class="dlg" id="grantDlg" aria-labelledby="gTitle">
   <form method="dialog" id="grantForm" novalidate>
@@ -133,7 +147,8 @@
     <p class="muted">This authorizes the person’s existing Zoho account to sign in. No email or invitation is sent, and no password is created.</p>
     <div class="field"><label for="g-email">Company email</label><input id="g-email" name="email" type="email" required autocomplete="off" placeholder="name@{{ allowed_domains[0] if allowed_domains else 'company.com' }}" aria-describedby="g-email-err"><p class="f-err" id="g-email-err" hidden></p></div>
     <div class="field"><label for="g-name">Name <span class="opt">(optional)</span></label><input id="g-name" name="name" maxlength="120" autocomplete="off"></div>
-    <div class="field"><label for="g-role">Role</label><select id="g-role" name="role"><option value="employee">Employee: works on their own tasks</option><option value="admin">Admin: manages access, rules and all tasks</option></select></div>
+    <div class="field"><label for="g-role">Role</label><select id="g-role" name="role"><option value="employee">Employee: works on the clients assigned below</option><option value="admin">Admin: manages access, rules and all tasks</option></select></div>
+    {{ client_boxes('g') }}
     <p class="f-err" data-err role="alert" hidden></p>
     <footer class="dlg-f"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn btn-primary" id="grantSubmit" value="default">Grant access</button></footer>
   </form>
@@ -149,10 +164,29 @@
       <label class="radio"><input type="radio" name="role" value="admin"> Admin</label>
     </fieldset>
     <p class="muted small" data-m-lastadmin hidden>{{ icon('shield') }} This is the only active admin, so their role and access can’t be removed.</p>
+    {{ client_boxes('m') }}
     <p class="f-err" data-err role="alert" hidden></p>
     <footer class="dlg-f dlg-f-split">
-      <button class="btn btn-danger-quiet" type="button" data-m-toggle></button>
-      <span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn btn-primary" value="default" data-m-save>Save role</button></span>
+      <span class="dlg-danger"><button class="btn btn-danger-quiet" type="button" data-m-toggle></button><button class="btn btn-danger-quiet" type="button" data-m-delete>{{ icon('trash') }}Delete user</button></span>
+      <span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn btn-primary" value="default" data-m-save>Save</button></span>
+    </footer>
+    <p class="muted small" data-m-delete-note hidden>Deleting removes the account for good. Any tasks they created move to you, so no report is lost. Click again to confirm.</p>
+  </form>
+</dialog>
+
+<dialog class="dlg" id="clientDlg" aria-labelledby="clTitle">
+  <form method="dialog" id="clientForm" novalidate>
+    <header class="dlg-h"><h2 id="clTitle">Add client</h2><button class="icon-btn" value="cancel" formnovalidate aria-label="Close">{{ icon('x') }}</button></header>
+    <div class="field"><label for="cl-name">Client name</label><input id="cl-name" name="name" maxlength="200" required autocomplete="off" aria-describedby="cl-name-err"><p class="f-err" id="cl-name-err" hidden></p></div>
+    <div class="field"><label for="cl-short">Short name <span class="opt">(optional)</span></label><input id="cl-short" name="short" maxlength="30" autocomplete="off" placeholder="e.g. ATC"></div>
+    <fieldset class="field cl-boxes"><legend>Employees with access</legend>
+      <div data-cl-users>{% for e in employees %}<label class="check"><input type="checkbox" name="user" value="{{ e.id }}"> {{ e.name }} <span class="muted small">{{ e.email }}{% if not e.active %} · revoked{% endif %}</span></label>{% else %}<p class="muted small">No employees yet. Grant access to someone first, or assign this client to them later.</p>{% endfor %}</div>
+    </fieldset>
+    <p class="muted small" data-cl-new-note>New clients start with the generic reporting rules. You can adjust them under Client reporting rules.</p>
+    <p class="f-err" data-err role="alert" hidden></p>
+    <footer class="dlg-f dlg-f-split">
+      <span><button class="btn btn-danger-quiet" type="button" data-cl-archive hidden></button></span>
+      <span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn btn-primary" value="default" data-cl-save>Add client</button></span>
     </footer>
   </form>
 </dialog>

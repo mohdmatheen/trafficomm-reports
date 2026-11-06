@@ -76,7 +76,19 @@
       d.addEventListener("close", () => { if (d._opener && d._opener.isConnected) d._opener.focus(); });
       d.addEventListener("click", (e) => { if (e.target === d) d.close("cancel"); }); // backdrop click
     });
-    $$("[data-open]").forEach((b) => b.addEventListener("click", () => { const d = $("#" + b.dataset.open); d.querySelector("form").reset(); openDlg(d, b); $("input", d).focus(); }));
+    $$("[data-open]").forEach((b) => b.addEventListener("click", () => { const d = $("#" + b.dataset.open); d.querySelector("form").reset(); syncBoxes(d); openDlg(d, b); $("input", d).focus(); }));
+    // a message saved before a reload (client changes refresh the whole page so every list stays in step)
+    try { const m = sessionStorage.getItem("adminFlash"); if (m) { sessionStorage.removeItem("adminFlash"); say(m); } } catch (e) { /* storage blocked */ }
+    const reloadWith = (m) => { try { sessionStorage.setItem("adminFlash", m); } catch (e) { /* storage blocked */ } location.reload(); };
+    // client checkboxes in the grant and manage dialogs: only meaningful for employees
+    const checkedIds = (root, name) => $$("input[name=" + name + "]:checked", root).map((x) => +x.value);
+    function syncBoxes(d, isAdmin) {
+      const box = $("[data-client-boxes]", d); if (!box) return;
+      if (isAdmin === undefined) { const r = $("#g-role", d) || $("input[name=role]:checked", d); isAdmin = !!r && r.value === "admin"; }
+      $("[data-boxes]", box).hidden = isAdmin; $("[data-admin-note]", box).hidden = !isAdmin;
+    }
+    $("#g-role").addEventListener("change", () => syncBoxes($("#grantDlg")));
+    $$("#manageDlg input[name=role]").forEach((r) => r.addEventListener("change", () => syncBoxes($("#manageDlg"))));
 
     // users: client-side filters over the server-rendered table
     function bindUsers() {
@@ -119,8 +131,9 @@
       $("#g-email").removeAttribute("aria-invalid");
       if (gBtn.disabled) return; gBtn.disabled = true; gBtn.textContent = "Granting…";
       try {
-        const j = await api("POST", "/api/admin/users", { email, name: $("#g-name").value.trim(), role: $("#g-role").value });
-        $("#grantDlg").close("done"); say(j.message); await refreshUsers(j.user.id);
+        const role = $("#g-role").value;
+        const j = await api("POST", "/api/admin/users", { email, name: $("#g-name").value.trim(), role, client_ids: role === "admin" ? [] : checkedIds(gf, "client") });
+        $("#grantDlg").close("done"); reloadWith(j.message);
       } catch (err) { showErr($("[data-err]", gf), err.message); }
       finally { gBtn.disabled = false; gBtn.textContent = "Grant access"; }
     });
@@ -133,6 +146,10 @@
       $("[data-m-legacy]", md).hidden = !u.legacy;
       $$("input[name=role]", md).forEach((r) => { r.checked = r.value === u.role; r.disabled = u.lastAdmin; });
       $("[data-m-lastadmin]", md).hidden = !u.lastAdmin;
+      $$("input[name=client]", md).forEach((c) => { c.checked = (u.clients || []).includes(+c.value); });
+      syncBoxes(md, u.role === "admin");
+      const del = $("[data-m-delete]", md); del.disabled = u.lastAdmin; delete del.dataset.confirm;
+      del.lastChild.textContent = "Delete user"; $("[data-m-delete-note]", md).hidden = true;
       const tg = $("[data-m-toggle]", md);
       tg.textContent = u.active ? "Revoke access" : "Restore access"; tg.disabled = u.lastAdmin && u.active;
       tg.className = "btn " + (u.active ? "btn-danger-quiet" : "");
@@ -140,16 +157,22 @@
     }
     async function patch(body, btn) {
       if (btn.disabled) return; btn.disabled = true; const old = btn.textContent; btn.textContent = "Saving…";
-      try { const j = await api("PATCH", "/api/admin/users/" + cur.id, body); md.close("done"); say(j.message); await refreshUsers(cur.id); }
+      try { const j = await api("PATCH", "/api/admin/users/" + cur.id, body); md.close("done"); say(j.message); await refreshUsers(cur.id); await refreshClients(); }
       catch (err) { showErr($("[data-err]", md), err.message); }
       finally { btn.disabled = false; btn.textContent = old; }
     }
     mf.addEventListener("submit", (e) => {
       if (e.submitter && e.submitter.value === "cancel") return;
       e.preventDefault();
-      const r = $("input[name=role]:checked", md);
-      if (!r || r.value === cur.role) { md.close("cancel"); return; }
-      patch({ role: r.value }, $("[data-m-save]", md));
+      const r = $("input[name=role]:checked", md), body = {};
+      if (r && r.value !== cur.role) body.role = r.value;
+      const role = r ? r.value : cur.role;
+      if (role !== "admin") {
+        const ids = checkedIds(md, "client"), was = (cur.clients || []).slice().sort().join(",");
+        if (ids.slice().sort().join(",") !== was) body.client_ids = ids;
+      }
+      if (!Object.keys(body).length) { md.close("cancel"); return; }
+      patch(body, $("[data-m-save]", md));
     });
     $("[data-m-toggle]", md).addEventListener("click", (e) => {
       const b = e.currentTarget;
@@ -157,6 +180,56 @@
       delete b.dataset.confirm; patch({ active: !cur.active }, b);
     });
     md.addEventListener("close", () => { delete $("[data-m-toggle]", md).dataset.confirm; });
+    $("[data-m-delete]", md).addEventListener("click", async (e) => {
+      const b = e.currentTarget;
+      if (b.disabled) return;
+      if (!b.dataset.confirm) { b.dataset.confirm = "1"; b.lastChild.textContent = "Confirm delete"; $("[data-m-delete-note]", md).hidden = false; return; }
+      b.disabled = true; b.lastChild.textContent = "Deleting…";
+      try { const j = await api("DELETE", "/api/admin/users/" + cur.id); md.close("done"); reloadWith(j.message); }
+      catch (err) { showErr($("[data-err]", md), err.message); b.disabled = false; b.lastChild.textContent = "Delete user"; delete b.dataset.confirm; }
+    });
+
+    // clients: add, rename, archive, and choose which employees can work on each
+    async function refreshClients() {
+      const r = await fetch("/admin?partial=clients", { credentials: "same-origin" });
+      if (r.ok) { $("#clientsBody").innerHTML = await r.text(); bindClients(); }
+    }
+    const cd2 = $("#clientDlg"), cf = $("#clientForm"); let curClient = null;
+    function openClient(c, opener) {
+      curClient = c; cf.reset();
+      $("#clTitle").textContent = c ? "Edit client" : "Add client";
+      $("[data-cl-save]", cd2).textContent = c ? "Save" : "Add client";
+      $("[data-cl-new-note]", cd2).hidden = !!c;
+      $("#cl-name").value = c ? c.name : ""; $("#cl-short").value = c ? c.short : "";
+      $$("input[name=user]", cd2).forEach((x) => { x.checked = !!c && c.users.includes(+x.value); });
+      const ar = $("[data-cl-archive]", cd2); ar.hidden = !c; delete ar.dataset.confirm; ar.disabled = false;
+      if (c) ar.textContent = c.archived ? "Restore client" : "Archive client";
+      showErr($("#cl-name-err"), "");
+      openDlg(cd2, opener); $("#cl-name").focus();
+    }
+    function bindClients() { $$("[data-client]").forEach((b) => b.addEventListener("click", () => openClient(JSON.parse(b.dataset.client), b))); }
+    bindClients();
+    $("[data-client-new]").addEventListener("click", (e) => openClient(null, e.currentTarget));
+    cf.addEventListener("submit", async (e) => {
+      if (e.submitter && e.submitter.value === "cancel") return;
+      e.preventDefault();
+      const name = $("#cl-name").value.trim(), btn = $("[data-cl-save]", cd2);
+      showErr($("#cl-name-err"), ""); showErr($("[data-err]", cf), "");
+      if (!name) { showErr($("#cl-name-err"), "Enter the client’s name."); $("#cl-name").focus(); return; }
+      if (btn.disabled) return; btn.disabled = true; const old = btn.textContent; btn.textContent = "Saving…";
+      const body = { name, short: $("#cl-short").value.trim(), user_ids: checkedIds(cf, "user") };
+      try {
+        const j = curClient ? await api("PATCH", "/api/admin/clients/" + curClient.id, body) : await api("POST", "/api/admin/clients", body);
+        cd2.close("done"); reloadWith(j.message);
+      } catch (err) { showErr($("[data-err]", cf), err.message); btn.disabled = false; btn.textContent = old; }
+    });
+    $("[data-cl-archive]", cd2).addEventListener("click", async (e) => {
+      const b = e.currentTarget; if (!curClient || b.disabled) return;
+      if (!curClient.archived && !b.dataset.confirm) { b.dataset.confirm = "1"; b.textContent = "Confirm archive"; return; }
+      b.disabled = true;
+      try { const j = await api("PATCH", "/api/admin/clients/" + curClient.id, { archived: !curClient.archived }); cd2.close("done"); reloadWith(j.message); }
+      catch (err) { showErr($("[data-err]", cf), err.message); b.disabled = false; }
+    });
 
     // retention: save policy (never deletes) and a separate, confirmed cleanup
     const rf = $("#retForm"), rd = $("#ret-days"), rErr = $("#ret-err");

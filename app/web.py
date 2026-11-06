@@ -1,5 +1,5 @@
 """FastAPI web application: pages + JSON API. Every task/file/artifact route performs a
-server-side access check (owner or admin)."""
+server-side access check (admin, or an employee assigned to the task's client)."""
 from __future__ import annotations
 
 import datetime as dt
@@ -17,10 +17,10 @@ from sqlalchemy import func, or_, select
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import service as S
-from .auth import current_user, get_task_checked, require_admin, require_user
+from .auth import allowed_client_ids, current_user, get_task_checked, require_admin, require_user, visible_clients
 from .config import BASE_DIR, settings
 from .db import (AppSetting, Artifact, AuditLog, Client, Job, Message, Profile, Question, Session, StageEvent, Task, TaskFile, TaskVersion,
-                 User, init_db, now)
+                 User, UserClient, init_db, now)
 from .engine import fields as F
 from .engine import fmt as FM
 from .engine.calc import METRIC_LABELS
@@ -277,10 +277,13 @@ templates.env.filters["initials"] = _initials
 def _task_list(request: Request, user: User, view: str, q: str, status: str, client: str, owner: str, mine: str):
     with Session() as s:
         scope = [Task.deleted_at.is_(None)]
-        if user.role != "admin" or mine == "1":
+        allowed = allowed_client_ids(s, user)
+        if allowed is not None:  # employees: only the clients they are assigned to
+            scope.append(Task.client_id.in_(allowed or {0}))
+        if mine == "1":
             scope.append(Task.owner_id == user.id)
         stmt = select(Task).where(*scope)
-        if user.role == "admin" and owner and owner.isdigit() and mine != "1":
+        if owner and owner.isdigit() and mine != "1":
             stmt = stmt.where(Task.owner_id == int(owner))
         if q.strip():
             like = f"%{q.strip()}%"
@@ -335,11 +338,12 @@ def _task_list(request: Request, user: User, view: str, q: str, status: str, cli
                 attention = {"count": len(attn_tasks), "detail": detail, "label": "Review tasks", "href": href}
         if status == "attention":
             rows = [r for r in rows if r["t"].status in ("awaiting_clarification", "validation_blocked", "failed")]
-        clients = s.scalars(select(Client).order_by(Client.name)).all()
-        owners = s.scalars(select(User).order_by(User.name)).all() if user.role == "admin" else []
+        clients = visible_clients(s, user)
+        owner_ids = select(Task.owner_id).where(*scope).distinct()
+        owners = s.scalars(select(User).where(User.id.in_(owner_ids)).order_by(User.name)).all()
     filtered = bool(q.strip() or status or client or (owner and mine != "1"))
     ctx = {"user": user, "view": view, "rows": rows, "q": q, "status": status, "client": client, "owner": owner, "mine": mine,
-           "clients": clients, "owners": owners, "counts": counts, "total": total, "attention": attention, "filtered": filtered,
+           "clients": clients, "owners": owners, "no_clients": allowed is not None and not allowed, "counts": counts, "total": total, "attention": attention, "filtered": filtered,
            "STATUS_GROUPS": STATUS_GROUPS, "ARTIFACT_SHORT": ARTIFACT_SHORT,
            "nav": "overview" if view == "overview" else "tasks",
            "crumbs": [("Overview", None)] if view == "overview" else [("Reporting tasks", None)]}
@@ -365,7 +369,9 @@ def task_list(request: Request, q: str = "", status: str = "", client: str = "",
 def new_task_page(request: Request):
     user = require_user(request)
     with Session() as s:
-        clients = s.scalars(select(Client).order_by(Client.id)).all()
+        clients = visible_clients(s, user, include_archived=False)
+        if not clients:
+            raise HTTPException(403, "You haven’t been given access to any clients yet. Ask a workspace admin to assign you a client.")
         profiles = s.scalars(select(Profile).order_by(Profile.id)).all()
     default_client = next((c for c in clients if c.name == "Around The Clock Media"), clients[0] if clients else None)
     today = dt.date.today()
@@ -392,12 +398,34 @@ def _date(v):
     return dt.date.fromisoformat(v) if isinstance(v, str) else v
 
 
+def _client_for_task(s, user, client_id, current: int | None = None) -> Client:
+    """The client a task may be created for or moved to: assigned to the user and not archived
+    (a draft may keep the archived client it already has)."""
+    usable = visible_clients(s, user, include_archived=False)
+    if not usable and current is None:
+        raise S.UserError("You haven’t been given access to any clients yet. Ask a workspace admin to assign you a client.")
+    try:
+        cid = int(client_id or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    if not cid:
+        if not usable:
+            raise S.UserError("Choose a client")
+        return next((c for c in usable if c.name == "Around The Clock Media"), usable[0])
+    if cid == current:
+        return s.get(Client, cid)
+    c = next((c for c in usable if c.id == cid), None)
+    if not c:
+        raise S.UserError("You don’t have access to that client")
+    return c
+
+
 @app.post("/api/tasks")
 async def create_task(request: Request):
     user = require_user(request)
     body = await request.json()
     with Session() as s:
-        client = s.get(Client, int(body.get("client_id") or 0)) or s.scalar(select(Client).order_by(Client.id))
+        client = _client_for_task(s, user, body.get("client_id"))
         prof = s.scalar(select(Profile).where(Profile.client_id == client.id))
         t = Task(client_id=client.id, profile_id=prof.id if prof else None, owner_id=user.id, status="draft",
                  currency=(prof.settings.get("default_currency") if prof else None) or "AED")
@@ -445,9 +473,7 @@ async def update_task(request: Request, task_id: int):
         if "deliverables" in body:
             t.deliverables = [d for d in body["deliverables"] if d in DELIVERABLE_LABELS]
         if "client_id" in body:
-            c = s.get(Client, int(body["client_id"]))
-            if c:
-                t.client_id = c.id
+            t.client_id = _client_for_task(s, user, body["client_id"], current=t.client_id).id
         if "profile_id" in body:
             t.profile_id = int(body["profile_id"]) if body["profile_id"] else None
         s.commit()
@@ -753,7 +779,9 @@ def edit_draft(request: Request, task_id: int):
     user = require_user(request)
     with Session() as s:
         t = get_task_checked(s, user, task_id)
-        clients = s.scalars(select(Client).order_by(Client.id)).all()
+        clients = visible_clients(s, user, include_archived=False)
+        if t.client_id not in {c.id for c in clients}:
+            clients = [t.client] + clients
         profiles = s.scalars(select(Profile).order_by(Profile.id)).all()
         files = [S.file_summary(f) for f in s.scalars(select(TaskFile).where(TaskFile.task_id == t.id, TaskFile.removed.is_(False))).all()]
         return templates.TemplateResponse(request, "new_task.html", _builder_ctx(user, clients, profiles, t.client, t, files, t.period_start, t.period_end))
@@ -885,24 +913,43 @@ ROLE_LABEL = {"admin": "Admin", "employee": "Employee"}
 PROFILE_LOCKED = {"click_metric": ("link_clicks",)}  # agency rule: clicks are always link clicks
 
 
-def _admin_users(s, me):
+def _admin_users(s, me, all_clients):
     users = s.scalars(select(User).order_by(User.active.desc(), func.lower(User.name))).all()
     last = dict(s.execute(select(AuditLog.user_id, func.max(AuditLog.at)).where(AuditLog.action == "login_zoho").group_by(AuditLog.user_id)).all())
+    access: dict[int, list[int]] = {}
+    for uid_, cid in s.execute(select(UserClient.user_id, UserClient.client_id)).all():
+        access.setdefault(uid_, []).append(cid)
+    names = {c.id: c.name for c in all_clients}
     rows = []
     for u in users:
         st = S.sign_in_status(u, last.get(u.id), settings.zoho_allowed_domains)
-        rows.append({"u": u, "me": u.id == me.id, "status": st, "last_login": last.get(u.id)})
+        cids = sorted(access.get(u.id, []), key=lambda c: names.get(c, "").lower())
+        rows.append({"u": u, "me": u.id == me.id, "status": st, "last_login": last.get(u.id), "client_ids": cids,
+                     "client_names": [names[c] for c in cids if c in names]})
     return rows
 
 
+def _admin_clients(s, all_clients, rows):
+    tasks = dict(s.execute(select(Task.client_id, func.count()).where(Task.deleted_at.is_(None)).group_by(Task.client_id)).all())
+    out = []
+    for c in all_clients:
+        people = [r["u"] for r in rows if r["u"].role != "admin" and c.id in r["client_ids"]]
+        out.append({"c": c, "tasks": tasks.get(c.id, 0), "people": people})
+    return out
+
+
 def _admin_ctx(s, user):
-    rows = _admin_users(s, user)
+    all_clients = s.scalars(select(Client).order_by(Client.archived, func.lower(Client.name))).all()
+    rows = _admin_users(s, user, all_clients)
     profiles = s.scalars(select(Profile).order_by(Profile.id)).all()
-    clients = {c.id: c.name for c in s.scalars(select(Client)).all()}
+    clients = {c.id: c.name for c in all_clients}
     jobs = s.scalars(select(Job).order_by(Job.id.desc()).limit(20)).all()
     titles = dict(s.execute(select(Task.id, Task.title).where(Task.id.in_({j.task_id for j in jobs} or {0}))).all())
     active_admins = sum(1 for r in rows if r["u"].role == "admin" and r["u"].active)
-    return {"user": user, "rows": rows, "profiles": profiles, "clients": clients, "jobs": jobs, "job_titles": titles,
+    employees = [{"id": r["u"].id, "name": r["u"].name, "email": r["u"].email, "active": r["u"].active}
+                 for r in rows if r["u"].role != "admin" and r["status"]["key"] != "legacy"]
+    return {"user": user, "rows": rows, "profiles": profiles, "clients": clients, "jobs": jobs,
+            "client_rows": _admin_clients(s, all_clients, rows), "all_clients": all_clients, "employees": employees, "job_titles": titles,
             "retention": S.retention_days(s), "retention_min": S.RETENTION_MIN, "retention_max": S.RETENTION_MAX,
             "zoho_enabled": settings.zoho_enabled, "allowed_domains": settings.zoho_allowed_domains,
             "boot_admins": settings.zoho_admin_emails, "active_admins": active_admins, "ROLE_LABEL": ROLE_LABEL,
@@ -916,6 +963,8 @@ def admin_page(request: Request, partial: str = ""):
         ctx = _admin_ctx(s, user)
     if partial == "users":
         return templates.TemplateResponse(request, "partials/admin_users.html", ctx)
+    if partial == "clients":
+        return templates.TemplateResponse(request, "partials/admin_clients.html", ctx)
     return templates.TemplateResponse(request, "admin.html", ctx)
 
 
@@ -928,7 +977,8 @@ async def api_admin_grant(request: Request):
     admin = require_admin(request)
     body = await request.json()
     with Session() as s:
-        u, how = S.grant_access(s, admin, str(body.get("email") or ""), str(body.get("name") or ""), str(body.get("role") or "employee"))
+        u, how = S.grant_access(s, admin, str(body.get("email") or ""), str(body.get("name") or ""), str(body.get("role") or "employee"),
+                                body.get("client_ids"))
         s.commit()
         return {"ok": True, "user": _user_json(u), "result": how,
                 "message": ("Access restored for " if how == "restored" else "Access granted to ") + u.email + ". No email was sent."}
@@ -946,9 +996,51 @@ async def api_admin_update_user(request: Request, uid: int):
         raise S.UserError("Access must be true or false")
     with Session() as s:
         u, changes = S.update_user_access(s, admin, uid, role, active)
+        if body.get("client_ids") is not None:
+            changes += S.set_user_clients(s, admin, u, body.get("client_ids"))
         s.commit()
         return {"ok": True, "user": _user_json(u), "changes": changes,
                 "message": (u.email + ": " + ", ".join(changes)) if changes else "No changes"}
+
+
+@app.delete("/api/admin/users/{uid}")
+def api_admin_delete_user(request: Request, uid: int):
+    admin = require_admin(request)
+    with Session() as s:
+        email, moved = S.delete_user(s, admin, uid)
+        s.commit()
+    msg = f"{email} was deleted."
+    if moved:
+        msg += f" Their {moved} task{'s' if moved != 1 else ''} now belong{'s' if moved == 1 else ''} to you."
+    return {"ok": True, "moved": moved, "message": msg}
+
+
+def _client_json(c):
+    return {"id": c.id, "name": c.name, "short": c.short, "archived": c.archived}
+
+
+@app.post("/api/admin/clients")
+async def api_admin_create_client(request: Request):
+    admin = require_admin(request)
+    body = await request.json()
+    with Session() as s:
+        c = S.create_client(s, admin, body.get("name"), body.get("short") or "", body.get("user_ids"))
+        s.commit()
+        return {"ok": True, "client": _client_json(c), "message": f"Client added: {c.name}. Its reporting rules start from the generic rules."}
+
+
+@app.patch("/api/admin/clients/{cid}")
+async def api_admin_update_client(request: Request, cid: int):
+    admin = require_admin(request)
+    body = await request.json()
+    archived = body.get("archived")
+    if archived is not None and not isinstance(archived, bool):
+        raise S.UserError("Archived must be true or false")
+    with Session() as s:
+        c, changes = S.update_client(s, admin, cid, body.get("name"), body.get("short"), archived, body.get("user_ids"))
+        s.commit()
+        return {"ok": True, "client": _client_json(c), "changes": changes,
+                "message": (c.name + ": " + ", ".join(changes)) if changes else "No changes"}
 
 
 @app.put("/api/admin/retention")

@@ -1,0 +1,19 @@
+{% from "partials/ui.html" import icon, avatar %}
+{% if client_rows %}
+<div class="tbl-wrap">
+<table class="tbl cl-tbl">
+  <caption class="sr">Clients</caption>
+  <thead><tr><th scope="col">Client</th><th scope="col">Employees with access</th><th scope="col">Tasks</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+  <tbody>
+  {% for r in client_rows %}{% set c = r.c %}
+  <tr data-cl-row="{{ c.id }}"{% if c.archived %} class="is-archived"{% endif %}>
+    <td data-label="Client"><b>{{ c.name }}</b>{% if c.short %} <span class="tag">{{ c.short }}</span>{% endif %}{% if c.archived %} <span class="tag tag-warn">Archived</span>{% endif %}</td>
+    <td data-label="Employees with access">{% if r.people %}<span class="cl-people">{% for u in r.people %}<span class="cl-person{% if not u.active %} muted{% endif %}">{{ u.name }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</span>{% else %}<span class="muted small">Admins only</span>{% endif %}</td>
+    <td data-label="Tasks">{{ r.tasks }}</td>
+    <td class="c-act"><button type="button" class="btn btn-sm" data-client='{"id": {{ c.id }}, "name": {{ c.name|tojson|forceescape }}, "short": {{ c.short|tojson|forceescape }}, "archived": {{ 'true' if c.archived else 'false' }}, "users": {{ r.people|map(attribute='id')|list|tojson }}, "tasks": {{ r.tasks }}}'>Edit<span class="sr"> {{ c.name }}</span></button></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No clients yet. Add the first client to start creating reports.</p>{% endif %}

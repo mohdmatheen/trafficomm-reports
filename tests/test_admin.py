@@ -64,7 +64,7 @@ def test_admin_page_content_and_honest_sign_in_status(app, mp):
         s.commit()
     boss.post("/api/admin/users", headers=H, json={"email": "never.signed@trafficomm.com", "name": "Never Signed"})
     page = boss.get("/admin").text
-    for text in ("Workspace administration", "Manage access, reporting rules and workspace operations.", "Zoho-only sign-in",
+    for text in ("Workspace administration", "Manage access, clients, reporting rules and workspace operations.", "Zoho-only sign-in",
                  "Users &amp; access", "Data retention", "Recent jobs", "Client reporting rules", "You", "Legacy account", "Save policy", "Review cleanup"):
         assert text in page, text
     assert 'type="password"' not in page and "Reset password" not in page
