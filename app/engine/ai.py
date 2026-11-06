@@ -395,10 +395,14 @@ def structure_fingerprint(raw_files: list, deck_file, template_file, deliverable
                       for f in raw_files for s in f["inspection"].get("sheets", []) if s.get("is_data_sheet")})
     parts.append(("raw", layouts))
     desc.append("raw export layouts: " + ", ".join(sorted({p for p, _ in layouts})))
-    if deck_file and deck_file["inspection"].get("deck"):
-        d = deck_file["inspection"]["deck"]
-        parts.append(("deck", [(sl.get("classification"), sorted({m for t in sl.get("tables", []) for m in (t.get("metric_cols") or {}).values()}))
-                               for sl in d.get("slides", [])]))
+    decks = deck_file if isinstance(deck_file, list) else ([deck_file] if deck_file else [])
+    for n, df in enumerate(decks):
+        if not df["inspection"].get("deck"):
+            continue
+        d = df["inspection"]["deck"]
+        # the first deck keeps the original part name so single-deck fingerprints stay unchanged
+        parts.append(("deck" if n == 0 else f"deck{n + 1}", [(sl.get("classification"), sorted({m for t in sl.get("tables", []) for m in (t.get("metric_cols") or {}).values()}))
+                                                             for sl in d.get("slides", [])]))
         desc.append(f"deck structure ({d.get('slide_count')} slides)")
     if template_file:
         parts.append(("template", [s.get("name") for s in template_file["inspection"].get("sheets", [])]))

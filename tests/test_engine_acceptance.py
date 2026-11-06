@@ -270,3 +270,32 @@ def test_instructions_inside_files_are_not_followed(tmp_path):
     r = run([(str(p), "raw")], answers={"conversion_metric": "none"})
     assert r["summary"]["totals"]["spend"] == pytest.approx(11750.75)
     assert r["plan"].get("click_metric") in (None, "link_clicks")
+
+
+# --- several client decks in one task ---------------------------------------------------------
+def test_multiple_client_decks_each_updated(tmp_path):
+    import shutil
+    second = tmp_path / "acme_regional_deck.pptx"
+    shutil.copy(fx("acme_client_deck.pptx"), second)
+    files = [(fx("meta_acme_sept.csv"), "raw"), (fx("meta_acme_aug.csv"), "raw"),
+             (fx("acme_client_deck.pptx"), "client_deck"), (str(second), "client_deck")]
+    res = run(files, deliverables=("excel", "deck_update"), answers={"conversion_metric": "leads_meta_form"},
+              comparison=("2026-08-01", "2026-08-31"), workdir=str(tmp_path / "wd"))
+    assert res["status"] == "ready_for_review"
+    decks = [a for a in res["artifacts"] if a["kind"].startswith("deck_update")]
+    assert [a["kind"] for a in decks] == ["deck_update", "deck_update_2"]
+    assert len({a["path"] for a in decks}) == 2
+    assert "acme_regional_deck" in decks[1]["label"] and "acme_regional_deck" in os.path.basename(decks[1]["path"])
+    for a in decks:  # every uploaded deck gets the same figures
+        tbl = next(sh for sh in Presentation(a["path"]).slides[1].shapes if sh.has_table).table
+        assert tbl.cell(1, 1).text == "820,000" and tbl.cell(1, 5).text == "AED 4,200.50"
+    deck_checks = [c for c in res["validation"]["checks"] if c["id"] == "deck"]
+    assert len(deck_checks) == 2 and all(c["status"] == "pass" for c in deck_checks)
+    assert res["extra_decks"][0]["name"] == "acme_regional_deck.pptx" and res["extra_decks"][0]["slide_map"]
+    assert {p["artifact_kind"] for p in res["previews"]} >= {"deck_update", "deck_update_2"}
+
+
+def test_single_deck_keeps_original_naming(full):
+    a = next(a for a in full["artifacts"] if a["kind"] == "deck_update")
+    assert a["label"] == "Updated client PowerPoint" and a["path"].endswith("_client_deck.pptx")
+    assert full["extra_decks"] == [] and "name" not in full["deck"]

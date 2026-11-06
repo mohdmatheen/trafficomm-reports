@@ -66,7 +66,8 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
         if not f.get("inspection"):
             f["inspection"] = inspect_file(f["path"], f["name"], inp.profile)
     raw = [f for f in inp.files if f["role"] == "raw" and not f.get("excluded")]
-    deck_file = next((f for f in inp.files if f["role"] == "client_deck"), None)
+    deck_files = [f for f in inp.files if f["role"] == "client_deck"]
+    deck_file = deck_files[0] if deck_files else None
     template_file = next((f for f in inp.files if f["role"] == "template"), None)
     shots = [f for f in inp.files if f["role"] in ("screenshots", "creatives") and not f.get("excluded") and f["inspection"].get("ok", True)]
     rejected = [f for f in inp.files if not f["inspection"].get("ok", True)]
@@ -83,7 +84,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     headers = sorted({c["original"] for f in raw for s in f["inspection"].get("sheets", []) for c in s.get("columns", [])})
     # hybrid routing: repeat reports on a known structure use built-in rules; new ones get Claude
     rule_plan = AI.RuleProvider().interpret_instructions(t.get("instructions") or "", t.get("deliverables") or [], headers).model_dump()
-    fp, fp_desc = AI.structure_fingerprint(raw, deck_file, template_file, t.get("deliverables"), t.get("instructions") or "", rule_plan)
+    fp, fp_desc = AI.structure_fingerprint(raw, deck_files, template_file, t.get("deliverables"), t.get("instructions") or "", rule_plan)
     known = list(inp.profile.get("known_structures") or [])
     if fp in known:
         mode = (False, "Repeat report on a known structure (data update) - built-in rules")
@@ -169,16 +170,24 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
                          "comparison": calc.comparison and {"deltas": calc.comparison["deltas"], "previous": {k: v for k, v in calc.comparison["previous"].items() if not str(k).startswith("_") and not isinstance(v, list)}}}
 
     # deck slide matching may raise its own clarification questions before generating
-    updater = None
-    if "deck_update" in deliverables and deck_file:
-        updater = DeckUpdater(deck_file["path"], calc, norm.period, inp.profile, inp.answers,
-                              {"screenshots": [{"path": f["path"], "name": f["name"]} for f in shots],
-                               "add_missing_slides": plan.get("add_missing_slides", False)})
-        updater.match_slides()
-        if any(q["blocking"] for q in updater.questions):
+    # one updated deck per uploaded client PowerPoint; the first keeps the original kind/keys
+    updaters: list[tuple[str, dict, DeckUpdater]] = []
+    if "deck_update" in deliverables and deck_files:
+        multi = len(deck_files) > 1
+        for i, df in enumerate(deck_files):
+            kind = "deck_update" if i == 0 else f"deck_update_{i + 1}"
+            up = DeckUpdater(df["path"], calc, norm.period, inp.profile, inp.answers,
+                             {"screenshots": [{"path": f["path"], "name": f["name"]} for f in shots],
+                              "add_missing_slides": plan.get("add_missing_slides", False),
+                              "question_prefix": "" if i == 0 else f"deck{i + 1}:",
+                              "deck_name": df["name"] if multi else None})
+            up.match_slides()
+            updaters.append((kind, df, up))
+        deck_qs = [q for _, _, up in updaters for q in up.questions]
+        if any(q["blocking"] for q in deck_qs):
             stage("awaiting_clarification", "Deck slides need confirmation")
             result["status"] = "awaiting_clarification"
-            result["questions"] = updater.questions
+            result["questions"] = deck_qs
             return result
     check_cancel()
 
@@ -228,14 +237,29 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
             excel_info = {"path": path, "written": written}
             artifacts.append({"kind": "excel_consolidated", "path": path, "label": "Consolidated Excel report", "fingerprint": fp, "reused_from": reused})
     check_cancel()
-    if updater:
-        path = os.path.join(out_dir, f"{base}_client_deck.pptx")
-        res = updater.run(path)
+    extra_decks: list[dict] = []
+    used_names: set[str] = set()
+    for i, (kind, df, up) in enumerate(updaters):
+        if len(updaters) == 1:
+            path = os.path.join(out_dir, f"{base}_client_deck.pptx")
+            label = "Updated client PowerPoint"
+        else:
+            stem = _safe(os.path.splitext(df["name"])[0]) or f"deck{i + 1}"
+            if stem in used_names:
+                stem = f"{stem}_{i + 1}"
+            used_names.add(stem)
+            path = os.path.join(out_dir, f"{base}_{stem}_updated.pptx")
+            label = f"Updated client PowerPoint ({df['name']})"
+        res = up.run(path)
         for sl in sorted({int(x) for x in plan.get("remove_slides", [])}, reverse=True):
             _delete_slide(path, sl, res)
-        upd_info = {**res, "path": path, "na": updater.na}
-        fpd = _fp(calc_fp, "deck", plan.get("remove_slides"), deck_file["inspection"]["sha256"], sorted(f["inspection"]["sha256"] for f in shots))
-        artifacts.append({"kind": "deck_update", "path": path, "label": "Updated client PowerPoint", "fingerprint": fpd, "reused_from": reuse("deck_update", fpd, path)})
+        info = {**res, "path": path, "na": up.na, "kind": kind, "label": label, "name": df["name"]}
+        if i == 0:
+            upd_info = info
+        else:
+            extra_decks.append(info)
+        fpd = _fp(calc_fp, "deck", plan.get("remove_slides"), df["inspection"]["sha256"], sorted(f["inspection"]["sha256"] for f in shots))
+        artifacts.append({"kind": kind, "path": path, "label": label, "fingerprint": fpd, "reused_from": reuse(kind, fpd, path)})
     if "deck_new" in deliverables:
         path = os.path.join(out_dir, f"{base}_new_deck.pptx")
         new_info = build_new_deck(path, calc, ctx, commentary, plan)
@@ -259,12 +283,13 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
         except RenderError as e:
             render[a["label"]] = {"ok": False, "message": str(e)}
         if a["kind"].startswith("deck"):
-            if a["kind"] == "deck_update" and upd_info:
+            dinfo = next((d for d in [upd_info, *extra_decks] if d and d["kind"] == a["kind"]), None)
+            if dinfo:
                 from pptx import Presentation as _P
                 hdr_idx = {}
                 changed = {}
                 prs_ = _P(a["path"])
-                for c in upd_info["changes"]:
+                for c in dinfo["changes"]:
                     if c.get("row") is None or c.get("unchanged"):
                         continue
                     key = (c["slide"], c["shape"])
@@ -273,7 +298,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
                         hdr_idx[key] = [cc.text.replace("\u200b", "").strip() for cc in sh.table.rows[0].cells] if sh else []
                     if c["col"] in hdr_idx[key]:
                         changed[(c["slide"], c["shape"], c["row"], hdr_idx[key].index(c["col"]))] = c["old"]
-                layout += layout_checks(a["path"], None, changed)
+                layout += [dict(x, message=f"{dinfo['name']}: {x['message']}") if extra_decks else x for x in layout_checks(a["path"], None, changed)]
             else:
                 layout += layout_checks(a["path"])
     if "pdf" in deliverables:
@@ -282,19 +307,24 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
             pdfp = os.path.join(out_dir, f"{base}.pdf")
             shutil.copy(src["pdf"], pdfp)
             artifacts.append({"kind": "pdf", "path": pdfp, "label": f"PDF export of {src['label']}", "fingerprint": src["fingerprint"], "reused_from": src.get("reused_from")})
-    validation = run_validation(files=raw, norm=norm, calc=calc, excel=excel_info, deck_update=upd_info, deck_new=new_info, template=template_info,
+    validation = run_validation(files=raw, norm=norm, calc=calc, excel=excel_info, deck_update=upd_info, extra_decks=extra_decks, deck_new=new_info, template=template_info,
                                 commentary_dropped=dropped, render=render, layout_issues=layout, ctx=ctx)
     result["validation"] = validation
     result["deck"] = upd_info and {"slide_map": upd_info["slide_map"], "flags": upd_info["flags"],
                                    "changes": [c for c in upd_info["changes"] if not c.get("unchanged")][:400], "range_text": upd_info.get("range_text"),
                                    "unchanged_cells": len([c for c in upd_info["changes"] if c.get("unchanged")])}
+    result["extra_decks"] = [{"kind": d["kind"], "name": d["name"], "label": d["label"], "slide_map": d["slide_map"], "flags": d["flags"],
+                              "changes": [c for c in d["changes"] if not c.get("unchanged")][:400], "range_text": d.get("range_text"),
+                              "unchanged_cells": len([c for c in d["changes"] if c.get("unchanged")])} for d in extra_decks]
+    if extra_decks and result["deck"]:
+        result["deck"]["name"] = upd_info["name"]
     result["template"] = template_info and {k: template_info[k] for k in ("written", "unsupported", "checks", "labels", "skipped_formula_cells")}
     result["new_deck"] = new_info and {"sections": new_info["sections"], "slides": new_info["slides"]}
     rec_json = os.path.join(rec_dir, "mapping_calculation_validation.json")
     with open(rec_json, "w") as fh:
         json.dump({"plan": plan, "answers": inp.answers, "mapping": result["mapping"], "exclusions": result["exclusions"],
                    "assumptions": result["assumptions"], "summary": result["summary"], "validation": validation,
-                   "commentary": commentary, "deck": result["deck"]}, fh, default=str, indent=1)
+                   "commentary": commentary, "deck": result["deck"], "extra_decks": result["extra_decks"]}, fh, default=str, indent=1)
     artifacts.append({"kind": "record", "path": ds_path, "label": "Normalised dataset (CSV, with provenance and exclusions)", "fingerprint": calc_fp, "reused_from": None})
     artifacts.append({"kind": "record", "path": rec_json, "label": "Mappings, calculations and validation record (JSON)", "fingerprint": calc_fp, "reused_from": None})
     result["artifacts"] = [{k: v for k, v in a.items() if k != "pdf"} for a in artifacts]

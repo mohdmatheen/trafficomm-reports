@@ -84,6 +84,8 @@ class DeckUpdater:
         self.deck_cfg = self.profile.get("deck") or {}
         self.answers = answers or {}
         self.options = options or {}
+        self.qprefix = self.options.get("question_prefix") or ""  # keeps answers separate when several decks are updated
+        self.deck_name = self.options.get("deck_name")
         self.na = self.deck_cfg.get("na_text", "-")
         self.changes: list[dict] = []
         self.flags: list[dict] = []
@@ -143,7 +145,7 @@ class DeckUpdater:
         used: set[int] = set()
         # employee answers first
         for s in slides:
-            a = self.answers.get(f"deckslide:{s['index']}")
+            a = self.answers.get(f"{self.qprefix}deckslide:{s['index']}")
             if a:
                 if a == "skip":
                     assigned[s["index"]] = None
@@ -201,8 +203,8 @@ class DeckUpdater:
                 continue
             default = self._closest_by_old_values(s, c)
             self.questions.append({
-                "key": f"deckslide:{i}",
-                "text": f"Slide {i} '{s['title']}' matches more than one creative in the data. Which one should it show?",
+                "key": f"{self.qprefix}deckslide:{i}",
+                "text": (f"{self.deck_name}: " if self.deck_name else "") + f"Slide {i} '{s['title']}' matches more than one creative in the data. Which one should it show?",
                 "options": [{"value": f"{e['brand']}|{e['objective']}|{e['name']}", "label": f"{e['brand'] or ''} – {e['objective'] or ''} – {e['name']}"} for e in c] + [{"value": "skip", "label": "Leave this slide unchanged"}],
                 "default": f"{default['brand']}|{default['objective']}|{default['name']}" if default else None,
                 "blocking": True, "context": "Suggested option is the one whose figures are closest to those currently on the slide."})

@@ -140,14 +140,14 @@
             </div>
             <ul class="filelist" aria-live="polite"></ul>
           </div>
-          <div class="dropzone" data-role="client_deck" data-accept=".pptx" id="zone-deck">
-            <input type="file" accept=".pptx" class="sr" tabindex="-1" aria-hidden="true">
+          <div class="dropzone" data-role="client_deck" data-accept=".pptx" data-multiple="1" id="zone-deck">
+            <input type="file" multiple accept=".pptx" class="sr" tabindex="-1" aria-hidden="true">
             <div class="dz-main">
               <span class="dz-ic">{{ icon('present') }}</span>
               <div class="dz-txt">
-                <div class="dz-title"><b>Client PowerPoint</b><span class="tag-opt" id="deckTag">Optional</span></div>
-                <div class="dz-hint"><button type="button" class="dz-pick">Upload existing deck</button></div>
-                <div class="dz-meta">PPTX · required for an updated deck</div>
+                <div class="dz-title"><b>Client PowerPoints</b><span class="tag-opt" id="deckTag">Optional</span></div>
+                <div class="dz-hint"><button type="button" class="dz-pick">Upload existing decks</button></div>
+                <div class="dz-meta">PPTX · Multiple files · one updated deck per file</div>
               </div>
             </div>
             <p class="f-err" id="err-deck" hidden></p>

@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 
 from sqlalchemy import select
@@ -180,7 +181,9 @@ def _save_answer_to_profile(s, task, q: Question, val: str):
     elif q.key.startswith("clicks_def:"):
         st.setdefault("clicks_definitions", {})[q.key.split(":", 1)[1]] = val
     elif q.key.startswith("deckslide:"):
-        st.setdefault("deck_slide_answers", {})[q.text.split("'")[1] + "|" + q.key.split(":")[1]] = val
+        m = re.search(r"Slide \d+ '(.*)' matches", q.text)
+        title = m.group(1) if m else q.text.split("'")[1]
+        st.setdefault("deck_slide_answers", {})[title + "|" + q.key.split(":")[1]] = val
     p.settings = st
 
 
