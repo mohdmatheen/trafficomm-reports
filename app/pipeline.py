@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import logging
 import shutil
 from dataclasses import dataclass, field
 
@@ -22,6 +23,8 @@ from .engine.pptx_update import DeckUpdater
 from .engine.render import RenderError, layout_checks, pdf_to_pngs, to_pdf
 from .engine.template_fill import fill_template
 from .engine.validate import run_validation
+
+log = logging.getLogger("trafficomm.pipeline")
 
 
 class Cancelled(Exception):
@@ -162,7 +165,8 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     period_label = FM.month_label(t.get("period_start") or ds, t.get("period_end") or de, long=True)
     ctx = {"title": t.get("title") or "Performance report", "client": t.get("client") or "", "brand": t.get("brand") or None,
            "period_label": period_label, "data_window": FM.range_label(ds, de, style), "currency": currency,
-           "commentary_enabled": plan.get("include_commentary", True) and not plan.get("template_only")}
+           "commentary_enabled": plan.get("include_commentary", True) and not plan.get("template_only"),
+           "period_start": t.get("period_start"), "period_end": t.get("period_end"), "data_start": ds, "data_end": de}
     result["summary"] = {"totals": {k: v for k, v in calc.totals.items() if not k.startswith("_") and v is not None and not isinstance(v, list)},
                          "currency": currency, "period_label": period_label, "data_window": ctx["data_window"], "included_rows": calc.included_rows,
                          "click_metric": calc.click_metric_label, "conversion": calc.conversion_label, "definitions": calc.definitions,
@@ -227,8 +231,20 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
         if template_file:
             path = os.path.join(out_dir, f"{base}.xlsx")
             fp = _fp(calc_fp, "template", template_file["inspection"]["sha256"])
-            template_info = fill_template(template_file["path"], path, calc, ctx, os.path.join(inp.workdir, "tmp"))
-            artifacts.append({"kind": "excel", "path": path, "label": "Populated Excel template", "fingerprint": fp, "reused_from": None})
+            try:
+                template_info = fill_template(template_file["path"], path, calc, ctx, os.path.join(inp.workdir, "tmp"))
+            except Exception as e:  # noqa: BLE001 - an unusual template must not cost the employee the whole report
+                log.exception("template fill failed")
+                template_info = {"error": f"{type(e).__name__}: {e}", "written": [], "unsupported": [], "checks": [],
+                                 "skipped_formula_cells": 0, "notes": [], "labels": []}
+                result.setdefault("warnings", []).append(
+                    f"The Excel template '{template_file['name']}' could not be filled ({type(e).__name__}: {e}). "
+                    "The consolidated Excel report was still produced; please fill the template manually or send it to an admin.")
+                if os.path.exists(path):
+                    os.remove(path)
+            else:
+                artifacts.append({"kind": "excel", "path": path, "label": "Populated Excel template", "fingerprint": fp, "reused_from": None})
+                result.setdefault("warnings", []).extend(template_info.get("notes", []))
         if not template_file or not plan.get("template_only"):
             path = os.path.join(out_dir, f"{base}{'_consolidated' if template_file else ''}.xlsx")
             fp = _fp(calc_fp, "excel", plan.get("split_tabs_by"), plan.get("breakdowns"), plan.get("include_commentary"), plan.get("short_summary"), commentary)
@@ -318,7 +334,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
                               "unchanged_cells": len([c for c in d["changes"] if c.get("unchanged")])} for d in extra_decks]
     if extra_decks and result["deck"]:
         result["deck"]["name"] = upd_info["name"]
-    result["template"] = template_info and {k: template_info[k] for k in ("written", "unsupported", "checks", "labels", "skipped_formula_cells")}
+    result["template"] = template_info and {k: template_info.get(k) for k in ("written", "unsupported", "checks", "labels", "skipped_formula_cells", "notes", "error")}
     result["new_deck"] = new_info and {"sections": new_info["sections"], "slides": new_info["slides"]}
     rec_json = os.path.join(rec_dir, "mapping_calculation_validation.json")
     with open(rec_json, "w") as fh:

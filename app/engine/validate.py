@@ -184,7 +184,7 @@ def run_validation(*, files: list[dict], norm, calc, excel: dict | None, deck_up
         det.append(f"CPA uses {calc.conversion_label} only; other conversion types are reported separately")
     else:
         det.append("No conversion metric selected - CPA not calculated")
-    det.append("Reach/unique metrics are not summed above ad level")
+    det.append("Reach is summed across campaigns (agency rule); unique link clicks are not summed")
     checks.append(_chk("compatibility", "Metric compatibility", status, "Metric definitions checked per platform", det))
     # 6 reconciliation to source (independent re-read)
     rec_det, rec_fail = [], False
@@ -289,12 +289,16 @@ def run_validation(*, files: list[dict], norm, calc, excel: dict | None, deck_up
         except Exception as e:  # noqa: BLE001
             checks.append(_chk("excel", "Excel output read-back", "fail", f"Workbook could not be reopened: {type(e).__name__}: {e}"))
     # 9 template
-    if template:
+    if template and template.get("error"):
+        checks.append(_chk("template", "Excel template population", "warn",
+                           "The Excel template could not be filled; the consolidated Excel report was produced instead",
+                           [f"Error: {template['error']}"]))
+    elif template:
         tchk = template.get("checks") or []
         st = "not_run" if any(c["status"] == "not_run" for c in tchk) else ("fail" if any(c["status"] == "fail" for c in tchk) else "pass")
         det = [c["message"] for c in tchk] + [f"Unsupported template feature: {u}" for u in template.get("unsupported", [])] + \
               [f"Populated {w['sheet']} from row {w['header_row'] + 1}: {w['rows']} rows ({', '.join(w['dims'])})" for w in template.get("written", [])] + \
-              [f"Formula cells left untouched: {template.get('skipped_formula_cells', 0)}"]
+              [f"Formula cells left untouched: {template.get('skipped_formula_cells', 0)}"] + list(template.get("notes", []))
         if not template.get("written"):
             st = "fail"
             det.insert(0, "No input table matching the data could be found in the template")

@@ -102,13 +102,13 @@ def test_missing_columns_reported_not_zero():
     assert any("no impressions column" in w for w in r["warnings"])
 
 
-# --- non-additive reach ------------------------------------------------------------------------
-def test_reach_never_summed(multi):
+# --- reach (agency rule: summed across campaigns, like the agency's own sheets) ---------------------
+def test_reach_summed_across_rows(multi):
     t = multi["summary"]["totals"]
-    assert t.get("reach") is None
     assert not any(k.startswith("results__reach") for k in t)  # Meta 'Results' = reach is not carried as a metric
     meta = next(r for r in multi["summary"]["tables"]["platform"]["rows"] if r["platform"] == "meta")
-    assert meta["reach"] is None  # 5 ads: reach cannot be added up
+    assert meta["reach"] == pytest.approx(940000)  # sum of the 5 Meta rows' reach
+    assert t["reach"] >= meta["reach"]
 
 
 # --- conflicting currencies -------------------------------------------------------------------

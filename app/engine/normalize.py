@@ -447,6 +447,7 @@ def _overlap_step(df: pd.DataFrame, files, answers, res: NormResult) -> pd.DataF
         groups[k].append((idx, fid))
     conflicts = defaultdict(lambda: {"rows": 0, "idx": []})
     dup_pairs = defaultdict(int)
+    merged_pairs = defaultdict(int)
     for k, items in groups.items():
         fids = {fid for _, fid in items}
         if len(fids) < 2:
@@ -460,6 +461,16 @@ def _overlap_step(df: pd.DataFrame, files, answers, res: NormResult) -> pd.DataF
             b = df.loc[idx, metrics]
             same = all((pd.isna(x) and pd.isna(y)) or (not pd.isna(x) and not pd.isna(y) and abs(float(x) - float(y)) < 1e-9) for x, y in zip(a, b))
             fa, fb = df.loc[keep_idx, "_file"], df.loc[idx, "_file"]
+            shared = [(x, y) for x, y in zip(a, b) if not pd.isna(x) and not pd.isna(y)]
+            extra = [m for m, x, y in zip(metrics, a, b) if pd.isna(x) and not pd.isna(y)]
+            if not same and shared and extra and all(abs(float(x) - float(y)) < 1e-9 for x, y in shared):
+                # complementary exports (e.g. TikTok campaign report + a second export with 2-second views):
+                # same rows, identical shared figures, different columns -> combine columns, count the row once
+                for m in extra:
+                    df.loc[keep_idx, m] = df.loc[idx, m]
+                df.loc[idx, "_excluded"] = f"Merged into {fa} row {df.loc[keep_idx, '_row']} (same identifiers and figures; added {', '.join(extra)})"
+                merged_pairs[(fa, fb)] += 1
+                continue
             if same:
                 df.loc[idx, "_excluded"] = f"Duplicate of {fa} row {df.loc[keep_idx, '_row']} (same identifiers, dates and figures)"
                 dup_pairs[(fa, fb)] += 1
@@ -468,6 +479,9 @@ def _overlap_step(df: pd.DataFrame, files, answers, res: NormResult) -> pd.DataF
                 conflicts[(fa, fb)]["idx"].append((keep_idx, idx))
     for (fa, fb), n in dup_pairs.items():
         res.overlaps.append({"type": "duplicate_rows", "files": [fa, fb], "rows": n})
+    for (fa, fb), n in merged_pairs.items():
+        res.overlaps.append({"type": "complementary_rows", "files": [fa, fb], "rows": n})
+        res.assumptions.append(f"{n} rows in '{fb}' match '{fa}' on every shared figure and only add columns; they were combined into one row each (not double counted)")
     for (fa, fb), c in conflicts.items():
         key = f"overlap:{_slug(fa)}|{_slug(fb)}"
         ans = answers.get(key)
@@ -554,6 +568,10 @@ def _period_step(df: pd.DataFrame, task, answers, res: NormResult) -> pd.DataFra
     cur = df[(df["_period"] == "current") & df["_excluded"].isna()]
     cov_min = cur["_row_start"].dropna().min() if len(cur) else None
     cov_max = cur["_row_end"].dropna().max() if len(cur) else None
+    if cov_min is not None and pd.isna(cov_min):  # no dated rows at all (e.g. exports without a date column)
+        cov_min = None
+    if cov_max is not None and pd.isna(cov_max):
+        cov_max = None
     res.period = {"start": ps, "end": pe, "comparison_start": cs, "comparison_end": ce,
                   "data_start": cov_min, "data_end": cov_max}
     if cov_min and ps and (cov_min > ps or cov_max < pe):

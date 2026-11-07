@@ -123,7 +123,7 @@ SYNONYMS: list[tuple[str, str, str | None]] = [
     (r"^result indicator$", "result_indicator", "meta"),
     (r"^(amount spent|spend|cost|total cost|amount spent \(.*\))$", "spend", None),
     (r"^(impressions|paid impressions|impr\.?)$", "impressions", None),
-    (r"^reach$", "reach", None),
+    (r"^(paid )?reach$", "reach", None),
     (r"^frequency$", "frequency", None),
     (r"^link clicks$", "link_clicks", "meta"),
     (r"^clicks \(destination\)$", "link_clicks", "tiktok"),
