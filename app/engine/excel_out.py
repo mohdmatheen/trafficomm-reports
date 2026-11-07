@@ -11,6 +11,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from . import fields as F
+from . import rules as R
 from . import fmt as FM
 from .calc import METRIC_LABELS, aggregate
 
@@ -110,8 +111,6 @@ def write_table(ws, start_row, dims, metrics, rows, totals, cur, title=None, not
         ws.cell(row=r, column=1, value="Total (rates recomputed from totals)").font = BOLD
         for j, m in enumerate(metrics):
             v = totals.get(m)
-            if m in ("reach", "frequency_calc"):
-                v = None
             c = _write_val(ws, r, len(dims) + j + 1, m, v, cur)
             c.font = BOLD
         for col in range(1, len(labels) + 1):
@@ -143,7 +142,7 @@ def build_excel(path: str, calc, norm, ctx: dict, commentary: list[dict] | None,
     written = {"sheets": [], "kpis": {}}
     t = calc.totals
     metrics = [m for m in calc.tables[next(iter(calc.tables))].metrics] if calc.tables else []
-    agg_metrics = [m for m in metrics if m not in ("reach", "frequency_calc")]
+    agg_metrics = list(metrics)
 
     # ---- Executive summary
     ws = wb.active
@@ -172,8 +171,9 @@ def build_excel(path: str, calc, norm, ctx: dict, commentary: list[dict] | None,
         written["kpis"][m] = t.get(m)
     r += 1
     ws.cell(row=r, column=1, value="Reach").font = BOLD
-    ws.cell(row=r, column=2, value="N/A")
-    ws.cell(row=r, column=3, value="Reach is not additive across ads/platforms; see ad-level tabs. No deduplicated reach is available from these exports.")
+    _write_val(ws, r, 2, "reach", t.get("reach"), cur)
+    ws.cell(row=r, column=3, value=R.REACH_NOTE)
+    written["kpis"]["reach"] = t.get("reach")
     if commentary:
         r += 2
         ws.cell(row=r, column=1, value="Summary commentary").font = Font(bold=True, size=12, color=RED)
@@ -197,7 +197,7 @@ def build_excel(path: str, calc, norm, ctx: dict, commentary: list[dict] | None,
         ms = metrics if (len(tb.dims) >= 2 or key in ("creative", "ad")) else agg_metrics
         if key not in ("creative", "ad") and all(r_["_rows"] > 1 for r_ in tb.rows):
             ms = agg_metrics
-        hdr, last = write_table(ws, 4, tb.dims, ms, tb.rows, t, cur, note=note or ("Reach/frequency shown only where a row is a single ad (reach is not additive)." if "reach" in ms else None))
+        hdr, last = write_table(ws, 4, tb.dims, ms, tb.rows, t, cur, note=note or (R.REACH_NOTE if "reach" in ms else None))
         ws.freeze_panes = ws.cell(row=hdr + 1, column=len(tb.dims) + 1)
         ws.auto_filter.ref = f"A{hdr}:{get_column_letter(len(tb.dims) + len(ms))}{last - (1 if len(tb.rows) > 1 else 0)}"
         _autowidth(ws)

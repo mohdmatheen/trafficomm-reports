@@ -184,7 +184,7 @@ def run_validation(*, files: list[dict], norm, calc, excel: dict | None, deck_up
         det.append(f"CPA uses {calc.conversion_label} only; other conversion types are reported separately")
     else:
         det.append("No conversion metric selected - CPA not calculated")
-    det.append("Reach/unique metrics are not summed above ad level")
+    det.append("Reach is summed across campaigns (agency rule); unique link clicks are not summed")
     checks.append(_chk("compatibility", "Metric compatibility", status, "Metric definitions checked per platform", det))
     # 6 reconciliation to source (independent re-read)
     rec_det, rec_fail = [], False

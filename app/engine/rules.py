@@ -17,6 +17,11 @@ VIEWS_LABEL = {"meta": "3-second video plays", "snapchat": "2-second video views
 CLICK_METRIC = "link_clicks"
 SNAPCHAT_SWIPE_UPS_ARE_LINK_CLICKS = True
 
+# Reach above ad level is the sum of the rows' reach (as in the agency's own sheets). Platforms do not
+# export deduplicated reach, so people reached by several campaigns are counted more than once.
+REACH_SUMMED = True
+REACH_NOTE = "Reach is summed across campaigns/ads (agency rule); people reached by more than one campaign are counted more than once."
+
 # Slides that the client fills in themselves: never touched.
 _CLIENT_PATTERNS = [
     r"update\s+to\s+kyra", r"kyra\s+to\s+update",

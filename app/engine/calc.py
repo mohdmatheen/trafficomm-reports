@@ -5,7 +5,7 @@ Rules implemented:
   explicit conversion metric, approved equivalences, single currency);
 * aggregate rates are recomputed from summed numerators/denominators over rows where BOTH are present;
 * zero denominators -> None (N/A), missing stays missing (None) and is distinct from 0;
-* reach / unique metrics are never summed: they are only reported at single-row (ad-level) scope;
+* reach is summed above ad level (agency rule, rules.REACH_SUMMED); unique link clicks are never summed;
 * full precision is retained; rounding happens only in presentation layers.
 """
 from __future__ import annotations
@@ -155,11 +155,18 @@ def aggregate(d: pd.DataFrame, dims: list[str], dynamic_fields: dict | None = No
             row["unique_link_clicks"] = _nn(g["unique_link_clicks"].iloc[0]) if "unique_link_clicks" in g else None
             row["frequency_calc"] = safe_div(row["impressions"], row["reach"])
             row["_reach_note"] = None
+        elif R.REACH_SUMMED and "reach" in g.columns and g["reach"].notna().any():
+            has = g["reach"].notna()
+            row["reach"] = float(g["reach"].sum(min_count=1))
+            imp = g.loc[has, "impressions"].sum(min_count=1) if "impressions" in g.columns else None
+            row["frequency_calc"] = safe_div(None if imp is None or pd.isna(imp) else float(imp), row["reach"])
+            row["unique_link_clicks"] = None
+            row["_reach_note"] = R.REACH_NOTE + ("" if has.all() else f" {int(has.sum())} of {len(g)} rows report reach.")
         else:
             row["reach"] = None
             row["unique_link_clicks"] = None
             row["frequency_calc"] = None
-            row["_reach_note"] = "Not additive - unique reach cannot be summed across rows"
+            row["_reach_note"] = "No reach in these exports"
         out.append(row)
     return out
 
@@ -232,8 +239,8 @@ def calculate(norm_df: pd.DataFrame, plan: dict, dynamic_fields: dict, currency:
     definitions = {r: RATE_DEFS[r][3] for r in RATE_DEFS}
     definitions["clicks"] = f"Clicks = {F.FIELDS[cm].label}" + (" (+ Snapchat Swipe Ups, approved equivalence)" if any(e[0] == "snapchat" for e in plan.get("_equivalences", [])) else "")
     definitions["conversions"] = (F.FIELDS[conv].label if conv in F.FIELDS else dynamic_fields.get(conv, conv)) if conv else "No conversion metric selected - CPA not calculated"
-    definitions["reach"] = "Reach is shown only at ad level. It is not additive and is never summed across ads, platforms or periods."
-    definitions["frequency"] = "Frequency = impressions / reach, at ad level only"
+    definitions["reach"] = R.REACH_NOTE
+    definitions["frequency"] = "Frequency = impressions / summed reach (rows that report reach)"
     facts = build_facts(totals, tables, comparison, currency)
     facts["total.included_rows"] = {"value": int(len(cur)), "metric": "rows", "scope": "Included rows", "unit": "count", "currency": None}
     for rate in ("cpa", "ctr", "vtr"):
