@@ -97,6 +97,10 @@ def prepare(df: pd.DataFrame, plan: dict, dynamic_fields: dict) -> pd.DataFrame:
         p = r.get("platform") or "unknown"
         fld = F.CLICK_METRIC_FIELDS.get(cm, {}).get(p, cm)
         v = r.get(fld) if fld and fld in d.columns else None
+        if fld is None and cm in d.columns:
+            # no native column for this platform (Snapchat/Google 'Clicks'): normalisation fills the
+            # selected definition only after the employee confirmed what the column measures
+            v = r.get(cm)
         if (v is None or (isinstance(v, float) and math.isnan(v))) and (p, "swipe_ups", cm) in eq and "swipe_ups" in d.columns:
             v = r.get("swipe_ups")
         clicks.append(_nn(v))

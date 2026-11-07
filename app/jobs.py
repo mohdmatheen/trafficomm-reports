@@ -113,7 +113,10 @@ def run_one(job: Job, worker_id: str):
             outcome = "timeout"
             break
         time.sleep(0.5)
-    out = proc.stdout.read().decode(errors="ignore")[-4000:] if proc.stdout else ""
+    out = proc.stdout.read().decode(errors="ignore")[-8000:] if proc.stdout else ""
+    if outcome not in (EXIT_OK, EXIT_CANCELLED) and out.strip():
+        # the subprocess output (traceback) goes to the worker log, so it shows up in the Render logs
+        log.warning("job %s (task %s, attempt %s) outcome=%s output:\n%s", job.id, job.task_id, job.attempts, outcome, out.strip())
     with Session() as s:
         j = s.get(Job, job.id)
         if outcome == EXIT_OK:
@@ -129,14 +132,35 @@ def run_one(job: Job, worker_id: str):
             _fail(s, j, _last_line(out) or "The files could not be processed.")
         else:
             reason = "timed out" if outcome == "timeout" else "hit an unexpected error"
+            detail = _crash_detail(out, outcome)
             if j.attempts < j.max_attempts:
                 delay = 10 * (2 ** (j.attempts - 1))
-                j.status, j.run_after, j.error = "queued", now() + dt.timedelta(seconds=delay), f"Attempt {j.attempts} {reason}"
-                s.add(StageEvent(version_id=j.version_id, stage="uploaded", detail=f"Attempt {j.attempts} {reason}; retrying in {delay}s"))
+                j.status, j.run_after, j.error = "queued", now() + dt.timedelta(seconds=delay), f"Attempt {j.attempts} {reason}" + (f": {detail}" if detail else "")
+                s.add(StageEvent(version_id=j.version_id, stage="uploaded", detail=(f"Attempt {j.attempts} {reason}; retrying in {delay}s" + (f" - {detail}" if detail else ""))[:300]))
             else:
-                _fail(s, j, f"Processing {reason} after {j.attempts} attempts. " + (_last_line(out) or ""))
+                _fail(s, j, f"Processing {reason} after {j.attempts} attempts." + (f" Technical detail: {detail}" if detail else ""))
         s.commit()
     log.info("job %s finished outcome=%s", job.id, outcome)
+
+
+def _crash_detail(out: str, outcome) -> str:
+    """The real reason a job attempt failed, for the task's diagnostics (not a generic message)."""
+    for line in reversed(out.strip().splitlines()):
+        if line.startswith("CRASH:"):
+            return line[len("CRASH:"):].strip()
+    if outcome == "timeout":
+        return f"stopped after the {settings.job_timeout}s processing time limit"
+    if isinstance(outcome, int) and outcome < 0:
+        try:
+            name = signal.Signals(-outcome).name
+        except ValueError:
+            name = f"signal {-outcome}"
+        hint = " (usually the memory limit)" if -outcome in (signal.SIGKILL, signal.SIGSEGV) else ""
+        return f"the processing subprocess was killed by {name}{hint}"
+    if isinstance(outcome, int) and outcome != EXIT_FAIL:
+        return f"the processing subprocess exited with code {outcome}"
+    lines = [ln for ln in out.strip().splitlines() if ln.strip()]
+    return lines[-1].strip()[:300] if lines else ""
 
 
 def _last_line(out: str) -> str:

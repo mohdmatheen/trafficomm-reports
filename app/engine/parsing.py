@@ -154,11 +154,20 @@ def read_xlsx(path: str, include_formulas: bool = False) -> list[RawSheet]:
     for ws in wb.worksheets:
         rows = []
         truncated = False
+        # Some exporters (e.g. TikTok Ads Manager) write a wrong <dimension ref="A1"/>; read-only mode trusts it
+        # and would return only cell A1, silently dropping the whole sheet. Re-scan the real extent instead.
+        if hasattr(ws, "reset_dimensions"):
+            ws.reset_dimensions()
+        width = 0
         for i, r in enumerate(ws.iter_rows(values_only=True)):
             if i >= settings.max_rows:
                 truncated = True
                 break
             rows.append(list(r[: settings.max_cols]))
+            width = max(width, len(rows[-1]))
+        for r in rows:  # without a dimension, rows can come back ragged
+            if len(r) < width:
+                r.extend([None] * (width - len(r)))
         # trim trailing empty rows
         while rows and all(v is None or str(v).strip() == "" for v in rows[-1]):
             rows.pop()
@@ -167,6 +176,8 @@ def read_xlsx(path: str, include_formulas: bool = False) -> list[RawSheet]:
     if include_formulas:
         wbf = openpyxl.load_workbook(path, read_only=True, data_only=False)
         for s, ws in zip(sheets, wbf.worksheets):
+            if hasattr(ws, "reset_dimensions"):
+                ws.reset_dimensions()
             n = 0
             for r in ws.iter_rows(values_only=True):
                 n += sum(1 for v in r if isinstance(v, str) and v.startswith("="))
