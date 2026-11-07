@@ -455,6 +455,9 @@ textarea#f-instr{min-height:170px}
 .fitem .bar i{display:block;height:100%;background:var(--red);width:0;transition:width .2s}
 .fitem .fmeta{font-size:11.5px;color:var(--text-2);margin-top:6px}
 .fitem .fwarn{font-size:11.5px;color:var(--warn);margin:4px 0 0;padding-left:18px}
+.fitem .fname-note{margin-top:8px;padding:8px 10px;border-radius:var(--r-sm);background:var(--warn-soft);border:1px solid var(--warn-line);color:#5E3600;font-size:11.5px}
+.fitem .fname-note b{display:block;font-size:12px;margin-bottom:2px}
+.fitem .fname-note ul{margin:0;padding-left:16px}
 .fitem.err{border-color:var(--red-line);background:var(--red-soft)}
 .fitem.err .fmeta{color:#7D1714;font-weight:500}
 .page-builder #formError{grid-column:1/-1;margin:0}
@@ -613,6 +616,32 @@ blockquote{margin:8px 0;padding:8px 12px;background:var(--canvas);border-left:3p
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
 }
+/* upload guidelines */
+.guide{padding:0;overflow:hidden}
+.guide-sum{display:flex;gap:14px;align-items:flex-start;padding:20px 24px;list-style:none}
+summary.guide-sum{cursor:pointer}
+summary.guide-sum::-webkit-details-marker{display:none}
+summary.guide-sum:hover{background:var(--hover)}
+summary.guide-sum:focus-visible{outline:2px solid var(--red);outline-offset:-2px}
+.guide-head{flex:1;min-width:0}
+.guide-head h2{font-size:18px;margin:0}
+.guide-head p{color:var(--text-2);font-size:12.5px;margin-top:4px}
+.guide-tog{flex:none;margin-top:4px;color:var(--text-2);transition:transform .15s}
+.guide-d:not([open]) .guide-tog{transform:rotate(-90deg)}
+.guide-body{padding:0 24px 22px;border-top:1px solid var(--border);padding-top:18px}
+.guide h3{font-size:13.5px;margin:0 0 8px}
+.guide ul{margin:0;padding-left:18px;font-size:12.5px;line-height:1.55}
+.guide li+li{margin-top:4px}
+.guide code,.dz-meta code{font-family:var(--mono);font-size:.92em;background:var(--hover);border:1px solid var(--border);border-radius:5px;padding:0 4px;overflow-wrap:anywhere}
+.guide-name{padding:14px 16px;border-radius:var(--r);background:var(--canvas);border:1px solid var(--border);margin-bottom:18px}
+.guide-pattern{margin:0 0 8px}
+.guide-pattern code{display:inline-block;font-size:14px;padding:3px 8px;background:var(--surface);overflow-wrap:normal;max-width:100%}
+.guide-ex{list-style:none;padding:0!important;display:flex;flex-wrap:wrap;gap:6px 10px}
+.guide-ex li+li{margin-top:0}
+.guide-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px}
+.guide-rules{padding-left:22px;border-left:3px solid var(--red-line)}
+@media (max-width:1100px){.guide-grid{grid-template-columns:1fr 1fr}.guide-rules{grid-column:1/-1;padding-left:16px}}
+@media (max-width:760px){.guide-pattern code{font-size:12px;padding:2px 6px}.guide-sum{padding:16px}.guide-body{padding:16px}.guide-grid{grid-template-columns:1fr;gap:18px}}
 @media print{.sidebar,.topbar,.action-bar,.steps,.ws-nav{display:none}}
 /* keep visually-hidden text and long names inside their scroll containers */
 .tbl-wrap,.scroll-x,.ws-nav,.card{position:relative}

@@ -230,6 +230,12 @@ def logout(request: Request):
     return RedirectResponse("/login?error=signed_out", status_code=303)
 
 
+@app.get("/guidelines", response_class=HTMLResponse)
+def guidelines_page(request: Request):
+    user = require_user(request)
+    return templates.TemplateResponse(request, "guidelines.html", {"user": user, "nav": "guidelines", "crumbs": [("Upload guidelines", None)]})
+
+
 @app.get("/account", response_class=HTMLResponse)
 def account_page(request: Request):
     user = require_user(request)

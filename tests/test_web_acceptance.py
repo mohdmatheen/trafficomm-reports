@@ -438,3 +438,15 @@ def test_multiple_client_decks_end_to_end(emp, tmp_path):
     assert decks == ["deck_update", "deck_update_2"]
     ws = emp.get(f"/tasks/{tid}").text
     assert "acme_ksa_deck.pptx" in ws and "Updated client deck 2" in ws
+
+
+def test_upload_guidelines_and_name_check(emp):
+    page = emp.get("/tasks/new").text
+    assert "Before you upload" in page and "Client_Platform_Market_Period" in page and "Kyra to update" in page
+    g = emp.get("/guidelines")
+    assert g.status_code == 200 and "3-second video plays" in g.text and "USD and converted to AED" in g.text
+    tid = emp.post("/api/tasks", json={}, headers=H).json()["id"]
+    bad = emp.post(f"/api/tasks/{tid}/files", headers=H, files={"file": ("export (1).csv", open(fx("meta_acme_sept.csv"), "rb"))}, data={"role": "raw"})
+    assert bad.status_code == 200 and any("default download name" in n for n in bad.json()["name_notes"])
+    good = emp.post(f"/api/tasks/{tid}/files", headers=H, files={"file": ("ACME_Snapchat_UAE_Sep2026.csv", open(fx("snapchat_acme_sept.csv"), "rb"))}, data={"role": "raw"})
+    assert good.status_code == 200 and good.json()["name_notes"] == []
