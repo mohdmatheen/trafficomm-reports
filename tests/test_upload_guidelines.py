@@ -4,7 +4,7 @@ from app.naming import check_name, has_period, name_platforms
 
 def test_convention_names_pass():
     for n in ["BWA_Meta_UAE_Oct2026.xlsx", "BWA_TikTok_KSA_Oct2026_clicks.xlsx", "BWA_Snapchat_UAE_Sep-Oct2026.csv",
-              "ATC_Google_UAE_2026-10.csv", "meta_acme_sept.csv", "BWA FB+IG KSA October 2026.xlsx"]:
+              "ATC_Google_UAE_2026-10.csv", "BWA_Meta_UAE-KSA_Oct2026.xlsx", "meta_acme_sept.csv", "BWA FB+IG KSA October 2026.xlsx"]:
         assert check_name(n, "raw", [{"platform_key": None, "rows": 10}]) == [], n
 
 
