@@ -12,6 +12,7 @@ import shutil
 from sqlalchemy import select
 
 from .config import settings
+from .naming import check_name
 from .db import (AppSetting, Artifact, AuditLog, Client, Job, Message, Profile, Question, Session, StageEvent, Task, TaskFile,
                  TaskVersion, User, UserClient, now)
 from .engine import ai as AI
@@ -81,6 +82,7 @@ def file_summary(f: TaskFile) -> dict:
     sheets = []
     for sh in insp.get("sheets", []):
         sheets.append({"name": sh["name"], "rows": sh.get("row_count"), "platform": sh.get("platform_label") or sh.get("platform"),
+                       "platform_key": sh.get("platform"),
                        "header_row": sh.get("header_row"), "data_sheet": sh.get("is_data_sheet"),
                        "currency": (sh.get("currency") or {}).get("value"), "dates": sh.get("dates", {}),
                        "summary_blocks": len(sh.get("summary_blocks", [])), "total_rows": len(sh.get("total_rows", [])),
@@ -88,7 +90,8 @@ def file_summary(f: TaskFile) -> dict:
     deck = insp.get("deck")
     return {"id": f.id, "name": f.original_name, "size": f.size, "role": f.role, "sheets": sheets, "warnings": insp.get("warnings", []),
             "deck": deck and {"slides": deck["slide_count"], "summary": deck["summary"], "aspect": deck["aspect"], "unsupported": deck["unsupported_total"]},
-            "images": len(insp.get("images", [])) if insp.get("images") else None, "added_in_version": f.added_in_version, "excluded": f.excluded}
+            "images": len(insp.get("images", [])) if insp.get("images") else None, "added_in_version": f.added_in_version, "excluded": f.excluded,
+            "name_notes": check_name(f.original_name, f.role, sheets)}
 
 
 def _json_safe(o):

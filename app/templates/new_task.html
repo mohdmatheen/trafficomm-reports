@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "partials/ui.html" import icon %}
+{% from "partials/guidelines.html" import guidelines %}
 {% block page %}new_task{% endblock %}
 {% block title %}{% if draft %}Edit draft{% else %}Build your report{% endif %} · Trafficomm{% endblock %}
 {% block bodyattrs %}data-task-id="{{ draft.id if draft else '' }}" data-max-mb="{{ max_upload_mb }}"{% endblock %}
@@ -15,6 +16,8 @@
     <span class="save-state" id="saveState" role="status" aria-live="polite" data-state="{{ 'saved' if draft else 'idle' }}">{{ 'Saved' if draft else 'Not saved yet' }}</span>
   </div>
 </div>
+
+{{ guidelines() }}
 
 <nav class="steps" aria-label="Report sections">
   <a href="#sec-details" class="on" aria-current="true"><b>01</b><span>Report details</span></a>
@@ -122,6 +125,7 @@
               <div class="dz-title"><b>Raw reports</b><span class="req">Required</span></div>
               <div class="dz-hint">Drop files here or <button type="button" class="dz-pick">browse files</button></div>
               <div class="dz-meta">CSV, XLSX · Multiple files · Meta, TikTok, Snapchat, Google, LinkedIn… · up to {{ max_upload_mb }} MB each</div>
+              <div class="dz-meta">Name files <code>Client_Platform_Market_Period</code>, e.g. <code>BWA_Meta_UAE_Oct2026.xlsx</code> · <a href="#sec-guide" data-open-guide>Upload guidelines</a></div>
             </div>
           </div>
           <p class="f-err" id="err-raw" hidden></p>

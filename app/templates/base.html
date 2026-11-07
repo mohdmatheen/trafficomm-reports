@@ -25,6 +25,7 @@
     <nav class="sb-nav">
       <a href="/" class="sb-link{% if nav == 'overview' %} on{% endif %}"{% if nav == 'overview' %} aria-current="page"{% endif %}>{{ icon('home') }}<span>Overview</span></a>
       <a href="/tasks" class="sb-link{% if nav == 'tasks' %} on{% endif %}"{% if nav == 'tasks' %} aria-current="page"{% endif %}>{{ icon('layers') }}<span>Reporting tasks</span></a>
+      <a href="/guidelines" class="sb-link{% if nav == 'guidelines' %} on{% endif %}"{% if nav == 'guidelines' %} aria-current="page"{% endif %}>{{ icon('info') }}<span>Upload guidelines</span></a>
       {% if user.role == 'admin' %}
       <hr class="sb-sep">
       <a href="/admin" class="sb-link{% if nav in ('admin', 'usage') %} on{% endif %}"{% if nav == 'admin' %} aria-current="page"{% endif %}>{{ icon('gear') }}<span>Administration</span></a>

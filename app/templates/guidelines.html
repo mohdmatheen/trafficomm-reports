@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% from "partials/guidelines.html" import guidelines %}
+{% block page %}guidelines{% endblock %}
+{% block title %}Upload guidelines · Trafficomm{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Upload guidelines</h1><p class="page-sub">File naming and data checks for every reporting task. Shared with the whole team.</p></div>
+  <a class="btn btn-primary" href="/tasks/new">New report</a></div>
+{{ guidelines(collapsible=False) }}
+{% endblock %}

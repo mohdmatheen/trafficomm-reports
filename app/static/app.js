@@ -497,6 +497,13 @@
     // ---- uploads
     const ICON = { raw: "table", template: "table", client_deck: "present", screenshots: "image", creatives: "image" };
     const svg = (n) => '<svg class="ic" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
+    // ---- upload guidelines: open by default, remember if the employee folds them away
+    const guide = $("#guideDetails");
+    if (guide) {
+      try { if (localStorage.getItem("tc.guide.folded") === "1") guide.open = false; } catch (e) { /* storage unavailable */ }
+      guide.addEventListener("toggle", () => { try { localStorage.setItem("tc.guide.folded", guide.open ? "0" : "1"); } catch (e) { /* ignore */ } });
+      $$("[data-open-guide]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); guide.open = true; guide.scrollIntoView({ behavior: "smooth", block: "start" }); }));
+    }
     function zoneFor(role) { return $('.dropzone[data-role="' + (role === "creatives" ? "screenshots" : role) + '"]'); }
     function renderFile(li, f) {
       files.set(f.id, f); li.dataset.fid = f.id; li.className = "fitem ok";
@@ -509,7 +516,8 @@
         (opts.length > 1 ? '<label class="sr" for="role-' + f.id + '">File type for ' + esc(f.name) + '</label><select id="role-' + f.id + '">' + opts.map((r) => '<option value="' + r + '"' + (r === f.role ? " selected" : "") + ">" + ROLE_LABEL[r] + "</option>").join("") + "</select>" : "") +
         '<button type="button" class="btn btn-quiet btn-sm" data-remove>' + svg("trash") + 'Remove<span class="sr"> ' + esc(f.name) + "</span></button></div>" +
         (meta ? '<div class="fmeta">' + meta + "</div>" : "") +
-        (f.warnings && f.warnings.length ? '<ul class="fwarn">' + f.warnings.slice(0, 6).map((w) => "<li>" + esc(w) + "</li>").join("") + "</ul>" : "");
+        (f.warnings && f.warnings.length ? '<ul class="fwarn">' + f.warnings.slice(0, 6).map((w) => "<li>" + esc(w) + "</li>").join("") + "</ul>" : "") +
+        (f.name_notes && f.name_notes.length ? '<div class="fname-note" role="note"><b>Check this file</b><ul>' + f.name_notes.map((w) => "<li>" + esc(w) + "</li>").join("") + '</ul></div>' : "");
       const sel = $("select", li);
       if (sel) sel.addEventListener("change", async (e) => {
         try { const nf = await api("PATCH", "/api/files/" + f.id, { role: e.target.value }); li.remove(); const nli = document.createElement("li"); $(".filelist", zoneFor(nf.role)).appendChild(nli); renderFile(nli, nf); refresh(); toast("Moved to " + ROLE_LABEL[nf.role]); }

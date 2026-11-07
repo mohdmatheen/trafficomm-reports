@@ -1,0 +1,60 @@
+{% from "partials/ui.html" import icon %}
+{# Upload guidelines shown before a reporting task starts (New task page) and on /guidelines. #}
+{% macro guidelines(collapsible=True) %}
+<section class="card guide{% if collapsible %} guide-fold{% endif %}" id="sec-guide" aria-labelledby="h-guide">
+  {% if collapsible %}<details class="guide-d" id="guideDetails" open>
+  <summary class="guide-sum">{% else %}<div class="guide-sum">{% endif %}
+    <span class="card-ic">{{ icon('info') }}</span>
+    <div class="guide-head">
+      <h2 id="h-guide">Before you upload</h2>
+      <p>Clean, clearly named files are processed first time. Takes a minute to check.</p>
+    </div>
+  {% if collapsible %}<span class="guide-tog" aria-hidden="true">{{ icon('chevron-down') }}</span>
+  </summary>{% else %}</div>{% endif %}
+  <div class="guide-body">
+    <div class="guide-name">
+      <h3>1. Name raw reports like this</h3>
+      <p class="guide-pattern"><code>Client_Platform_Market_Period.xlsx</code></p>
+      <ul class="guide-ex">
+        <li><code>BWA_Meta_UAE_Oct2026.xlsx</code></li>
+        <li><code>BWA_TikTok_KSA_Oct2026_clicks.xlsx</code></li>
+        <li><code>BWA_Snapchat_UAE_Sep-Oct2026.csv</code></li>
+      </ul>
+      <p class="f-hint">Platform: Meta, TikTok, Snapchat, Google or LinkedIn. Period: the month (Oct2026) or range (Sep-Oct2026). If one platform needs two exports, add a short note at the end (<code>_clicks</code>, <code>_views</code>). We flag names that don’t follow this after upload.</p>
+    </div>
+    <div class="guide-grid">
+      <div>
+        <h3>2. Export the raw data</h3>
+        <ul>
+          <li>Export from the ad platform with a <b>day or month breakdown</b> covering the full reporting period (and the comparison period, if you add one).</li>
+          <li>Keep the platform’s <b>own column headers</b>. Don’t rename, merge or hide columns, and don’t add notes or extra tables inside the data.</li>
+          <li>Include spend, impressions, reach, link clicks and video plays (Meta 3-second, Snapchat and TikTok 2-second).</li>
+          <li>The <b>market comes from campaign names</b> (UAE, KSA, Dubai…). Check campaigns are named with their market.</li>
+          <li>Open each file before uploading: it should have rows, not just a total, and must not be saved with a filter on.</li>
+          <li>Upload each export <b>once</b>. Remove “(1)” or “copy” duplicates.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>3. Templates, decks and screenshots</h3>
+        <ul>
+          <li><b>Excel template:</b> upload the latest approved version. In a monthly workbook, put the month in each tab or block title (e.g. “Oct Data”) and label market blocks (UAE, KSA). Only the month your exports cover is filled; other months stay as they are.</li>
+          <li>To fill a monthly template, upload <b>one month’s exports</b> per task.</li>
+          <li><b>Client PowerPoint:</b> upload last period’s deck. One updated deck is produced per file.</li>
+          <li><b>Screenshots:</b> name them by creative name or slide number (<code>BWA-Static-EN.png</code>, <code>slide 5.png</code>).</li>
+        </ul>
+      </div>
+      <div class="guide-rules">
+        <h3>4. Applied automatically on every report</h3>
+        <ul>
+          <li>Snapchat and TikTok spend is read as <b>USD and converted to AED</b> at the rate on this form (default 3.6725), unless the export states its currency.</li>
+          <li><b>Views:</b> Meta = 3-second video plays, Snapchat = 2-second video plays, TikTok = 2-second video plays.</li>
+          <li><b>Clicks</b> are always link clicks (Snapchat swipe ups).</li>
+          <li>Slides marked “Update to Kyra”, “Kyra to update” or “to be shared by client” are <b>never changed</b>.</li>
+          <li>Screenshots are placed with a black border, and insights use professional language.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  {% if collapsible %}</details>{% endif %}
+</section>
+{% endmacro %}
