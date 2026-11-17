@@ -51,17 +51,17 @@ FIELDS: dict[str, Field] = {f.key: f for f in [
     # additive metrics
     Field("spend", "Spend", "additive", "money", "Media cost as reported by the platform"),
     Field("impressions", "Impressions", "additive", "count", "Times ads were on screen (paid impressions)"),
-    Field("link_clicks", "Link clicks", "additive", "count", "Clicks to the advertiser's destination (Meta 'Link clicks', TikTok 'Clicks (destination)')"),
+    Field("link_clicks", "Link clicks", "additive", "count", "Clicks to the advertiser's destination (Meta 'Link clicks', TikTok 'Clicks (destination)', LinkedIn 'Clicks to Landing Page', X 'Link clicks')"),
     Field("clicks_all", "Clicks (all)", "additive", "count", "All clicks including profile, likes, expands etc."),
     Field("clicks_unspecified", "Clicks (unspecified)", "additive", "count", "Export column named only 'Clicks' - definition must be confirmed"),
     Field("swipe_ups", "Swipe ups", "additive", "count", "Snapchat swipe ups to attachment"),
     Field("landing_page_views", "Landing page views", "additive", "count"),
     Field("video_plays_3s", "3-second video plays", "additive", "count", "Meta: plays of at least 3 seconds"),
-    Field("video_plays_2s", "2-second video plays", "additive", "count", "Meta: 2-second continuous plays; TikTok: 2-second video views"),
+    Field("video_plays_2s", "2-second video plays", "additive", "count", "Meta: 2-second continuous plays; TikTok: 2-second video views; LinkedIn and X: video views (2 seconds, 50% in view)"),
     Field("video_views_6s", "6-second video views", "additive", "count", "TikTok: plays of at least 6 seconds (focused view)"),
     Field("video_views_tiktok", "Video views (TikTok)", "additive", "count", "TikTok 'Video views' (plays started)"),
     Field("video_views_snap", "Video views (Snapchat)", "additive", "count", "Snapchat: views of 2s+ or swipe up"),
-    Field("views", "Views", "additive", "count", "Agency rule: Meta = 3-second video plays, Snapchat = 2-second video views"),
+    Field("views", "Views", "additive", "count", "Agency rule: Meta = 3-second video plays, Snapchat = 2-second video views, TikTok = 2-second video plays, LinkedIn and X = video views (2s, 50% in view)"),
     Field("thruplays", "ThruPlays", "additive", "count", "Meta: plays to completion or 15s"),
     Field("video_completions", "Video completions", "additive", "count", "Plays to 100%"),
     Field("results", "Results (objective-dependent)", "additive", "count", "Meta 'Results' - meaning depends on Result indicator; never summed across indicators"),
@@ -102,7 +102,7 @@ IGNORED_PATTERNS = [
 SYNONYMS: list[tuple[str, str, str | None]] = [
     (r"^reporting starts?$", "report_start", "meta"),
     (r"^reporting ends?$", "report_end", "meta"),
-    (r"^(day|date|by day|stat time day|start time|time)$", "date", None),
+    (r"^(day|date|by day|stat time day|start time|time|start date \(in utc\)|start date)$", "date", None),
     (r"^(campaign name|campaign)$", "campaign_name", None),
     (r"^campaign id$", "campaign_id", None),
     (r"^(ad set name|ad set|adset name)$", "adset_name", "meta"),
@@ -111,7 +111,7 @@ SYNONYMS: list[tuple[str, str, str | None]] = [
     (r"^(ad set id|ad group id|ad squad id)$", "adset_id", None),
     (r"^(ad name|ad)$", "ad_name", None),
     (r"^ad id$", "ad_id", None),
-    (r"^(creative|creative name)$", "creative", None),
+    (r"^(creative|creative name|tweet text|post text)$", "creative", None),
     (r"^(account name|account)$", "account", None),
     (r"^objective$", "objective", None),
     (r"^brand$", "brand", None),
@@ -121,12 +121,14 @@ SYNONYMS: list[tuple[str, str, str | None]] = [
     (r"^currency$", "currency", None),
     (r"^platform$", "platform", None),
     (r"^result indicator$", "result_indicator", "meta"),
-    (r"^(amount spent|spend|cost|total cost|amount spent \(.*\))$", "spend", None),
+    (r"^(amount spent|spend|cost|total cost|total spent|amount spent \(.*\))$", "spend", None),
     (r"^(impressions|paid impressions|impr\.?)$", "impressions", None),
-    (r"^(paid )?reach$", "reach", None),
-    (r"^frequency$", "frequency", None),
+    (r"^((paid |member )?reach|reach \(estimated\))$", "reach", None),
+    (r"^(frequency|average frequency|frequency \(estimated\))$", "frequency", None),
     (r"^link clicks$", "link_clicks", "meta"),
     (r"^clicks \(destination\)$", "link_clicks", "tiktok"),
+    (r"^(clicks to landing page|landing page clicks)$", "link_clicks", "linkedin"),
+    (r"^url clicks$", "link_clicks", "x"),
     (r"^(clicks \(all\)|all clicks)$", "clicks_all", None),
     (r"^clicks$", "clicks_unspecified", None),
     (r"^unique link clicks$", "unique_link_clicks", "meta"),
@@ -155,6 +157,11 @@ PLATFORM_SYNONYMS: dict[str, list[tuple[str, str]]] = {
     "tiktok": [(r"^video views$", "video_views_tiktok"),
                (r"^(2-second video views|2-second video plays|2 ?s(ec)? video (views|plays)|video views at 2s|video plays at 2s)$", "video_plays_2s"), (r"^clicks$", "clicks_unspecified")],
     "snapchat": [(r"^(video views|2 ?sec(ond)? video views|video views \(2s\)|2s video views|2-second video views)$", "video_views_snap"), (r"^impressions$", "impressions")],
+    # LinkedIn: "Clicks" is every click (likes, profile, "see more"); link clicks are "Clicks to Landing Page".
+    # A LinkedIn video view is 2+ continuous seconds with at least 50% of the player in view.
+    "linkedin": [(r"^clicks$", "clicks_all"), (r"^video views$", "video_plays_2s")],
+    # X: a video view is 2+ continuous seconds with at least 50% of the player in view.
+    "x": [(r"^video views$", "video_plays_2s"), (r"^clicks$", "clicks_all")],
 }
 
 _CURRENCY_RE = re.compile(r"\((?P<cur>[A-Z]{3})\)")
@@ -219,9 +226,29 @@ PLATFORM_SIGNATURES = {
                "cost", "conversions"],
     "snapchat": ["ad squad name", "swipe ups", "paid impressions", "story opens"],
     "google_ads": ["avg. cpc", "conv.", "interactions", "impr."],
+    "linkedin": ["campaign group name", "campaign group id", "total spent", "clicks to landing page", "landing page clicks",
+                 "total social actions", "total engagements", "viral impressions", "reactions", "lead forms opened",
+                 "one-click leads", "post-click conversions", "view-through conversions", "average cpm", "average cpc",
+                 "start date (in utc)", "clicks to linkedin page", "member follows", "reach (estimated)"],
+    "x": ["billed engagements", "url clicks", "tweet id", "tweet text", "post id", "post text", "media views",
+          "media engagements", "retweets", "reposts", "likes", "replies", "funding source", "result type",
+          "app clicks", "time period"],
 }
 PLATFORM_LABELS = {"meta": "Meta (Facebook & Instagram)", "tiktok": "TikTok", "snapchat": "Snapchat",
-                   "google_ads": "Google Ads", "unknown": "Unknown"}
+                   "google_ads": "Google Ads", "linkedin": "LinkedIn", "x": "X (Twitter)", "unknown": "Unknown"}
+# words in a file name or report metadata that name the platform. Short words (fb, x, ...) count only as
+# whole tokens, so "x" in "ZSP_X_Oct" names X but the x in "Max" does not.
+PLATFORM_NAME_WORDS = {"meta": ["meta", "facebook", "fb+ig", "instagram"], "tiktok": ["tiktok"],
+                       "snapchat": ["snapchat", "snap"], "google_ads": ["google ads", "adwords"],
+                       "linkedin": ["linkedin"], "x": ["twitter", "x ads", "x.com"]}
+PLATFORM_NAME_TOKENS = {"x": {"x"}}
+
+
+def _names_platform(text: str, p: str) -> bool:
+    if any(w in text for w in PLATFORM_NAME_WORDS.get(p, [])):
+        return True
+    toks = set(re.split(r"[^a-z0-9+]+", text)) - {""}
+    return bool(toks & PLATFORM_NAME_TOKENS.get(p, set()))
 
 
 def detect_platform(norm_headers: list[str], filename: str = "", meta_text: str = "") -> tuple[str, float, list[str]]:
@@ -229,13 +256,14 @@ def detect_platform(norm_headers: list[str], filename: str = "", meta_text: str 
     evidence: dict[str, list[str]] = {}
     hs = set(norm_headers)
     for p, sigs in PLATFORM_SIGNATURES.items():
-        hit = [s for s in sigs if s in hs or any(h.startswith(s) for h in hs)]
+        # short, generic signatures ("cost", "conv.") must match a whole header: LinkedIn's "Cost Type" and
+        # "Cost per Conversion" are not TikTok's "Cost"
+        hit = [s for s in sigs if s in hs or (len(s) > 5 and any(h.startswith(s) for h in hs))]
         scores[p] = len(hit)
         evidence[p] = [f"header '{s}'" for s in hit]
     fn = (filename + " " + meta_text).lower()
-    for p, words in {"meta": ["meta", "facebook", "fb+ig", "instagram"], "tiktok": ["tiktok"],
-                     "snapchat": ["snapchat", "snap"], "google_ads": ["google ads", "adwords"]}.items():
-        if any(w in fn for w in words):
+    for p in PLATFORM_NAME_WORDS:
+        if _names_platform(fn, p):
             scores[p] = scores.get(p, 0) + 2
             evidence.setdefault(p, []).append("file name/metadata mentions platform")
     best = max(scores, key=lambda k: scores[k]) if scores else "unknown"
@@ -251,8 +279,10 @@ def detect_platform(norm_headers: list[str], filename: str = "", meta_text: str 
 # For the "selected click metric" the field used per platform. Swipe ups only join
 # the destination-click group when that equivalence has been approved.
 CLICK_METRIC_FIELDS = {
-    "link_clicks": {"meta": "link_clicks", "tiktok": "link_clicks", "snapchat": None, "google_ads": None, "unknown": "link_clicks"},
-    "clicks_all": {"meta": "clicks_all", "tiktok": "clicks_all", "snapchat": None, "google_ads": "clicks_unspecified", "unknown": "clicks_all"},
+    "link_clicks": {"meta": "link_clicks", "tiktok": "link_clicks", "snapchat": None, "google_ads": None,
+                    "linkedin": "link_clicks", "x": "link_clicks", "unknown": "link_clicks"},
+    "clicks_all": {"meta": "clicks_all", "tiktok": "clicks_all", "snapchat": None, "google_ads": "clicks_unspecified",
+                   "linkedin": "clicks_all", "x": "clicks_all", "unknown": "clicks_all"},
 }
 
 EQUIVALENCE_CANDIDATES = {

@@ -21,8 +21,11 @@ PLATFORM_TOKENS = {
     "snapchat": {"snapchat", "snap", "sc"},
     "google_ads": {"google", "gads", "googleads", "adwords", "youtube", "yt", "dv360"},
     "linkedin": {"linkedin", "li"},
+    "x": {"x", "twitter"},
 }
-PLATFORM_NAMES = {"meta": "Meta", "tiktok": "TikTok", "snapchat": "Snapchat", "google_ads": "Google", "linkedin": "LinkedIn"}
+PLATFORM_NAMES = {"meta": "Meta", "tiktok": "TikTok", "snapchat": "Snapchat", "google_ads": "Google", "linkedin": "LinkedIn",
+                  "x": "X"}
+PLATFORM_LIST = "Meta, TikTok, Snapchat, Google, LinkedIn or X"
 
 _MONTHS = ("jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|"
            "september|october|november|december")
@@ -78,7 +81,7 @@ def check_name(name: str, role: str | None, sheets: list[dict] | None = None) ->
     in_name = name_platforms(name)
     detected = {s.get("platform_key") for s in (sheets or []) if s.get("platform_key") and s.get("platform_key") != "unknown"}
     if not in_name:
-        notes.append(f"The name doesn't say the platform. Add it (Meta, TikTok, Snapchat, Google, LinkedIn), e.g. {example}.")
+        notes.append(f"The name doesn't say the platform. Add it ({PLATFORM_LIST}), e.g. {example}.")
     elif detected and not (in_name & detected):
         said = ", ".join(PLATFORM_NAMES.get(p, p) for p in sorted(in_name))
         got = ", ".join(PLATFORM_NAMES.get(p, p) for p in sorted(detected))
