@@ -219,58 +219,116 @@ def match_header(raw_header: object, platform: str | None = None,
 # ---------------------------------------------------------------------------
 # Platform detection signatures
 # ---------------------------------------------------------------------------
+# Column signatures: header names that only one platform's export uses. Generic headers that several
+# platforms share ("Cost", "Conversions", "Clicks", "Impressions", "Reach") are deliberately NOT here:
+# they are what made a LinkedIn export look like TikTok and, later, a Google export look like TikTok.
+# Each entry matches a whole normalised header; entries ending in "*" also match headers that start with it.
 PLATFORM_SIGNATURES = {
-    "meta": ["reporting starts", "amount spent", "result indicator", "ad set name", "link clicks",
-             "3-second video plays", "thruplays", "attribution setting", "cost per results"],
-    "tiktok": ["ad group name", "clicks (destination)", "video views at 6s", "by day", "stat time day",
-               "cost", "conversions"],
-    "snapchat": ["ad squad name", "swipe ups", "paid impressions", "story opens"],
-    "google_ads": ["avg. cpc", "conv.", "interactions", "impr."],
+    "meta": ["reporting starts", "reporting ends", "amount spent", "result indicator", "ad set name", "ad set id",
+             "link clicks", "3-second video plays", "2-second continuous video plays", "thruplays", "attribution setting",
+             "cost per results", "cost per result", "ad set budget", "ad set delivery", "landing page views",
+             "unique link clicks", "cpc (cost per link click)", "ctr (link click-through rate)"],
+    "tiktok": ["ad group name", "ad group id", "clicks (destination)", "ctr (destination)", "cpc (destination)",
+               "video views at 6s", "video views at 2s", "2-second video views", "6-second video views", "stat time day",
+               "by day", "cost per 1,000 people reached", "average play time per video view", "average play time per user",
+               "profile visits", "paid followers", "focused views (6-second)"],
+    "snapchat": ["ad squad name", "ad squad id", "swipe ups", "swipe up rate", "paid impressions", "story opens",
+                 "paid reach", "attachment avg view time*", "screen time*", "ecpsu", "ecpm"],
+    "google_ads": ["avg. cpc", "avg. cpm", "avg. cpv", "avg. cost", "conv.", "all conv.", "conv. rate", "conv. value",
+                   "cost / conv.", "cost / all conv.", "view-through conv.", "interactions", "interaction rate",
+                   "impr.", "impr. (top) %", "impr. (abs. top) %", "search impr. share", "currency code",
+                   "bid strategy type", "campaign state", "ad group state", "keyword", "search term",
+                   "youtube views", "trueview views"],
     "linkedin": ["campaign group name", "campaign group id", "total spent", "clicks to landing page", "landing page clicks",
                  "total social actions", "total engagements", "viral impressions", "reactions", "lead forms opened",
                  "one-click leads", "post-click conversions", "view-through conversions", "average cpm", "average cpc",
-                 "start date (in utc)", "clicks to linkedin page", "member follows", "reach (estimated)"],
+                 "start date (in utc)", "clicks to linkedin page", "member follows", "reach (estimated)",
+                 "frequency (estimated)", "sponsored update*"],
     "x": ["billed engagements", "url clicks", "tweet id", "tweet text", "post id", "post text", "media views",
-          "media engagements", "retweets", "reposts", "likes", "replies", "funding source", "result type",
-          "app clicks", "time period"],
+          "media engagements", "retweets", "reposts", "likes", "replies", "funding source*", "result type",
+          "app clicks", "time period", "promoted tweet*"],
 }
 PLATFORM_LABELS = {"meta": "Meta (Facebook & Instagram)", "tiktok": "TikTok", "snapchat": "Snapchat",
                    "google_ads": "Google Ads", "linkedin": "LinkedIn", "x": "X (Twitter)", "unknown": "Unknown"}
-# words in a file name or report metadata that name the platform. Short words (fb, x, ...) count only as
-# whole tokens, so "x" in "ZSP_X_Oct" names X but the x in "Max" does not.
-PLATFORM_NAME_WORDS = {"meta": ["meta", "facebook", "fb+ig", "instagram"], "tiktok": ["tiktok"],
-                       "snapchat": ["snapchat", "snap"], "google_ads": ["google ads", "adwords"],
-                       "linkedin": ["linkedin"], "x": ["twitter", "x ads", "x.com"]}
-PLATFORM_NAME_TOKENS = {"x": {"x"}}
+
+# Words in a FILE NAME that name a platform, matched as whole tokens (so "x" in "ZSP_X_Oct" names X but the
+# x in "Max" does not). Words of 6+ letters also match inside glued names such as "BWAtiktokOct".
+PLATFORM_NAME_TOKENS = {
+    "meta": {"meta", "facebook", "fb", "instagram", "ig", "fbig", "fb+ig"},
+    "tiktok": {"tiktok", "tt"},
+    "snapchat": {"snapchat", "snap", "sc"},
+    "google_ads": {"google", "gads", "googleads", "adwords", "youtube", "yt", "dv360"},
+    "linkedin": {"linkedin", "li"},
+    "x": {"x", "twitter"},
+}
+# Phrases in report METADATA lines (the rows above the header) that name a platform.
+PLATFORM_META_WORDS = {"meta": ["facebook", "instagram", "meta ads"], "tiktok": ["tiktok"], "snapchat": ["snapchat"],
+                       "google_ads": ["google ads", "adwords"], "linkedin": ["linkedin"], "x": ["twitter", "x ads"]}
 
 
-def _names_platform(text: str, p: str) -> bool:
-    if any(w in text for w in PLATFORM_NAME_WORDS.get(p, [])):
-        return True
-    toks = set(re.split(r"[^a-z0-9+]+", text)) - {""}
-    return bool(toks & PLATFORM_NAME_TOKENS.get(p, set()))
+def name_platforms(name: str) -> set[str]:
+    """Platforms a file name says, e.g. 'BWA_Meta_UAE_Oct2026.xlsx' -> {'meta'}."""
+    stem = re.sub(r"\.(csv|xlsx|xlsm|xls|txt)$", "", (name or "").strip().lower())
+    toks = set(re.split(r"[\s_\-.,()\[\]]+", stem)) - {""}
+    if "fb+ig" in stem:
+        toks.add("fb+ig")
+    found = {p for p, words in PLATFORM_NAME_TOKENS.items() if toks & words}
+    for p, words in PLATFORM_NAME_TOKENS.items():
+        if any(len(w) >= 6 and w in stem for w in words):
+            found.add(p)
+    return found
+
+
+def _sig_hits(sigs: list[str], hs: set[str]) -> list[str]:
+    hit = []
+    for s in sigs:
+        if s.endswith("*"):
+            if any(h.startswith(s[:-1]) for h in hs):
+                hit.append(s[:-1])
+        elif s in hs:
+            hit.append(s)
+    return hit
 
 
 def detect_platform(norm_headers: list[str], filename: str = "", meta_text: str = "") -> tuple[str, float, list[str]]:
-    scores: dict[str, int] = {}
-    evidence: dict[str, list[str]] = {}
-    hs = set(norm_headers)
-    for p, sigs in PLATFORM_SIGNATURES.items():
-        # short, generic signatures ("cost", "conv.") must match a whole header: LinkedIn's "Cost Type" and
-        # "Cost per Conversion" are not TikTok's "Cost"
-        hit = [s for s in sigs if s in hs or (len(s) > 5 and any(h.startswith(s) for h in hs))]
-        scores[p] = len(hit)
-        evidence[p] = [f"header '{s}'" for s in hit]
-    fn = (filename + " " + meta_text).lower()
-    for p in PLATFORM_NAME_WORDS:
-        if _names_platform(fn, p):
-            scores[p] = scores.get(p, 0) + 2
-            evidence.setdefault(p, []).append("file name/metadata mentions platform")
-    best = max(scores, key=lambda k: scores[k]) if scores else "unknown"
-    total = sum(scores.values()) or 1
-    if scores.get(best, 0) < 2:
+    """Decide which platform a sheet was exported from. Returns (platform, confidence, evidence).
+
+    1. Score each platform by its distinctive column headers.
+    2. If the file name (or report metadata) names exactly one platform, trust it - unless the columns
+       clearly belong to another platform (2+ distinctive headers of that platform and none of the named one).
+       Then the columns win and the upload check tells the employee the name and columns disagree.
+    3. Without a usable name, the platform with the most distinctive headers wins; a tie or fewer than
+       2 headers gives 'unknown', and the employee is asked.
+    """
+    hs = {h for h in norm_headers if h}
+    hits = {p: _sig_hits(sigs, hs) for p, sigs in PLATFORM_SIGNATURES.items()}
+    scores = {p: len(h) for p, h in hits.items()}
+    named = name_platforms(filename)
+    meta = (meta_text or "").lower()
+    if not named:
+        named = {p for p, words in PLATFORM_META_WORDS.items() if any(w in meta for w in words)}
+    total = sum(scores.values())
+
+    def ev(p, extra=None):
+        out = [f"header '{s}'" for s in hits[p]]
+        return out + ([extra] if extra else [])
+
+    if len(named) == 1:
+        p = next(iter(named))
+        rival = max((q for q in scores if q != p), key=lambda q: scores[q])
+        if scores[p] == 0 and scores[rival] >= 2:
+            return rival, round(scores[rival] / (total or 1), 2), ev(rival)
+        conf = 1.0 if scores[p] >= scores[rival] else 0.7
+        return p, conf, ev(p, "file name/metadata names the platform")
+    ranked = sorted(scores, key=lambda q: -scores[q])
+    if len(named) > 1:  # e.g. "Meta_TikTok_combined": pick between the named platforms by columns
+        cand = [q for q in ranked if q in named]
+        if scores[cand[0]] > scores[cand[1]]:
+            return cand[0], round(scores[cand[0]] / (total or 1), 2), ev(cand[0], "file name/metadata names the platform")
+    best, second = ranked[0], ranked[1]
+    if scores[best] < 2 or scores[best] == scores[second]:
         return "unknown", 0.0, []
-    return best, round(scores[best] / total, 2), evidence[best]
+    return best, round(scores[best] / total, 2), ev(best)
 
 
 # ---------------------------------------------------------------------------

@@ -14,15 +14,8 @@ import re
 NAMING_PATTERN = "Client_Platform_Market_Period"
 NAMING_EXAMPLES = ["BWA_Meta_UAE_Oct2026.xlsx", "BWA_TikTok_KSA_Oct2026_clicks.xlsx", "BWA_Snapchat_UAE_Sep-Oct2026.csv"]
 
-# platform -> words that identify it in a file name (matched as whole tokens)
-PLATFORM_TOKENS = {
-    "meta": {"meta", "facebook", "fb", "instagram", "ig", "fbig", "fb+ig"},
-    "tiktok": {"tiktok", "tt"},
-    "snapchat": {"snapchat", "snap", "sc"},
-    "google_ads": {"google", "gads", "googleads", "adwords", "youtube", "yt", "dv360"},
-    "linkedin": {"linkedin", "li"},
-    "x": {"x", "twitter"},
-}
+# platform -> words that identify it in a file name: one list, shared with the engine's platform detection
+from app.engine.fields import PLATFORM_NAME_TOKENS as PLATFORM_TOKENS, name_platforms  # noqa: E402,F401
 PLATFORM_NAMES = {"meta": "Meta", "tiktok": "TikTok", "snapchat": "Snapchat", "google_ads": "Google", "linkedin": "LinkedIn",
                   "x": "X"}
 PLATFORM_LIST = "Meta, TikTok, Snapchat, Google, LinkedIn or X"
@@ -39,24 +32,6 @@ _PERIOD_RES = [
 _GENERIC_RE = re.compile(r"^(export|report|data|download|untitled|book\d*|sheet\d*|file|new|copy|campaigns?|ads?)"
                          r"([\s_\-]*(\(\d+\)|\d+|copy|final|new|v\d+))*$")
 _DUPLICATE_RE = re.compile(r"(\(\d+\)|\bcopy\b|copy of)", re.I)
-
-
-def _tokens(stem: str) -> set[str]:
-    low = stem.lower()
-    toks = set(re.split(r"[\s_\-.,()\[\]]+", low)) - {""}
-    toks |= {"fb+ig"} if "fb+ig" in low else set()
-    return toks
-
-
-def name_platforms(name: str) -> set[str]:
-    toks = _tokens(os.path.splitext(name)[0])
-    joined = os.path.splitext(name)[0].lower()
-    found = {p for p, words in PLATFORM_TOKENS.items() if toks & words}
-    # also catch glued names such as "BWAtiktokOct" for the long, unambiguous words
-    for p, words in PLATFORM_TOKENS.items():
-        if any(len(w) >= 6 and w in joined for w in words):
-            found.add(p)
-    return found
 
 
 def has_period(name: str) -> bool:
