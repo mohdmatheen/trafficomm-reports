@@ -10,8 +10,10 @@ PLATFORM_SOURCE_CURRENCY = {"snapchat": "USD", "tiktok": "USD"}
 DEFAULT_USD_AED = 3.6725  # official peg; employees can change it on each task
 
 # "Views" means a specific play definition per platform.
-VIEWS_FIELD = {"meta": "video_plays_3s", "snapchat": "video_views_snap", "tiktok": "video_plays_2s"}
-VIEWS_LABEL = {"meta": "3-second video plays", "snapchat": "2-second video views", "tiktok": "2-second video plays"}
+VIEWS_FIELD = {"meta": "video_plays_3s", "snapchat": "video_views_snap", "tiktok": "video_plays_2s",
+               "linkedin": "video_plays_2s", "x": "video_plays_2s"}
+VIEWS_LABEL = {"meta": "3-second video plays", "snapchat": "2-second video views", "tiktok": "2-second video plays",
+               "linkedin": "video views (2 seconds, 50% in view)", "x": "video views (2 seconds, 50% in view)"}
 
 # Clicks are always the raw report's link-click metric (Snapchat reports it as Swipe Ups).
 CLICK_METRIC = "link_clicks"

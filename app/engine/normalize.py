@@ -365,6 +365,10 @@ def _platform_from_value(v: str) -> str | None:
         return "snapchat"
     if "google" in s:
         return "google_ads"
+    if "linkedin" in s:
+        return "linkedin"
+    if "twitter" in s or s.strip() in ("x", "x ads"):
+        return "x"
     return None
 
 

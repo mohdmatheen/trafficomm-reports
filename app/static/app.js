@@ -585,7 +585,7 @@
       if (fx && (isNaN(+fx) || +fx < 1 || +fx > 10)) out.push({ id: "err-fx", field: "#f-fx", msg: "Enter a rate such as 3.6725.", short: "check the USD → AED rate" });
       if (!d.deliverables.length) out.push({ id: "err-outputs", field: 'input[name=deliverables]', msg: "Choose at least one output.", short: "choose an output" });
       if (!hasRaw) out.push({ id: "err-raw", field: "#zone-raw .dz-pick", zone: "#zone-raw", msg: "Upload at least one raw report (CSV or XLSX).", short: "upload raw reports" });
-      if (d.deliverables.includes("deck_update") && !hasDeck) out.push({ id: "err-deck", field: "#zone-deck .dz-pick", zone: "#zone-deck", msg: "Upload the client deck to update it, or deselect “Updated client PowerPoint”.", short: "upload the client PowerPoint" });
+      if (d.deliverables.includes("deck_update") && !hasDeck) out.push({ id: "err-deck", field: "#zone-deck .dz-pick", zone: "#zone-deck", msg: "Upload last period’s client deck here so it can be updated, or untick “Updated client PowerPoint” under Output files.", short: "upload the client deck under Client PowerPoints (or untick Updated client PowerPoint)" });
       return out;
     }
     function detectedCurrencies() {
