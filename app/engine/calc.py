@@ -27,7 +27,7 @@ RATE_DEFS = {
     "vtr": ("views", "impressions", 100.0, "VTR = views / impressions x 100 (views: Meta 3-second plays, Snapchat 2-second views)"),
 }
 SUM_METRICS = ["spend", "impressions", "clicks", "views", "link_clicks", "clicks_all", "swipe_ups", "landing_page_views",
-               "video_plays_3s", "video_plays_2s", "video_views_6s", "video_views_tiktok", "video_views_snap", "thruplays",
+               "video_plays_3s", "video_plays_2s", "video_views_6s", "video_views_tiktok", "video_views_snap", "video_views_youtube", "thruplays",
                "video_completions", "conversions", "leads_meta_form", "website_leads", "leads", "purchases", "purchase_value", "installs"]
 
 METRIC_LABELS = {**{k: f.label for k, f in F.FIELDS.items()}, "clicks": "Clicks", "conversions": "Conversions",
@@ -176,7 +176,7 @@ def available_metrics(d: pd.DataFrame, dyn: dict) -> list[str]:
     extra = []
     if d["views"].notna().any():
         extra += ["views", "vtr"]
-    for m in ["video_views_6s", "video_views_tiktok", "video_views_snap", "thruplays", "swipe_ups", "landing_page_views",
+    for m in ["video_views_6s", "video_views_tiktok", "video_views_snap", "video_views_youtube", "thruplays", "swipe_ups", "landing_page_views",
               "leads_meta_form", "website_leads", "leads", "purchases", "purchase_value", "installs"]:
         if d[m].notna().any():
             extra.append(m)
