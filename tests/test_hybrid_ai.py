@@ -19,8 +19,9 @@ class FakeClaude:
             raise RuntimeError("API down")
         if output_format is AI.Commentary:
             out = AI.Commentary(statements=[AI.Statement(type="observation", text="Spend was cheap this month!", fact_ids=["total.spend"])])
-        elif output_format is AI.Plan:
-            out = AI.Plan(notes=["read by fake Claude"])
+        elif output_format is AI.PlanOut:
+            out = AI.PlanOut(**{**AI.Plan().model_dump(), "split_tabs_by": "", "conversion_metric": "",
+                                "click_metric": "unspecified", "notes": ["read by fake Claude"]})
         else:
             out = AI.RevisionPlan(ops=[AI.RevisionOp(op="add_breakdown", value="market", note="Add market breakdown")], summary="Add market breakdown")
         return types.SimpleNamespace(stop_reason="end_turn", parsed_output=out)
