@@ -61,7 +61,8 @@ FIELDS: dict[str, Field] = {f.key: f for f in [
     Field("video_views_6s", "6-second video views", "additive", "count", "TikTok: plays of at least 6 seconds (focused view)"),
     Field("video_views_tiktok", "Video views (TikTok)", "additive", "count", "TikTok 'Video views' (plays started)"),
     Field("video_views_snap", "Video views (Snapchat)", "additive", "count", "Snapchat: views of 2s+ or swipe up"),
-    Field("views", "Views", "additive", "count", "Agency rule: Meta = 3-second video plays, Snapchat = 2-second video views, TikTok = 2-second video plays, LinkedIn and X = video views (2s, 50% in view)"),
+    Field("video_views_youtube", "YouTube views", "additive", "count", "Google Ads 'TrueView views' / 'YouTube views': 30s watched (or the whole ad if shorter) or an interaction"),
+    Field("views", "Views", "additive", "count", "Agency rule: Meta = 3-second video plays, Snapchat = 2-second video views, TikTok = 2-second video plays, LinkedIn and X = video views (2s, 50% in view), Google/YouTube = YouTube views"),
     Field("thruplays", "ThruPlays", "additive", "count", "Meta: plays to completion or 15s"),
     Field("video_completions", "Video completions", "additive", "count", "Plays to 100%"),
     Field("results", "Results (objective-dependent)", "additive", "count", "Meta 'Results' - meaning depends on Result indicator; never summed across indicators"),
@@ -162,6 +163,9 @@ PLATFORM_SYNONYMS: dict[str, list[tuple[str, str]]] = {
     "linkedin": [(r"^clicks$", "clicks_all"), (r"^video views$", "video_plays_2s")],
     # X: a video view is 2+ continuous seconds with at least 50% of the player in view.
     "x": [(r"^video views$", "video_plays_2s"), (r"^clicks$", "clicks_all")],
+    # Google Ads / YouTube: views are "TrueView views" (older exports) or "YouTube views"; reach is "Unique users".
+    "google_ads": [(r"^(trueview views|youtube views|views|video views)$", "video_views_youtube"),
+                   (r"^unique users$", "reach")],
 }
 
 _CURRENCY_RE = re.compile(r"\((?P<cur>[A-Z]{3})\)")

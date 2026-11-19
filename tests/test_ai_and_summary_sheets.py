@@ -67,3 +67,23 @@ def test_single_keyless_sheet_still_counts(tmp_path):
     wb.save(f)
     info = inspect_file(str(f), f.name)
     assert info["sheets"][0]["is_data_sheet"]
+
+
+def test_google_youtube_views_and_unique_users(tmp_path):
+    import csv
+
+    import pytest
+
+    from tests.helpers import qkeys, run
+    rows = [["Campaign report"], ["October 1, 2026 - October 31, 2026"],
+            ["Campaign", "Currency", "Cost", "Clicks", "Impr.", "TrueView views", "Unique users", "Campaign type"],
+            ["ZSP_Post-2_05-Oct_(100 days)_(https://youtube.com/shorts/abc)", "AED", "197.94", "400", "52,661", "18,250", "40,100", "Video"],
+            ["ZSP_Post_30-Oct_(Voices)_(https://youtu.be/def)", "AED", "115.66", "179", "58,530", "21,004", "47,900", "Video"]]
+    f = tmp_path / "ZSP_Google_UAE_Oct2026.csv"
+    with open(f, "w", newline="") as fh:
+        csv.writer(fh).writerows(rows)
+    r = run([(str(f), "raw")], answers={"conversion_metric": "none", "clicks_def:google_ads": "link_clicks"}, period=("2026-10-01", "2026-10-31"))
+    assert r["status"] == "ready_for_review", qkeys(r)
+    g = r["summary"]["tables"]["platform"]["rows"][0]
+    assert g["views"] == 18250 + 21004
+    assert g["reach"] == pytest.approx(40100 + 47900)
