@@ -298,7 +298,7 @@
     {% endif %}
     {% if R.get('ai_steps') %}
     <details class="dg"><summary>How this version was produced {% if R.get('ai_mocked') %}<span class="tag tag-warn">AI rule-based</span>{% endif %}</summary>
-      <p class="small">{% if R.get('structure') %}{{ R.get('structure').reason }}.<br>{% endif %}{% for st in R.get('ai_steps') %}<span class="tag{% if st.engine == 'claude' %} tag-ai{% endif %}" title="{{ st.reason }}">{{ st.step }}: {{ 'Claude' if st.engine == 'claude' else 'built-in rules' }}</span> {% endfor %}· all figures are calculated by the engine, never by AI</p>
+      <p class="small">{% if R.get('structure') %}{{ R.get('structure').reason }}.<br>{% endif %}{% for st in R.get('ai_steps') %}<span class="tag{% if st.engine == 'claude' %} tag-ai{% endif %}" title="{{ st.reason }}">{{ st.step }}: {{ 'Claude' if st.engine == 'claude' else ('saved from last report' if st.engine == 'saved' else 'built-in rules') }}</span> {% endfor %}· all figures are calculated by the engine, never by AI</p>
     </details>
     {% endif %}
     {% set P = R.get('plan') or {} %}

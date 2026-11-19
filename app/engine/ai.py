@@ -430,9 +430,12 @@ def structure_fingerprint(raw_files: list, deck_file, template_file, deliverable
             continue
         d = df["inspection"]["deck"]
         # the first deck keeps the original part name so single-deck fingerprints stay unchanged
-        parts.append(("deck" if n == 0 else f"deck{n + 1}", [(sl.get("classification"), sorted({m for t in sl.get("tables", []) for m in (t.get("metric_cols") or {}).values()}))
-                                                             for sl in d.get("slides", [])]))
-        desc.append(f"deck structure ({d.get('slide_count')} slides)")
+        # The set of slide kinds, not the slide list: a rolling deck gains a month section each month
+        # (copied slides) and is still the same report.
+        kinds = sorted({(sl.get("classification"), tuple(sorted({m for t in sl.get("tables", []) for m in (t.get("metric_cols") or {}).values()})))
+                        for sl in d.get("slides", [])})
+        parts.append(("deck" if n == 0 else f"deck{n + 1}", kinds))
+        desc.append("deck structure")
     if template_file:
         parts.append(("template", [s.get("name") for s in template_file["inspection"].get("sheets", [])]))
         desc.append("Excel template structure")
@@ -440,8 +443,10 @@ def structure_fingerprint(raw_files: list, deck_file, template_file, deliverable
     req = {k: rule_plan.get(k) for k in ("breakdowns", "split_tabs_by", "include_commentary", "include_recommendations", "short_summary",
                                          "compare", "template_only", "remove_sections", "add_missing_slides")}
     parts.append(("request", req))
+    # Only whether the request is free-form counts, not its wording: "add October, remove August"
+    # next month is the same report. What the request asks for is already in "request" above.
     if is_freeform(instructions):
-        parts.append(("freeform", re.sub(r"\W+", " ", instructions.lower()).strip()))
+        parts.append(("freeform", True))
         desc.append("free-form instructions")
     fp = hashlib.sha256(json.dumps(parts, default=str, sort_keys=True).encode()).hexdigest()[:24]
     return fp, desc
@@ -460,13 +465,22 @@ class HybridProvider(AnthropicProvider):
         self.use_claude = False
         self.reason = ""
 
-    def set_mode(self, use_claude: bool, reason: str):
+    def set_mode(self, use_claude: bool, reason: str, saved_plan: dict | None = None):
         self.use_claude, self.reason = use_claude, reason
+        self.saved_plan = saved_plan
 
     def _log(self, step, engine, reason):
         self.steps.append({"step": step, "engine": engine, "reason": reason})
 
     def interpret_instructions(self, text, deliverables, headers) -> Plan:
+        saved = getattr(self, "saved_plan", None)
+        if not self.use_claude and saved:
+            try:
+                p = Plan(**{**saved, "notes": list(saved.get("notes") or []) + ["Instructions read as in the last report with this structure (no Claude call)."]})
+                self._log("Instructions", "saved", "Repeat report - Claude's reading from the last report with this structure reused")
+                return p
+            except Exception:  # noqa: BLE001
+                pass
         if not self.use_claude:
             self._log("Instructions", "rules", self.reason or "Built-in rules")
             return self.fallback.interpret_instructions(text, deliverables, headers)

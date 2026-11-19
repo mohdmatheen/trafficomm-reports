@@ -75,3 +75,34 @@ def test_feedback_uses_rules_unless_unmapped():
     assert [o.op for o in rp.ops] == ["split_tabs_by"] and fake.calls == []
     p.interpret_feedback("Can you make the story more about the Abu Dhabi school's trend?", False)
     assert fake.calls == ["RevisionPlan"] and p.steps[-1]["engine"] == "claude"
+
+
+def test_repeat_reuses_saved_claude_reading_without_calling_claude():
+    p, fake = hybrid()
+    instr = "Please prepare the monthly update. Focus the story on the Abu Dhabi audience and keep it brief for the client team."
+    r = run(META, answers={"conversion_metric": "none"}, instructions=instr, provider=p)
+    st = r["structure"]
+    assert st["claude_plan"]["include_commentary"] is True
+    prof = {**GENERIC_PROFILE, "known_structures": [st["fingerprint"]], "structure_plans": {st["fingerprint"]: {**st["claude_plan"], "short_summary": True}}}
+    # next month: same layout, free-form instructions worded differently -> still known, saved reading reused
+    p2, fake2 = hybrid()
+    r2 = run([(fx("meta_acme_aug.csv"), "raw")], answers={"conversion_metric": "none"},
+             instructions="Please prepare this month's update. Focus the story on the Abu Dhabi audience and keep it brief for the client.",
+             period=("2026-08-01", "2026-08-31"), profile=prof, provider=p2)
+    assert r2["structure"]["known"] is True
+    assert fake2.calls == []
+    steps = {s["step"]: s["engine"] for s in r2["ai_steps"]}
+    assert steps == {"Instructions": "saved", "Insights": "rules"}
+    assert r2["plan"]["short_summary"] is True
+
+
+def test_rolling_deck_fingerprint_ignores_added_month_section():
+    def deck(n_sections):
+        slides = [{"classification": "cover", "tables": []}]
+        for _ in range(n_sections):
+            slides += [{"classification": "client_content", "tables": [{"metric_cols": {"1": "impressions", "2": "spend"}}]},
+                       {"classification": "screenshots", "tables": []}]
+        return {"inspection": {"deck": {"slide_count": len(slides), "slides": slides}}}
+    a, _ = AI.structure_fingerprint([], deck(2), None, ["deck"], "", {})
+    b, _ = AI.structure_fingerprint([], deck(3), None, ["deck"], "", {})
+    assert a == b
