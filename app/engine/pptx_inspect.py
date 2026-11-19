@@ -18,10 +18,12 @@ DECK_LABELS = {
     "reach": "reach", "impressions": "impressions", "impr": "impressions",
     "frequency": "frequency_calc", "freq": "frequency_calc",
     "views": "views", "video views": "views", "3s views": "video_plays_3s", "3-second video plays": "video_plays_3s",
+    "3 sec views": "video_plays_3s", "3-sec views": "video_plays_3s", "3 second views": "video_plays_3s", "3-second views": "video_plays_3s",
+    "3s video views": "video_plays_3s", "3 sec video views": "video_plays_3s",
     "vtr": "vtr", "view rate": "vtr",
     "clicks": "clicks", "link clicks": "link_clicks", "all clicks": "clicks_all",
     "ctr": "ctr", "cpc": "cpc", "cpm": "cpm",
-    "spend": "spend", "amount spent": "spend", "cost": "spend", "media spend": "spend", "budget spent": "spend",
+    "spend": "spend", "spends": "spend", "spent": "spend", "amount spent": "spend", "amount spend": "spend", "cost": "spend", "media spend": "spend", "budget spent": "spend",
     "leads": "conversions", "conversions": "conversions", "results": "conversions",
     "cpa": "cpa", "cpl": "cpa", "cost per lead": "cpa", "cost per result": "cpa",
     "roas": "roas", "swipe ups": "swipe_ups", "thruplays": "thruplays",
@@ -35,13 +37,25 @@ def clean(s: str) -> str:
     return (s or "").replace("​", "").replace("\xa0", " ").strip()
 
 
+CURRENCY_TOKENS = r"(aed|usd|sar|qar|kwd|bhd|omr|eur|gbp|inr|egp|\$|€|£)"
+
+
 def label_to_metric(label: str, overrides: dict | None = None) -> str | None:
     l = re.sub(r"\s+", " ", clean(label).lower()).strip(" :")
     if overrides:
         for k, v in overrides.items():
             if k.lower() == l:
                 return v
-    return DECK_LABELS.get(l)
+    if l in DECK_LABELS:
+        return DECK_LABELS[l]
+    # 'Spends AED', 'Amount Spent (AED)', 'Spend in USD', 'Budget ($)'
+    base = re.sub(rf"\(\s*{CURRENCY_TOKENS}\s*\)|\b(in\s+)?{CURRENCY_TOKENS}(?=\s|$)|(?<=\s){CURRENCY_TOKENS}$", " ", l)
+    base = re.sub(r"\s+", " ", base).strip(" :-")
+    if base in DECK_LABELS:
+        return DECK_LABELS[base]
+    if base.endswith("s") and base[:-1] in DECK_LABELS:
+        return DECK_LABELS[base[:-1]]
+    return DECK_LABELS.get(base.rstrip("s") + "s") if base else None
 
 
 def _shape_kind(sh) -> str:
@@ -173,7 +187,7 @@ def inspect_deck(path: str, profile: dict | None = None) -> dict:
         elif idx == 1 or (info["month_labels"] and len(info["texts"]) <= 3 and not info["tables"]):
             cls = "cover"
         elif info["tables"]:
-            cls = "client_content" if not metric_tables else "metric_slide"
+            cls = "other"  # tables without enough metric columns are left as they are
         elif info["pictures"] and not info["texts"]:
             cls = "image_only"
         else:

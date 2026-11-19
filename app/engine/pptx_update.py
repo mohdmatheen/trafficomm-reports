@@ -17,6 +17,7 @@ from pptx.util import Pt
 from . import fmt as FM
 from . import rules as R
 from .pptx_inspect import MONTH_YEAR_RE, clean, inspect_deck, label_to_metric, slide_title
+from .pptx_posts import DISPLAY, RowTableUpdater, is_row_table, slide_texts
 
 TITLE_SPLIT = re.compile(r"\s+[–—-]\s+|:\s+")
 
@@ -73,6 +74,29 @@ def _replace_in_runs(tf, pattern: re.Pattern, repl_fn) -> list[tuple[str, str]]:
                 r._r.getparent().remove(r._r)
             changes.append((full, new))
     return changes
+
+
+_MON = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
+# '23rd September – 8th October 2026', '1 Sep 2026 - 30 Sep 2026', '1st – 30th September 2026'
+DATE_SPAN_RE = re.compile(
+    rf"\b(\d{{1,2}})(st|nd|rd|th)?\s+{_MON}(?:,?\s+(20\d\d))?\s*[–—-]\s*(\d{{1,2}})(st|nd|rd|th)?\s+{_MON},?\s+(20\d\d)\b"
+    rf"|\b(\d{{1,2}})(st|nd|rd|th)?\s*[–—-]\s*(\d{{1,2}})(st|nd|rd|th)?\s+{_MON},?\s+(20\d\d)\b", re.I)
+
+
+def range_like(m: re.Match, ds, de) -> str:
+    """The reporting window written like the matched text (ordinals, long/short month names, dash)."""
+    t = m.group(0)
+    ordn = bool(re.search(r"\d(st|nd|rd|th)\b", t, re.I))
+    months = re.findall(r"[A-Za-z]{3,}", t)
+    long = any(len(x.rstrip(".")) > 4 for x in months if x.lower() not in ("st", "nd", "rd", "th"))
+    dash = re.search(r"\s*[–—-]\s*", t).group(0)
+    d = (lambda x: FM.ordinal(x.day)) if ordn else (lambda x: str(x.day))
+    mf = "%B" if long else "%b"
+    if (ds.year, ds.month) == (de.year, de.month) and m.group(1) is None:
+        return f"{d(ds)}{dash}{d(de)} {de.strftime(mf)} {de.year}"
+    if ds.year == de.year and not m.group(3):
+        return f"{d(ds)} {ds.strftime(mf)}{dash}{d(de)} {de.strftime(mf)} {de.year}"
+    return f"{d(ds)} {ds.strftime(mf)} {ds.year}{dash}{d(de)} {de.strftime(mf)} {de.year}"
 
 
 class DeckUpdater:
@@ -138,8 +162,40 @@ class DeckUpdater:
             exact = same or exact
         return exact
 
+    def _prepare_row_tables(self):
+        """Decks with one row per post/segment (e.g. 'Facebook Performance' listing every boosted
+        post, grouped in month sections). Adds the reporting month's section first when it is missing,
+        so the creative matching below runs on the final slide order."""
+        self.row_slides: set[int] = set()
+        self.row_pre = None
+        self.row_has = False
+        prs = Presentation(self.src)
+        rt = RowTableUpdater(prs, self.calc, self.period, self.deck_cfg, self.answers, self.options, self.screenshots)
+        if not rt.has_row_tables():
+            return
+        self.row_has = True
+        roll = rt.plan_roll()
+        self.questions += rt.questions
+        if roll and roll.get("add"):
+            rt.restructure(roll)
+            import os
+            import tempfile
+            fd, tmp = tempfile.mkstemp(suffix=".pptx", prefix="deck_rows_")
+            os.close(fd)
+            prs.save(tmp)
+            self.src = tmp
+            self.inspection = inspect_deck(tmp, self.profile)
+        self.row_pre = {"changes": rt.changes, "flags": rt.flags, "new_section_slides": getattr(rt, "new_section_slides", None)}
+        overrides = self.deck_cfg.get("metric_labels")
+        for idx, slide in enumerate(Presentation(self.src).slides, 1):
+            if any(is_row_table(slide, sh.table, overrides) for sh in slide.shapes if getattr(sh, "has_table", False) and sh.has_table):
+                self.row_slides.add(idx)
+
     def match_slides(self):
-        slides = [s for s in self.inspection["slides"] if s["classification"] == "metric_slide"]
+        if getattr(self, "assigned", None) is not None:  # already matched (pipeline asks first, run() reuses)
+            return self.assigned
+        self._prepare_row_tables()
+        slides = [s for s in self.inspection["slides"] if s["classification"] == "metric_slide" and s["index"] not in self.row_slides]
         cands = {s["index"]: self._candidates(s) for s in slides}
         assigned: dict[int, dict] = {}
         used: set[int] = set()
@@ -244,8 +300,8 @@ class DeckUpdater:
 
     # ------------------------------------------------------------------
     def run(self, out_path: str) -> dict:
-        prs = Presentation(self.src)
         self.match_slides()
+        prs = Presentation(self.src)
         if any(q["blocking"] for q in self.questions):
             return {"blocked": True, "questions": self.questions, "slide_map": self.slide_map, "flags": self.flags}
         style = self._detect_range_style() or self.deck_cfg.get("range_style") or "plain"  # the deck's own style wins
@@ -256,6 +312,8 @@ class DeckUpdater:
             info = self.inspection["slides"][idx - 1]
             cls = info["classification"]
             entry = {"slide": idx, "title": info["title"], "classification": cls, "status": "unchanged", "entity": None, "changes": 0}
+            if idx in self.row_slides:
+                continue  # handled by RowTableUpdater below
             if cls == "metric_slide":
                 e = self.assigned.get(idx)
                 if e is None:
@@ -296,8 +354,9 @@ class DeckUpdater:
             for u in info["unsupported"]:
                 self.flags.append({"slide": idx, "severity": "warning", "message": f"Slide {idx}: {u['detail']} ({u['shape']})"})
             self.slide_map.append(entry)
-        # creatives in data without a slide
-        missing = [e for e in self.entities if e["id"] not in used_entities]
+        rows_done = self._run_row_tables(prs)
+        # creatives in data without a slide (not reported when the deck lists posts in row tables)
+        missing = [e for e in self.entities if e["id"] not in used_entities] if not rows_done else []
         for e in missing:
             spend = e["row"].get("spend") or 0
             imp = e["row"].get("impressions") or 0
@@ -308,7 +367,7 @@ class DeckUpdater:
                     continue
             self.flags.append({"slide": None, "severity": "warning" if imp else "info",
                                "message": "No slide in the deck for " + " ".join(str(x) for x in (e["brand"], e["objective"]) if x) + (" " if (e["brand"] or e["objective"]) else "") + f"'{e['name']}' (impressions {FM.fmt_int(imp)}, spend {FM.fmt_num(spend)}). Not added." + (" Ask for 'add slides for new creatives' if needed." if imp else "")})
-        unused = [s["label"] for k, s in self.screenshots.items() if k not in self.used_screenshots]
+        unused = [s["label"] for k, s in self.screenshots.items() if k not in self.used_screenshots and k not in getattr(self, "row_used_screenshots", set())]
         if unused:
             self.flags.append({"slide": None, "severity": "warning", "message": f"{len(unused)} uploaded screenshot(s) didn't match any slide and were not placed: " + ", ".join(sorted(set(unused))[:12]) +
                                ". Name each file like the creative on its slide (e.g. 'BWA-Static-EN.png') or 'slide 5.png'."})
@@ -316,6 +375,30 @@ class DeckUpdater:
         prs.save(out_path)
         return {"blocked": False, "changes": self.changes, "flags": self.flags, "slide_map": self.slide_map,
                 "questions": self.questions, "range_text": range_text}
+
+    def _run_row_tables(self, prs) -> bool:
+        if not self.row_has:
+            return False
+        rt = RowTableUpdater(prs, self.calc, self.period, self.deck_cfg, self.answers, self.options, self.screenshots)
+        rt.new_section_slides = (self.row_pre or {}).get("new_section_slides")
+        rt.run()
+        self.changes = (self.row_pre or {}).get("changes", []) + self.changes + rt.changes
+        self.flags = (self.row_pre or {}).get("flags", []) + self.flags + rt.flags
+        self.row_used_screenshots = rt.used_screenshots
+        titles = {i: " ".join(slide_texts(s))[:80] for i, s in enumerate(prs.slides, 1)}
+        for d in sorted(getattr(rt, "deleted", []), reverse=True):  # surplus screenshot slides removed: renumber
+            self.slide_map = [m for m in self.slide_map if m["slide"] != d]
+            for coll in (self.slide_map, self.changes, self.flags):
+                for m in coll:
+                    if isinstance(m.get("slide"), int) and m["slide"] > d:
+                        m["slide"] -= 1
+        for sl, st in rt.slide_status.items():
+            self.slide_map = [m for m in self.slide_map if m["slide"] != sl]
+            self.slide_map.append({"slide": sl, "title": titles.get(sl, ""), "classification": "row_table" if st.get("status") != "updated" or sl in self.row_slides else "screenshots",
+                                   "status": st["status"], "entity": DISPLAY.get(st.get("platform") or "") or None, "changes": st.get("changes", 0)})
+        self.row_result = {"tables": len([1 for v in rt.slide_status.values() if v["status"] in ("updated", "unmatched")]),
+                           "updated": len([1 for v in rt.slide_status.values() if v["status"] == "updated"])}
+        return True
 
     def _detect_range_style(self) -> str:
         for s in self.inspection["slides"]:
@@ -379,6 +462,15 @@ class DeckUpdater:
         n = 0
         for sh in slide.shapes:
             if not (getattr(sh, "has_text_frame", False) and sh.has_text_frame):
+                continue
+            # a full date range ('23rd September – 8th October 2026') is replaced as a whole, in the
+            # deck's own style; a month-year inside it must not be replaced on its own
+            ranges = _replace_in_runs(sh.text_frame, DATE_SPAN_RE, lambda m: range_like(m, ds, de))
+            for old, new in ranges:
+                if old != new:
+                    self.changes.append({"slide": idx, "shape": sh.name, "metric": "period_label", "old": old, "new": new})
+                    n += 1
+            if any(DATE_SPAN_RE.search(p_.text) for p_ in sh.text_frame.paragraphs):
                 continue
 
             def repl(m):

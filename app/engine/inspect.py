@@ -266,6 +266,28 @@ def suggest_role(name: str, ext: str, sheets_info: list[dict] | None, formula_ce
     return "raw"
 
 
+def _has_key_dims(si: dict) -> bool:
+    return any(c.get("canonical") in KEY_DIMS for c in si.get("columns", []))
+
+
+def _drop_summary_sheets(info: dict) -> None:
+    """A workbook with a real data sheet (one row per campaign/ad/day) can also carry account-level
+    summary tabs, e.g. X's "Total Reach & Frequency": one row of impressions/reach and no campaign,
+    ad or date column. Those repeat the data sheet's totals, so reading them as data doubles them."""
+    sheets = [s for s in info["sheets"] if s.get("is_data_sheet")]
+    keyed = [s for s in sheets if _has_key_dims(s)]
+    if not keyed:
+        return
+    for s in sheets:
+        if s in keyed:
+            continue
+        s["is_data_sheet"] = False
+        s["summary_sheet"] = True
+        s["reason"] = ("Account-level summary tab (no campaign, ad or date column) - excluded so its totals "
+                       f"are not added on top of '{keyed[0]['name']}'")
+        info["warnings"].append(f"Sheet '{s['name']}' is a summary of the export and was not counted as data")
+
+
 def inspect_file(path: str, original_name: str, profile: dict | None = None) -> dict:
     ext = os.path.splitext(original_name)[1].lower()
     info: dict = {"name": original_name, "ext": ext, "size": os.path.getsize(path), "sha256": sha256_file(path),
@@ -310,6 +332,7 @@ def inspect_file(path: str, original_name: str, profile: dict | None = None) -> 
         si = inspect_sheet(s, original_name, profile)
         si["formula_cells"] = s.formula_cells
         info["sheets"].append(si)
+    _drop_summary_sheets(info)
     info["role_suggested"] = suggest_role(original_name, ext, info["sheets"], formula_cells)
     data_sheets = [s for s in info["sheets"] if s["is_data_sheet"]]
     if info["role_suggested"] == "raw" and not data_sheets:

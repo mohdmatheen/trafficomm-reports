@@ -114,6 +114,20 @@ def _deck_checks(deck_update: dict, excel: dict | None) -> list[dict]:
     checks.append(_chk("labels", "Dates and labels", "pass" if lab or deck_update.get("range_text") else "warn",
                        f"Period labels set to '{deck_update.get('range_text')}' on {len([c for c in deck_update['changes'] if c.get('metric') == 'range'])} table cells; cover/period text updated: {len([c for c in deck_update['changes'] if c.get('metric') == 'period_label'])}",
                        [f"Slide {c['slide']}: '{c['old']}' -> '{c['new']}'" for c in deck_update["changes"] if c.get("metric") == "period_label"]))
+    # the deck must actually have been updated: a run that leaves every metric table as it was
+    # would hand the employee their template back unchanged
+    targets = [m for m in deck_update.get("slide_map", []) if m.get("status") in ("unmatched", "updated") and
+               (m.get("classification") in ("metric_slide", "row_table") or m.get("status") == "unmatched")]
+    figs = [c for c in deck_update.get("changes", []) if c.get("row") is not None and c.get("metric") != "range"]  # written or confirmed
+    unmatched = sorted({m["slide"] for m in targets if m.get("status") == "unmatched"})
+    if targets and not figs:
+        checks.append(_chk("deck_updated", "Deck figures updated", "fail",
+                           f"No figures in the PowerPoint were updated: none of the {len(targets)} metric table(s) matched the uploaded data, so the deck would be the template unchanged",
+                           [f"Slide {s}: no matching data" for s in unmatched] +
+                           ["Check that the raw reports are for the same campaigns/posts as the deck, or describe the deck layout in the instructions and send it to an admin."]))
+    elif targets:
+        checks.append(_chk("deck_updated", "Deck figures updated", "warn" if unmatched else "pass",
+                           f"{len(figs)} table figure(s) written from the data" + (f"; {len(unmatched)} table(s) not matched (slides {', '.join(map(str, unmatched))})" if unmatched else ""), []))
     flags = [f for f in deck_update.get("flags", []) if f["severity"] == "warning"]
     checks.append(_chk("deck_flags", "Deck items needing review", "warn" if flags else "pass",
                        f"{len(flags)} item(s) could not be updated automatically" if flags else "All recognised reporting content updated", [f["message"] for f in deck_update.get("flags", [])]))

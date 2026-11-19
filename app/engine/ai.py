@@ -45,6 +45,34 @@ class Plan(BaseModel):
     notes: list[str] = Field(default_factory=list, description="Short notes on how the instructions were read")
 
 
+class PlanOut(BaseModel):
+    """What Claude is asked to return for the instructions step. Same content as Plan, but every
+    field is required and nothing is nullable. Plan's 13 optional fields made the structured-output
+    grammar too large to compile: the first call timed out after 120s and the retry was rejected
+    with a 400, so every instructions call fell back to rules."""
+    breakdowns: list[list[str]] = Field(description="Extra breakdowns, each a list of canonical dimension keys; [] if none")
+    split_tabs_by: str = Field(description="Dimension key to split into separate Excel tabs (e.g. country, language); empty string if not asked")
+    click_metric: Literal["link_clicks", "clicks_all", "unspecified"] = Field(description="Only link_clicks/clicks_all if explicitly requested")
+    conversion_metric: str = Field(description="Canonical conversion field only if the employee explicitly named it; empty string otherwise")
+    include_commentary: bool
+    include_recommendations: bool
+    short_summary: bool
+    compare: bool
+    template_only: bool = Field(description="Employee asked to only compile data into the template")
+    replace_thumbnails: bool = Field(description="Employee asked to replace creative images in the deck from the uploaded creatives ZIP")
+    add_missing_slides: bool = Field(description="Employee asked to add slides for creatives that have no slide yet")
+    remove_sections: list[str]
+    deck_notes: list[str]
+    notes: list[str] = Field(description="Short notes on how the instructions were read")
+
+    def to_plan(self) -> Plan:
+        d = self.model_dump()
+        d["split_tabs_by"] = d["split_tabs_by"].strip() or None
+        d["conversion_metric"] = d["conversion_metric"].strip() or None
+        d["click_metric"] = None if d["click_metric"] == "unspecified" else d["click_metric"]
+        return Plan(**d)
+
+
 class RevisionOp(BaseModel):
     op: Literal["set_click_metric", "set_conversion_metric", "split_tabs_by", "add_breakdown", "remove_section",
                 "remove_slide", "short_summary", "keep_formatting", "use_new_files", "include_commentary", "exclude_file", "unsupported"]
@@ -329,9 +357,10 @@ class AnthropicProvider:
                     f"Column headers found in uploads (data):\n<untrusted>{json.dumps(headers[:200])}</untrusted>\n"
                     f"Employee instructions:\n<untrusted>{text[:6000]}</untrusted>\n"
                     "Read the instructions into the Plan. Only set conversion_metric/click_metric if explicitly requested.")
-            return self._parse(Plan, user, step="instructions")
+            out = self._parse(PlanOut, user, step="instructions")
+            return out.to_plan()
         except Exception as e:  # noqa: BLE001
-            log.warning("AI instruction parsing failed (%s); using rule fallback", type(e).__name__)
+            log.warning("AI instruction parsing failed (%s: %s); using rule fallback", type(e).__name__, str(e)[:300])
             p = self.fallback.interpret_instructions(text, deliverables, headers)
             p.notes.append("Claude unavailable for this step - rule-based fallback used.")
             return p
@@ -343,7 +372,7 @@ class AnthropicProvider:
                     f"Employee feedback:\n<untrusted>{feedback[:4000]}</untrusted>\nMap it to ops; use 'unsupported' for anything else.")
             return self._parse(RevisionPlan, user, step="feedback")
         except Exception as e:  # noqa: BLE001
-            log.warning("AI feedback parsing failed (%s); using rule fallback", type(e).__name__)
+            log.warning("AI feedback parsing failed (%s: %s); using rule fallback", type(e).__name__, str(e)[:300])
             return self.fallback.interpret_feedback(feedback, has_new_files)
 
     def write_commentary(self, facts: dict, ctx: dict, calc) -> list[dict]:
