@@ -183,6 +183,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
             up = DeckUpdater(df["path"], calc, norm.period, inp.profile, inp.answers,
                              {"screenshots": [{"path": f["path"], "name": f["name"]} for f in shots],
                               "add_missing_slides": plan.get("add_missing_slides", False),
+                              "instructions": t.get("instructions") or "",
                               "question_prefix": "" if i == 0 else f"deck{i + 1}:",
                               "deck_name": df["name"] if multi else None})
             up.match_slides()
