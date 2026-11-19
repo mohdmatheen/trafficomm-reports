@@ -637,6 +637,10 @@ def persist_result(job_id: int, vid: int, tid: int, result: dict):
             stt = dict(prof.settings or {})
             ks = [k for k in (stt.get("known_structures") or []) if k != st_info["fingerprint"]] + [st_info["fingerprint"]]
             stt["known_structures"] = ks[-50:]
+            if st_info.get("claude_plan"):
+                plans = {k: v for k, v in (stt.get("structure_plans") or {}).items() if k in ks}
+                plans[st_info["fingerprint"]] = st_info["claude_plan"]
+                stt["structure_plans"] = plans
             prof.settings = stt
         if result["status"] in ("ready_for_review", "validation_blocked"):
             v.completed_at = now()

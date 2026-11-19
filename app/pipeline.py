@@ -96,9 +96,13 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     else:
         mode = (True, "New report structure for this client (" + "; ".join(fp_desc) + ") - Claude reads the request and writes the insights")
     result["structure"] = {"fingerprint": fp, "known": fp in known, "reason": mode[1]}
+    saved_plans = inp.profile.get("structure_plans") or {}
     if hasattr(provider, "set_mode"):
-        provider.set_mode(*mode)
+        provider.set_mode(*mode, saved_plan=saved_plans.get(fp) if fp in known else None)
     plan_obj = provider.interpret_instructions(t.get("instructions") or "", t.get("deliverables") or [], headers)
+    if any(s.get("step") == "Instructions" and s.get("engine") == "claude" for s in (getattr(provider, "steps", None) or [])):
+        # saved with the structure once the report is ready, so repeat runs reuse it without Claude
+        result["structure"]["claude_plan"] = {k: v for k, v in plan_obj.model_dump().items() if k != "notes"}
     plan = plan_obj.model_dump()
     for k, v in (inp.plan_overrides or {}).items():
         if k == "breakdowns":
