@@ -19,6 +19,8 @@ from .engine.excel_out import build_excel
 from .engine.inspect import inspect_file
 from .engine.normalize import Question, build_dataset
 from .engine.pptx_new import build_new_deck
+from .engine.pptx_light import free as free_decks
+from .engine.pptx_light import open_light, render_copy
 from .engine.pptx_update import DeckUpdater
 from .engine.render import RenderError, layout_checks, pdf_to_pngs, to_pdf
 from .engine.template_fill import fill_template
@@ -274,6 +276,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
         res = up.run(path)
         for sl in sorted({int(x) for x in plan.get("remove_slides", [])}, reverse=True):
             _delete_slide(path, sl, res)
+        free_decks()
         info = {**res, "path": path, "na": up.na, "kind": kind, "label": label, "name": df["name"]}
         if i == 0:
             upd_info = info
@@ -291,12 +294,14 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
 
     # ---------------- Validating (render + checks)
     stage("validating", "Validating outputs and rendering previews")
+    free_decks()  # LibreOffice runs next as a separate process: give it the memory the decks held
     render: dict = {}
     previews: list[dict] = []
     layout: list[dict] = []
     for a in artifacts:
         try:
-            pdf = to_pdf(a["path"], os.path.join(inp.workdir, "pdf"))
+            src = render_copy(a["path"], os.path.join(inp.workdir, "render")) if a["kind"].startswith("deck") else a["path"]
+            pdf = to_pdf(src, os.path.join(inp.workdir, "pdf"))
             pngs = pdf_to_pngs(pdf, prev_dir, prefix=a["kind"], dpi=55 if a["kind"].startswith("deck") else 45, last=40 if a["kind"].startswith("deck") else 4)
             a["pdf"] = pdf
             previews += [{"artifact_kind": a["kind"], "path": p, "page": i + 1} for i, p in enumerate(pngs)]
@@ -306,10 +311,9 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
         if a["kind"].startswith("deck"):
             dinfo = next((d for d in [upd_info, *extra_decks] if d and d["kind"] == a["kind"]), None)
             if dinfo:
-                from pptx import Presentation as _P
                 hdr_idx = {}
                 changed = {}
-                prs_ = _P(a["path"])
+                prs_ = open_light(a["path"])
                 for c in dinfo["changes"]:
                     if c.get("row") is None or c.get("unchanged"):
                         continue

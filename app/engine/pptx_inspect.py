@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from pptx import Presentation
+from .pptx_light import open_light
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu
 
@@ -112,7 +112,7 @@ def inspect_deck(path: str, profile: dict | None = None) -> dict:
     for k in list(overrides):
         if k.lower() in ("views", "video views"):
             overrides[k] = "views"
-    prs = Presentation(path)
+    prs = open_light(path)
     fonts = Counter()
     slides = []
     for idx, slide in enumerate(prs.slides, 1):

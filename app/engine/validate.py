@@ -6,7 +6,7 @@ import math
 import re
 
 import openpyxl
-from pptx import Presentation
+from .pptx_light import open_light
 
 from . import fields as F
 from . import fmt as FM
@@ -68,7 +68,7 @@ def independent_file_sums(f: dict) -> dict:
 
 def _deck_checks(deck_update: dict, excel: dict | None) -> list[dict]:
     checks: list[dict] = []
-    prs = Presentation(deck_update["path"])
+    prs = open_light(deck_update["path"])
     bad, ok = [], 0
     for ch in deck_update["changes"]:
         if ch.get("metric") in ("thumbnail", "chart") or ch.get("row") is None:
@@ -331,7 +331,7 @@ def run_validation(*, files: list[dict], norm, calc, excel: dict | None, deck_up
                     c["deck_index"] = n + 1
         checks += dchecks
     if deck_new and deck_new.get("path"):
-        prs = Presentation(deck_new["path"])
+        prs = open_light(deck_new["path"])
         bad, ok = [], 0
         for sidx, exp in deck_new["expected"].items():
             slide = prs.slides[int(sidx) - 1]

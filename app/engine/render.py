@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 
-from pptx import Presentation
+from .pptx_light import open_light
 from pptx.util import Emu
 
 from ..config import settings
@@ -91,7 +91,7 @@ def layout_checks(pptx_path: str, only_slides: set[int] | None = None, changed_c
     """changed_cells: {(slide, shape_name, row, col_index): old_text} - for updated client decks only
     the cells we changed are checked, comparing against the space the original text needed."""
     """Heuristic text-fit checks per text frame and table cell; off-slide shapes; missing fonts."""
-    prs = Presentation(pptx_path)
+    prs = open_light(pptx_path)
     W, H = prs.slide_width, prs.slide_height
     fonts = available_fonts()
     issues = []
