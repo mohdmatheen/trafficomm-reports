@@ -39,10 +39,35 @@ def has_period(name: str) -> bool:
     return any(r.search(stem) for r in _PERIOD_RES)
 
 
+PLAN_PATTERN = "Client_MediaPlan_Market_Period"
+PLAN_EXAMPLE = "ON_MediaPlan_UAE_Q4-2026.xlsx"
+_PLAN_WORD_RE = re.compile(r"media[\s_\-]*plan|(^|[\s_\-.])(mp|plan|flow ?chart)([\s_\-.]|$)", re.I)
+
+
+def check_plan_name(name: str) -> list[str]:
+    """Notes about a media plan's file name (Client_MediaPlan_Market_Period)."""
+    stem = os.path.splitext(name)[0].strip()
+    stem = re.sub(r"\s*[(_](\d{1,2})[)_]$", r" (\1)", stem)
+    notes: list[str] = []
+    if _GENERIC_RE.match(stem.lower()):
+        return [f"'{name}' looks like a default download name. Rename it as {PLAN_PATTERN}, e.g. {PLAN_EXAMPLE}."]
+    if _DUPLICATE_RE.search(stem):
+        notes.append("The name looks like a duplicate download (\"(1)\" or \"copy\"). Check it isn't the same plan uploaded twice.")
+    if not _PLAN_WORD_RE.search(stem):
+        notes.append(f"Add 'MediaPlan' to the name so it's clear this is the plan, e.g. {PLAN_EXAMPLE}.")
+    if not has_period(name) and not re.search(r"(?<!\d)20\d{2}(?!\d)", stem):
+        notes.append("The name doesn't say the period the plan covers. Add the month or quarter, e.g. Oct2026 or Q4-2026.")
+    return notes
+
+
 def check_name(name: str, role: str | None, sheets: list[dict] | None = None) -> list[str]:
-    """Notes about a raw report's file name. Empty when the name follows the convention."""
+    """Notes about a raw report's (or media plan's) file name. Empty when the name follows the convention."""
+    if role == "media_plan":
+        return check_plan_name(name)
     if role != "raw":
         return []
+    if _PLAN_WORD_RE.search(os.path.splitext(name)[0]) and not name_platforms(name):
+        return [f"This looks like a media plan. Move it to Media plan (file type menu), so booked figures aren't read as delivery."]
     stem = os.path.splitext(name)[0].strip()
     # stored names are sanitised, so a browser's "export (1)" arrives as "export _1_"
     stem = re.sub(r"\s*[(_](\d{1,2})[)_]$", r" (\1)", stem)

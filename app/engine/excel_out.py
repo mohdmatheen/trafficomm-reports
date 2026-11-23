@@ -135,7 +135,7 @@ def _bar_chart(ws, title, cat_col, val_col, hdr_row, last_row, anchor, y_title="
     ws.add_chart(ch, anchor)
 
 
-def build_excel(path: str, calc, norm, ctx: dict, commentary: list[dict] | None, plan: dict, profile: dict) -> dict:
+def build_excel(path: str, calc, norm, ctx: dict, commentary: list[dict] | None, plan: dict, profile: dict, media_plan: dict | None = None) -> dict:
     """Returns dict with sheet list and the values written (for validation read-back)."""
     wb = Workbook()
     cur = calc.currency or ""
@@ -174,6 +174,23 @@ def build_excel(path: str, calc, norm, ctx: dict, commentary: list[dict] | None,
     _write_val(ws, r, 2, "reach", t.get("reach"), cur)
     ws.cell(row=r, column=3, value=R.REACH_NOTE)
     written["kpis"]["reach"] = t.get("reach")
+    cmp = (media_plan or {}).get("comparison")
+    if cmp and cmp.get("total"):
+        r += 2
+        ws.cell(row=r, column=1, value="Against the media plan").font = Font(bold=True, size=12, color=RED)
+        for m in cmp["metrics"]:
+            x = cmp["total"].get(m) or {}
+            if x.get("booked") is None:
+                continue
+            r += 1
+            ws.cell(row=r, column=1, value=f"{'Spend' if m == 'budget' else METRIC_LABELS.get(m, m)} vs booked").font = BOLD
+            dm = "spend" if m == "budget" else "impressions"
+            _write_val(ws, r, 2, "ctr", x.get("delivery_pct"), cur)
+            ws.cell(row=r, column=3, value=f"{FM.fmt_metric(dm, x.get('delivered'), cur)} delivered of {FM.fmt_metric(dm, x.get('booked'), cur)} booked for the period"
+                    + (f"; pacing {FM.fmt_pct(x.get('pacing_pct'), 1)} of plan to date" if x.get("pacing_pct") is not None and cmp["total"].get("flight_left") else ""))
+        r += 1
+        ws.cell(row=r, column=1, value="Detail").font = BOLD
+        ws.cell(row=r, column=3, value="See the 'Booked vs Delivered' and 'Media Plan' tabs.")
     if commentary:
         r += 2
         ws.cell(row=r, column=1, value="Summary commentary").font = Font(bold=True, size=12, color=RED)
@@ -247,6 +264,8 @@ def build_excel(path: str, calc, norm, ctx: dict, commentary: list[dict] | None,
 
     if calc.comparison:
         _comparison_sheet(wb, calc, ctx, cur, written)
+    if media_plan:
+        _plan_sheets(wb, media_plan, ctx, cur, written)
 
     # consolidated data with provenance
     ws = wb.create_sheet("Consolidated Data")
@@ -409,3 +428,94 @@ def _method_sheet(wb, calc, ctx, norm):
         ws.cell(row=i, column=2, value=b).alignment = Alignment(wrap_text=True)
     ws.column_dimensions["A"].width = 30
     ws.column_dimensions["B"].width = 110
+
+
+def _plan_sheets(wb, media_plan: dict, ctx, cur, written):
+    """'Booked vs Delivered' (booked prorated to the period, delivered, % delivered, pacing, planned vs
+    actual rates) and 'Media Plan' (every plan line read, with its source cell row)."""
+    cmp = media_plan.get("comparison")
+    if cmp and cmp.get("rows"):
+        ws = wb.create_sheet("Booked vs Delivered")
+        _title(ws, "Booked vs delivered (media plan)", ctx)
+        by_c = cmp.get("by_campaign")
+        hdr = ["Platform"] + (["Plan campaign"] if by_c else []) + ["Flight", "Status"]
+        cols = []
+        for m in cmp["metrics"]:
+            lab = "Budget" if m == "budget" else METRIC_LABELS.get(m, m.title())
+            hdr += [f"Booked {lab.lower()} (flight)", f"Booked {lab.lower()} (this period)", "Spend" if m == "budget" else f"Delivered {lab.lower()}",
+                    "% of budget used" if m == "budget" else "% delivered", "Pacing to date %"]
+            cols.append(m)
+        rates = [k for k in ("cpm", "cpc", "cpv") if any((r.get("rates") or {}).get(k, {}).get("planned") for r in cmp["rows"])]
+        for k in rates:
+            hdr += [f"Planned {k.upper()}", f"Actual {k.upper()}"]
+        _header(ws, 4, hdr)
+        rr = 4
+        body = cmp["rows"] + ([cmp["total"]] if len(cmp["rows"]) > 1 else [])
+        for r in body:
+            rr += 1
+            is_tot = r is cmp.get("total")
+            vals = [r.get("short") or r["label"]] + ([r.get("campaign_short") or r.get("campaign", "")] if by_c else [])
+            fl = f"{r['start']:%d %b %Y} – {r['end']:%d %b %Y}" if r.get("start") and r.get("end") else ""
+            vals += [fl, r.get("status") or ""]
+            c = 1
+            for v in vals:
+                ws.cell(row=rr, column=c, value=v)
+                c += 1
+            for m in cols:
+                x = r.get(m) or {}
+                mm = "spend" if m == "budget" else "impressions"
+                for k, met in (("booked_flight", mm), ("booked", mm), ("delivered", mm), ("delivery_pct", "ctr"), ("pacing_pct", "ctr")):
+                    _write_val(ws, rr, c, met, x.get(k), cur)
+                    c += 1
+            for k in rates:
+                rt = (r.get("rates") or {}).get(k) or {}
+                _write_val(ws, rr, c, "cpm", rt.get("planned"), cur)
+                _write_val(ws, rr, c + 1, "cpm", rt.get("actual"), cur)
+                c += 2
+            if is_tot:
+                for ci in range(1, len(hdr) + 1):
+                    ws.cell(row=rr, column=ci).fill = TOTAL_FILL
+                    ws.cell(row=rr, column=ci).font = BOLD
+        rr += 2
+        notes = ["Booked = the client media plan's net media figures. 'This period' is the share of each line's flight that falls in the reporting period "
+                 "(prorated by days); pacing compares delivery with the share of the flight elapsed by the last day of data.",
+                 "Status (flight still running): On track = 90-110% of the delivery expected to date, Behind plan below 90%, Ahead of plan above 110%. "
+                 "Flight ended: Delivered (90-110% of booked), Under-delivered, Over-delivered. Budget is used first, then impressions."]
+        notes += list(cmp.get("notes") or [])
+        for n in notes:
+            ws.cell(row=rr, column=1, value=n).font = SUB_FONT
+            rr += 1
+        ws.freeze_panes = ws.cell(row=5, column=2)
+        _autowidth(ws, maxw=28)
+        written["sheets"].append(ws.title)
+        written["plan"] = {r["label"] + (f" / {r['campaign']}" if r.get("campaign") else ""): {m: (r.get(m) or {}).get("delivery_pct") for m in cols} for r in cmp["rows"]}
+    lines = media_plan.get("lines") or []
+    if lines:
+        ws = wb.create_sheet("Media Plan")
+        _title(ws, "Media plan lines read (source of the booked figures)", ctx)
+        hdr = ["Source file", "Tab", "Row", "Platform", "Market", "Language", "Plan campaign", "Objective", "Format", "Buy type", "Flight start", "Flight end",
+               "In reporting period %", f"Budget ({cur})" if cur else "Budget", "Budget as in plan", "Plan currency", "FX rate", "Booked volume",
+               "Impressions", "Reach", "Views", "Clicks", "Engagements", "Derived"]
+        _header(ws, 4, hdr)
+        rr = 4
+        for ln in lines:
+            rr += 1
+            vals = [ln.get("file"), ln.get("sheet"), ln.get("row"), F.PLATFORM_LABELS.get(ln.get("platform"), ln.get("platform_label") or ""), ln.get("market"),
+                    ln.get("language"), ln.get("campaign"), ln.get("objective"), ln.get("format"), ln.get("buy_type"), ln.get("start"), ln.get("end")]
+            for ci, v in enumerate(vals, 1):
+                cell = ws.cell(row=rr, column=ci, value=v)
+                if isinstance(v, dt.date):
+                    cell.number_format = "yyyy-mm-dd"
+            ip = ln.get("in_period")
+            _write_val(ws, rr, 13, "ctr", None if ip is None else ip * 100, cur)
+            _write_val(ws, rr, 14, "spend", ln.get("budget"), cur)
+            _write_val(ws, rr, 15, "impressions" if not ln.get("budget_original") else "spend", ln.get("budget_original"), "")
+            ws.cell(row=rr, column=16, value=ln.get("currency_original") or "")
+            ws.cell(row=rr, column=17, value=ln.get("fx_rate"))
+            for ci, m in enumerate(["booked_volume", "impressions", "reach", "views", "clicks", "engagements"], 18):
+                _write_val(ws, rr, ci, "impressions", ln.get(m), cur)
+            ws.cell(row=rr, column=24, value="; ".join(ln.get("derived") or []))
+        ws.freeze_panes = "A5"
+        ws.auto_filter.ref = f"A4:{get_column_letter(len(hdr))}{rr}"
+        _autowidth(ws, maxw=30)
+        written["sheets"].append(ws.title)

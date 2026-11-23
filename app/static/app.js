@@ -4,8 +4,8 @@
   const $ = (s, el) => (el || document).querySelector(s);
   const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
   const body = document.body;
-  const ROLE_EXT = { raw: [".csv", ".xlsx"], template: [".xlsx"], client_deck: [".pptx"], screenshots: [".png", ".jpg", ".jpeg", ".zip"] };
-  const ROLE_LABEL = { raw: "Raw data", template: "Excel template", client_deck: "Client deck", screenshots: "Screenshots", creatives: "Screenshots (ZIP)" };
+  const ROLE_EXT = { raw: [".csv", ".xlsx"], media_plan: [".xlsx", ".csv"], template: [".xlsx"], client_deck: [".pptx"], screenshots: [".png", ".jpg", ".jpeg", ".zip"] };
+  const ROLE_LABEL = { raw: "Raw data", media_plan: "Media plan", template: "Excel template", client_deck: "Client deck", screenshots: "Screenshots", creatives: "Screenshots (ZIP)" };
 
   function toast(msg, err) {
     const t = $("#toast"); if (!t) return;
@@ -495,7 +495,7 @@
     }
 
     // ---- uploads
-    const ICON = { raw: "table", template: "table", client_deck: "present", screenshots: "image", creatives: "image" };
+    const ICON = { raw: "table", media_plan: "table", template: "table", client_deck: "present", screenshots: "image", creatives: "image" };
     const svg = (n) => '<svg class="ic" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
     // ---- upload guidelines: open by default, remember if the employee folds them away
     const guide = $("#guideDetails");
@@ -512,6 +512,7 @@
       if (f.sheets && f.sheets.length) meta = f.sheets.map((s) => esc(s.name) + ": " + (s.rows == null ? "?" : s.rows) + " rows" + (s.platform ? " · " + esc(s.platform) : "") + (s.currency ? " · " + esc(s.currency) : "") + (s.dates && s.dates.min ? " · " + esc(s.dates.min) + " → " + esc(s.dates.max) : "") + (s.total_rows ? " · " + s.total_rows + " total row(s) excluded" : "") + (s.summary_blocks ? " · " + s.summary_blocks + " summary block(s) excluded" : "")).join("<br>");
       if (f.deck) meta = f.deck.slides + " slides · " + esc(f.deck.aspect) + (f.deck.unsupported ? " · " + f.deck.unsupported + " unsupported element(s)" : "") + (f.deck.summary ? "<br>" + esc(typeof f.deck.summary === "string" ? f.deck.summary : JSON.stringify(f.deck.summary)) : "");
       if (f.images != null) meta = f.images + " image(s)";
+      if (f.role === "media_plan" && f.media_plan) meta = esc(f.media_plan.text);
       li.innerHTML = '<div class="frow"><span class="f-ic">' + svg(ICON[f.role] || "file") + '</span><span class="fname">' + esc(f.name) + '</span><span class="fsize">' + size(f.size) + '</span><span class="fstate">Uploaded</span>' +
         (opts.length > 1 ? '<label class="sr" for="role-' + f.id + '">File type for ' + esc(f.name) + '</label><select id="role-' + f.id + '">' + opts.map((r) => '<option value="' + r + '"' + (r === f.role ? " selected" : "") + ">" + ROLE_LABEL[r] + "</option>").join("") + "</select>" : "") +
         '<button type="button" class="btn btn-quiet btn-sm" data-remove>' + svg("trash") + 'Remove<span class="sr"> ' + esc(f.name) + "</span></button></div>" +
