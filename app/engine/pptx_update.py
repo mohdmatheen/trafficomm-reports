@@ -18,7 +18,10 @@ from .media_plan import is_plan_header
 from . import fmt as FM
 from . import rules as R
 from .pptx_inspect import MONTH_YEAR_RE, clean, inspect_deck, label_to_metric, slide_title
+from .pptx_light import free as free_decks
+from .pptx_light import open_light
 from .pptx_posts import DISPLAY, RowTableUpdater, is_row_table, slide_texts
+
 
 TITLE_SPLIT = re.compile(r"\s+[–—-]\s+|:\s+")
 
@@ -170,27 +173,36 @@ class DeckUpdater:
         self.row_slides: set[int] = set()
         self.row_pre = None
         self.row_has = False
-        prs = Presentation(self.src)
-        rt = RowTableUpdater(prs, self.calc, self.period, self.deck_cfg, self.answers, self.options, self.screenshots)
+        # look first on a copy without pictures; the full deck is only loaded to add the new month
+        rt = RowTableUpdater(open_light(self.src), self.calc, self.period, self.deck_cfg, self.answers, self.options, self.screenshots)
         if not rt.has_row_tables():
+            del rt
+            free_decks()
             return
         self.row_has = True
         roll = rt.plan_roll()
         self.questions += rt.questions
         if roll and roll.get("add"):
+            prs = Presentation(self.src)
+            rt = RowTableUpdater(prs, self.calc, self.period, self.deck_cfg, self.answers, self.options, self.screenshots)
             rt.restructure(roll)
             import os
             import tempfile
             fd, tmp = tempfile.mkstemp(suffix=".pptx", prefix="deck_rows_")
             os.close(fd)
             prs.save(tmp)
+            del prs
+            rt.prs = None
             self.src = tmp
             self.inspection = inspect_deck(tmp, self.profile)
         self.row_pre = {"changes": rt.changes, "flags": rt.flags, "new_section_slides": getattr(rt, "new_section_slides", None)}
+        del rt
+        free_decks()
         overrides = self.deck_cfg.get("metric_labels")
-        for idx, slide in enumerate(Presentation(self.src).slides, 1):
+        for idx, slide in enumerate(open_light(self.src).slides, 1):
             if any(is_row_table(slide, sh.table, overrides) for sh in slide.shapes if getattr(sh, "has_table", False) and sh.has_table):
                 self.row_slides.add(idx)
+        free_decks()
 
     def match_slides(self):
         if getattr(self, "assigned", None) is not None:  # already matched (pipeline asks first, run() reuses)
@@ -302,9 +314,9 @@ class DeckUpdater:
     # ------------------------------------------------------------------
     def run(self, out_path: str) -> dict:
         self.match_slides()
-        prs = Presentation(self.src)
         if any(q["blocking"] for q in self.questions):
             return {"blocked": True, "questions": self.questions, "slide_map": self.slide_map, "flags": self.flags}
+        prs = Presentation(self.src)
         style = self._detect_range_style() or self.deck_cfg.get("range_style") or "plain"  # the deck's own style wins
         ds, de = self.period.get("data_start"), self.period.get("data_end")
         range_text = FM.range_label(ds, de, style)
@@ -374,6 +386,8 @@ class DeckUpdater:
                                ". Name each file like the creative on its slide (e.g. 'BWA-Static-EN.png') or 'slide 5.png'."})
         self.slide_map.sort(key=lambda m: m["slide"])
         prs.save(out_path)
+        del prs
+        free_decks()
         return {"blocked": False, "changes": self.changes, "flags": self.flags, "slide_map": self.slide_map,
                 "questions": self.questions, "range_text": range_text}
 
