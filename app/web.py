@@ -530,6 +530,9 @@ async def update_file(request: Request, file_id: int):
             if role not in S.ROLE_EXT or ext not in S.ROLE_EXT[role]:
                 raise S.UserError(f"A {ext} file can't have the role '{role}'")
             f.role = role
+            if role == "media_plan" and not (f.inspection or {}).get("media_plan"):
+                from .engine.media_plan import summary_text
+                f.inspection = {**(f.inspection or {}), "media_plan": summary_text([], f.stored_path, t.currency or None)}
         if "excluded" in body:
             f.excluded = bool(body["excluded"])
         if body.get("remove") and (t.status == "draft" or f.added_in_version > (s.scalar(select(func.max(TaskVersion.number)).where(TaskVersion.task_id == t.id)) or 0)):
@@ -591,7 +594,10 @@ for _k in EXTRA_DECK_KINDS:
     PREVIEW_LABEL[_k] = f"Updated client deck {_k.rsplit('_', 1)[1]}"
 CHECK_GROUP = {"excel": "workbook", "template": "workbook", "deck": "presentation", "crossfile": "presentation", "labels": "presentation",
                "deck_flags": "presentation", "deck_new": "presentation", "layout": "presentation"}
+CHECK_GROUP.update({"media_plan": "data", "media_plan_totals": "data"})
 CHECK_NEXT = {
+    "media_plan": "Check the 'Media Plan' tab of the Excel report. If lines are missing, upload the plan as the client sent it (one table per tab, with its Total row).",
+    "media_plan_totals": "Don't send this version. Check the 'Media Plan' tab against the plan and request a revision.",
     "columns": "Check that the raw export includes the missing columns, then upload it with your feedback.",
     "coverage": "Make sure every uploaded file belongs in this report, or upload the missing source data with your feedback.",
     "period": "Check the reporting dates on the task and the dates in the exports.",
@@ -761,7 +767,7 @@ def workspace_ctx(s, user: User, t: Task, view_id: int | None = None) -> dict:
         review_state = ("warn", "Review required")
     else:
         review_state = ("neutral", S.STATUS_LABEL.get(view.status, view.status) if view else "")
-    role_groups = [("raw", "Raw reports", "table"), ("template", "Excel templates", "table"), ("client_deck", "Client PowerPoint", "present"),
+    role_groups = [("raw", "Raw reports", "table"), ("media_plan", "Media plan", "table"), ("template", "Excel templates", "table"), ("client_deck", "Client PowerPoint", "present"),
                    ("screenshots", "Screenshots and reference files", "image")]
     fsum = [S.file_summary(f) for f in files]
     files_by_role = {k: [f for f in fsum if (f["role"] == k or (k == "screenshots" and f["role"] == "creatives"))] for k, _, _ in role_groups}

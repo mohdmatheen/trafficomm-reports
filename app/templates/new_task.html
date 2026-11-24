@@ -131,6 +131,19 @@
           <p class="f-err" id="err-raw" hidden></p>
           <ul class="filelist" aria-live="polite"></ul>
         </div>
+        <div class="dropzone" data-role="media_plan" data-accept=".xlsx,.csv" data-multiple="1" id="zone-plan">
+          <input type="file" multiple accept=".xlsx,.csv" class="sr" tabindex="-1" aria-hidden="true">
+          <div class="dz-main">
+            <span class="dz-ic xl">{{ icon('table') }}</span>
+            <div class="dz-txt">
+              <div class="dz-title"><b>Media plan</b><span class="tag-opt">Optional</span></div>
+              <div class="dz-hint">Drop the client’s plan here or <button type="button" class="dz-pick">browse files</button></div>
+              <div class="dz-meta">XLSX, CSV · as the client sent it · booked budget and volumes are compared with delivery (delivered vs booked, pacing) in the Excel and the deck</div>
+              <div class="dz-meta">Name it <code>Client_MediaPlan_Market_Period</code>, e.g. <code>ON_MediaPlan_UAE_Q4-2026.xlsx</code></div>
+            </div>
+          </div>
+          <ul class="filelist" aria-live="polite"></ul>
+        </div>
         <div class="zone-pair">
           <div class="dropzone" data-role="template" data-accept=".xlsx">
             <input type="file" accept=".xlsx" class="sr" tabindex="-1" aria-hidden="true">

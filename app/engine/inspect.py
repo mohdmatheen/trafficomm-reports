@@ -261,6 +261,8 @@ def suggest_role(name: str, ext: str, sheets_info: list[dict] | None, formula_ce
         return "client_deck"
     if ext in (".zip", ".png", ".jpg", ".jpeg"):
         return "screenshots"
+    if ext in (".xlsx", ".csv") and re.search(r"media[\s_\-]*plan|(^|[\s_\-.])(mp|plan|flow ?chart)([\s_\-.]|$)", lname):
+        return "media_plan"
     if ext == ".xlsx" and ("template" in lname or (formula_cells > 0 and not any(s.get("row_count", 0) > 0 for s in sheets_info or []))):
         return "template"
     return "raw"
