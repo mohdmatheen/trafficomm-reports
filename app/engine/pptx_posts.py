@@ -208,6 +208,9 @@ def row_table_info(tbl, overrides=None) -> dict | None:
     if len(rows) < 3:
         return None
     header = rows[0]
+    from .media_plan import is_plan_header
+    if is_plan_header(header):
+        return None  # booked vs delivered table: filled from the media plan
     mcols = {i: label_to_metric(h, overrides) for i, h in enumerate(header)}
     mcols = {i: m for i, m in mcols.items() if m and m not in ("range", "audience_size")}
     if len(mcols) < 2:

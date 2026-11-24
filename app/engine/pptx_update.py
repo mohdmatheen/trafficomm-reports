@@ -14,6 +14,7 @@ from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.util import Pt
 
+from .media_plan import is_plan_header
 from . import fmt as FM
 from . import rules as R
 from .pptx_inspect import MONTH_YEAR_RE, clean, inspect_deck, label_to_metric, slide_title
@@ -429,6 +430,8 @@ class DeckUpdater:
                 continue
             tbl = sh.table
             header = [clean(c.text) for c in tbl.rows[0].cells]
+            if is_plan_header(header):
+                continue  # booked vs delivered table on a creative slide: filled from the media plan
             mcols = {i: label_to_metric(h, self.deck_cfg.get("metric_labels")) for i, h in enumerate(header)}
             if len([m for m in mcols.values() if m and m not in ("range", "audience_size")]) < 3:
                 continue

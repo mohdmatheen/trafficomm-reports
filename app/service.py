@@ -23,7 +23,8 @@ from .storage import safe_name, sha256, storage
 log = logging.getLogger("trafficomm.service")
 
 ALLOWED_EXT = {".csv", ".xlsx", ".pptx", ".zip", ".png", ".jpg", ".jpeg"}
-ROLE_EXT = {"raw": {".csv", ".xlsx"}, "template": {".xlsx"}, "client_deck": {".pptx"}, "screenshots": {".png", ".jpg", ".jpeg", ".zip"}, "creatives": {".zip"}}
+ROLE_EXT = {"raw": {".csv", ".xlsx"}, "template": {".xlsx"}, "client_deck": {".pptx"}, "screenshots": {".png", ".jpg", ".jpeg", ".zip"}, "creatives": {".zip"},
+            "media_plan": {".xlsx", ".csv"}}
 STAGE_TO_STATUS = {"inspecting": "inspecting", "mapping": "mapping", "awaiting_clarification": "awaiting_clarification",
                    "calculating": "calculating", "generating": "generating", "validating": "validating",
                    "ready_for_review": "ready_for_review", "validation_blocked": "validation_blocked", "blocked": "validation_blocked"}
@@ -68,6 +69,9 @@ def add_file(s, task: Task, user: User, tmp_path: str, original_name: str, role:
     role = role or insp.get("role_suggested") or "raw"
     if ext not in ROLE_EXT.get(role, set()):
         role = insp.get("role_suggested") or "raw"
+    if role == "media_plan" or insp.get("role_suggested") == "media_plan":
+        from .engine.media_plan import summary_text
+        insp["media_plan"] = summary_text(insp.get("sheets", []), tmp_path, task.currency or None)
     f = TaskFile(task_id=task.id, role=role, original_name=safe_name(original_name), stored_path="", size=size,
                  sha256=insp["sha256"], uploaded_by=user.id, added_in_version=version_no, inspection=_json_safe(insp))
     s.add(f)
@@ -88,7 +92,9 @@ def file_summary(f: TaskFile) -> dict:
                        "summary_blocks": len(sh.get("summary_blocks", [])), "total_rows": len(sh.get("total_rows", [])),
                        "unresolved": sh.get("unresolved", []), "formula_cells": sh.get("formula_cells", 0)})
     deck = insp.get("deck")
-    return {"id": f.id, "name": f.original_name, "size": f.size, "role": f.role, "sheets": sheets, "warnings": insp.get("warnings", []),
+    mp = insp.get("media_plan") if f.role == "media_plan" else None
+    warns = [w for w in insp.get("warnings", []) if not (f.role == "media_plan" and "recognisable reporting data" in w)]
+    return {"media_plan": mp, "id": f.id, "name": f.original_name, "size": f.size, "role": f.role, "sheets": sheets if f.role != "media_plan" else [], "warnings": warns,
             "deck": deck and {"slides": deck["slide_count"], "summary": deck["summary"], "aspect": deck["aspect"], "unsupported": deck["unsupported_total"]},
             "images": len(insp.get("images", [])) if insp.get("images") else None, "added_in_version": f.added_in_version, "excluded": f.excluded,
             "name_notes": check_name(f.original_name, f.role, sheets)}
@@ -233,6 +239,8 @@ def create_revision(s, task: Task, user: User, feedback: str, base_version_id: i
             overrides["short_summary"] = True
         elif o.op == "include_commentary":
             overrides["include_commentary"] = o.value not in ("0", "false")
+        elif o.op == "plan_slide":
+            overrides["plan_slide"] = o.value not in ("0", "false")
     base_files = [fid for fid in (base.file_ids or [])]
     file_ids = base_files + [fid for fid in new_file_ids if fid not in base_files]
     v = TaskVersion(task_id=task.id, number=versions[-1].number + 1, base_version_id=base.id, kind="revision", feedback=feedback,
@@ -641,6 +649,15 @@ def persist_result(job_id: int, vid: int, tid: int, result: dict):
                 plans = {k: v for k, v in (stt.get("structure_plans") or {}).items() if k in ks}
                 plans[st_info["fingerprint"]] = st_info["claude_plan"]
                 stt["structure_plans"] = plans
+            prof.settings = stt
+        new_layouts = ((result.get("media_plan") or {}).get("save_layouts") or {})
+        if result["status"] == "ready_for_review" and new_layouts and task.profile_id:
+            # Claude's reading of a new media plan layout is reused for this client's next plans
+            prof = s.get(Profile, task.profile_id)
+            stt = dict(prof.settings or {})
+            lay = dict(stt.get("media_plan_layouts") or {})
+            lay.update(new_layouts)
+            stt["media_plan_layouts"] = dict(list(lay.items())[-30:])
             prof.settings = stt
         if result["status"] in ("ready_for_review", "validation_blocked"):
             v.completed_at = now()

@@ -73,9 +73,43 @@ class PlanOut(BaseModel):
         return Plan(**d)
 
 
+PLAN_FIELD = Literal["platform", "market", "language", "campaign", "objective", "format", "buy_type", "targeting", "start_date", "end_date",
+                     "month", "flight", "currency", "booked_volume", "cpm", "cpc", "cpv", "budget", "impressions", "reach", "views", "clicks", "engagements"]
+
+
+class PlanColumn(BaseModel):
+    column: int = Field(description="1-based column number (the N in cN)")
+    field: PLAN_FIELD
+
+
+class PlanSheetOut(BaseModel):
+    sheet_index: int = Field(description="0-based sheet number from '### sheet N'")
+    sheet_name: str
+    header_row: int = Field(description="1-based row number of the table's header row (the N in rN)")
+    last_row: int = Field(description="1-based last row of plan lines, before the Total row; 0 if the table ends at its Total row")
+    currency: str = Field(description="Currency of the budget column if stated (e.g. AED, USD); empty string if not stated")
+    columns: list[PlanColumn]
+
+
+class MediaPlanMapOut(BaseModel):
+    """Where the booked figures are in a client media plan. Locations only - never figures."""
+    sheets: list[PlanSheetOut] = Field(description="Sheets holding plan lines. Leave out summary tabs that repeat detail tabs")
+    notes: list[str]
+
+
+MEDIA_PLAN_PROMPT = """This is the top of each sheet of a client media plan, as cells (rN = row, cN = column).
+Identify the table(s) of booked plan lines: the header row and which column holds each field.
+- budget = the net media budget per line (prefer 'net to media' in the report currency; never fees, VAT or client gross totals, never unit rates).
+- impressions / reach / views / clicks / engagements = the planned or estimated volume columns (not rates, not percentages, not audience size).
+- booked_volume = 'Booked volume' / units bought, with buy_type = the buy type column (CPM, CPC...).
+- platform = channel/platform column. market, language, campaign, objective, format, targeting when present.
+- start_date/end_date/month/flight only if the table has such columns.
+Leave out summary tabs that only repeat the detailed tabs. Do not return any figures."""
+
+
 class RevisionOp(BaseModel):
     op: Literal["set_click_metric", "set_conversion_metric", "split_tabs_by", "add_breakdown", "remove_section",
-                "remove_slide", "short_summary", "keep_formatting", "use_new_files", "include_commentary", "exclude_file", "unsupported"]
+                "remove_slide", "short_summary", "keep_formatting", "use_new_files", "include_commentary", "exclude_file", "plan_slide", "unsupported"]
     value: str | None = None
     note: str = ""
 
@@ -219,12 +253,19 @@ class RuleProvider:
             ops.append(RevisionOp(op="use_new_files", note="Include the files uploaded with this feedback"))
         if re.search(r"no commentary|remove (the )?commentary|without commentary", t):
             ops.append(RevisionOp(op="include_commentary", value="0", note="Remove commentary"))
+        if re.search(r"(no|remove|delete|drop|without|don'?t add)( the| a)? (booked|media plan|delivered vs booked|booked vs delivered|pacing)[\w ]{0,25}slide", t):
+            ops.append(RevisionOp(op="plan_slide", value="0", note="Leave out the added booked vs delivered slide"))
+        elif re.search(r"(add|include)( a| the)? (booked|media plan|delivered vs booked|booked vs delivered|pacing)[\w ]{0,25}slide", t):
+            ops.append(RevisionOp(op="plan_slide", value="1", note="Add the booked vs delivered slide"))
         if not ops:
             ops.append(RevisionOp(op="unsupported", value=feedback, note="Could not map this feedback to a supported change"))
         return RevisionPlan(ops=ops, summary="; ".join(o.note for o in ops))
 
     def write_commentary(self, facts: dict, ctx: dict, calc) -> list[dict]:
         return rule_commentary(calc, ctx)
+
+    def map_media_plan(self, grid: str, file_name: str):
+        return None  # built-in rules only; the caller keeps the rules' reading
 
 
 def _f(metric, v, cur):
@@ -365,10 +406,19 @@ class AnthropicProvider:
             p.notes.append("Claude unavailable for this step - rule-based fallback used.")
             return p
 
+    def map_media_plan(self, grid: str, file_name: str):
+        try:
+            user = (f"{MEDIA_PLAN_PROMPT}\nFile name: <untrusted>{file_name[:120]}</untrusted>\n<untrusted>\n{grid}\n</untrusted>")
+            return self._parse(MediaPlanMapOut, user, 3000, step="media_plan")
+        except Exception as e:  # noqa: BLE001
+            log.warning("AI media plan mapping failed (%s: %s)", type(e).__name__, str(e)[:300])
+            return None
+
     def interpret_feedback(self, feedback, has_new_files) -> RevisionPlan:
         try:
             user = (f"New files uploaded with this feedback: {has_new_files}\nSupported ops: {RevisionOp.model_fields['op'].annotation}\n"
                     f"Dimension keys: {DIMS}. Section keys: summary, platform, brand, creative, market, comparison, insights, recommendations, methodology.\n"
+                    "plan_slide value '0' leaves out the added 'Delivered vs booked' media plan slide, '1' adds it.\n"
                     f"Employee feedback:\n<untrusted>{feedback[:4000]}</untrusted>\nMap it to ops; use 'unsupported' for anything else.")
             return self._parse(RevisionPlan, user, step="feedback")
         except Exception as e:  # noqa: BLE001
@@ -415,7 +465,8 @@ def is_freeform(text: str) -> bool:
     return bool(t) and (len(re.findall(r"\w+", t)) > 40 or _routine_share(t) < 0.75)
 
 
-def structure_fingerprint(raw_files: list, deck_file, template_file, deliverables, instructions: str, rule_plan: dict) -> tuple[str, list[str]]:
+def structure_fingerprint(raw_files: list, deck_file, template_file, deliverables, instructions: str, rule_plan: dict,
+                          plan_layouts: list[str] | None = None) -> tuple[str, list[str]]:
     """What makes a report 'the same report' month to month: the raw export layouts, the deck and
     template structure, the deliverables and the kind of request. Dates and figures are ignored."""
     import hashlib
@@ -439,6 +490,9 @@ def structure_fingerprint(raw_files: list, deck_file, template_file, deliverable
     if template_file:
         parts.append(("template", [s.get("name") for s in template_file["inspection"].get("sheets", [])]))
         desc.append("Excel template structure")
+    if plan_layouts:  # only when a media plan is uploaded, so fingerprints without one stay unchanged
+        parts.append(("media_plan", sorted(set(plan_layouts))))
+        desc.append("media plan layout")
     parts.append(("deliverables", sorted(deliverables or [])))
     req = {k: rule_plan.get(k) for k in ("breakdowns", "split_tabs_by", "include_commentary", "include_recommendations", "short_summary",
                                          "compare", "template_only", "remove_sections", "add_missing_slides")}
@@ -491,6 +545,16 @@ class HybridProvider(AnthropicProvider):
             self._log("Instructions", "claude", self.reason)
         return p
 
+    def map_media_plan(self, grid: str, file_name: str):
+        """Only called when the built-in rules couldn't read the plan's layout and no reading of
+        this layout is saved for the client."""
+        out = super().map_media_plan(grid, file_name)
+        if out is None:
+            self._log("Media plan", "rules", "Claude unavailable - built-in rules used instead")
+        else:
+            self._log("Media plan", "claude", "New media plan layout - Claude located the plan table (figures read from the cells)")
+        return out
+
     def interpret_feedback(self, feedback, has_new_files) -> RevisionPlan:
         rp = self.fallback.interpret_feedback(feedback, has_new_files)
         if not any(o.op == "unsupported" for o in rp.ops):
@@ -499,6 +563,7 @@ class HybridProvider(AnthropicProvider):
         try:
             user = (f"New files uploaded with this feedback: {has_new_files}\nSupported ops: {RevisionOp.model_fields['op'].annotation}\n"
                     f"Dimension keys: {DIMS}. Section keys: summary, platform, brand, creative, market, comparison, insights, recommendations, methodology.\n"
+                    "plan_slide value '0' leaves out the added 'Delivered vs booked' media plan slide, '1' adds it.\n"
                     f"Employee feedback:\n<untrusted>{feedback[:4000]}</untrusted>\nMap it to ops; use 'unsupported' for anything else.")
             out = self._parse(RevisionPlan, user, step="feedback")
             self._log("Feedback", "claude", "New kind of change the built-in rules couldn't map - read by Claude")

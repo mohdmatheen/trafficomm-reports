@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from .engine import ai as AI
 from .engine import fmt as FM
+from .engine import media_plan as MP
 from .engine import rules as R
 from .engine.calc import calculate
 from .engine.excel_out import build_excel
@@ -21,6 +22,7 @@ from .engine.normalize import Question, build_dataset
 from .engine.pptx_new import build_new_deck
 from .engine.pptx_light import free as free_decks
 from .engine.pptx_light import open_light, render_copy
+from .engine.pptx_plan import apply_to_deck as apply_plan_to_deck
 from .engine.pptx_update import DeckUpdater
 from .engine.render import RenderError, layout_checks, pdf_to_pngs, to_pdf
 from .engine.template_fill import fill_template
@@ -74,6 +76,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     deck_files = [f for f in inp.files if f["role"] == "client_deck"]
     deck_file = deck_files[0] if deck_files else None
     template_file = next((f for f in inp.files if f["role"] == "template"), None)
+    plan_files = [f for f in inp.files if f["role"] == "media_plan" and not f.get("excluded") and f["inspection"].get("ok", True)]
     shots = [f for f in inp.files if f["role"] in ("screenshots", "creatives") and not f.get("excluded") and f["inspection"].get("ok", True)]
     rejected = [f for f in inp.files if not f["inspection"].get("ok", True)]
     result["inspection"] = [{"file": f["name"], "role": f["role"], "ok": f["inspection"].get("ok", True), "error": f["inspection"].get("error"),
@@ -89,7 +92,8 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     headers = sorted({c["original"] for f in raw for s in f["inspection"].get("sheets", []) for c in s.get("columns", [])})
     # hybrid routing: repeat reports on a known structure use built-in rules; new ones get Claude
     rule_plan = AI.RuleProvider().interpret_instructions(t.get("instructions") or "", t.get("deliverables") or [], headers).model_dump()
-    fp, fp_desc = AI.structure_fingerprint(raw, deck_files, template_file, t.get("deliverables"), t.get("instructions") or "", rule_plan)
+    plan_layouts = [MP.file_layout(f["path"], t.get("currency")) for f in plan_files]
+    fp, fp_desc = AI.structure_fingerprint(raw, deck_files, template_file, t.get("deliverables"), t.get("instructions") or "", rule_plan, plan_layouts)
     known = list(inp.profile.get("known_structures") or [])
     if fp in known:
         mode = (False, "Repeat report on a known structure (data update) - built-in rules")
@@ -179,6 +183,24 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
                          "tables": {k: {"title": tb.title, "dims": tb.dims, "rows": [{kk: vv for kk, vv in r.items() if kk in tb.dims or kk in ("spend", "impressions", "clicks", "ctr", "cpc", "cpm", "conversions", "cpa", "reach", "views", "video_plays_3s", "vtr", "_rows")} for r in tb.rows[:50]]} for k, tb in calc.tables.items()},
                          "comparison": calc.comparison and {"deltas": calc.comparison["deltas"], "previous": {k: v for k, v in calc.comparison["previous"].items() if not str(k).startswith("_") and not isinstance(v, list)}}}
 
+    # ---------------- Media plan: booked figures vs delivery (figures read from the plan's cells)
+    plan_cmp = None
+    if plan_files:
+        stage("calculating", "Reading the media plan")
+        mp = MP.read_media_plans(plan_files, provider, inp.profile.get("media_plan_layouts") or {}, t, currency)
+        plan_cmp = MP.compare(mp, calc, norm.period, t)
+        if plan_cmp:
+            calc.facts = {**MP.plan_facts(plan_cmp, currency), **calc.facts}  # first, so they are inside what Claude is sent
+        result["warnings"] = result.get("warnings", []) + mp["warnings"]
+        result["assumptions"] = result.get("assumptions", []) + mp["assumptions"]
+        result["media_plan"] = {"files": mp["files"], "engines": mp["engines"], "save_layouts": mp["save_layouts"], "total_checks": mp["total_checks"],
+                                "warnings": mp["warnings"], "notes": mp["notes"] + ((plan_cmp or {}).get("notes") or []),
+                                "lines": [{k: v for k, v in ln.items() if k != "targeting"} for ln in mp["lines"]][:300],
+                                "comparison": plan_cmp and {k: v for k, v in plan_cmp.items() if k != "notes"}}
+        mp_lines = mp["lines"]
+    else:
+        mp_lines = []
+
     # deck slide matching may raise its own clarification questions before generating
     # one updated deck per uploaded client PowerPoint; the first keeps the original kind/keys
     updaters: list[tuple[str, dict, DeckUpdater]] = []
@@ -210,6 +232,8 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
             for r in tb.rows:
                 labels += [str(r[d]) for d in tb.dims]
         raw_comm = provider.write_commentary(calc.facts, ctx, calc)
+        if plan_cmp and not any(str(e).startswith("plan") for c in raw_comm for e in (c.get("evidence") or [])):
+            raw_comm = list(raw_comm) + MP.plan_commentary(plan_cmp, currency)
         commentary, dropped = AI.validate_commentary(raw_comm, calc.facts, labels + [ctx["data_window"], period_label])
         if not plan.get("include_recommendations", True) or "recommendations" in plan.get("remove_sections", []):
             commentary = [c for c in commentary if c["type"] != "recommendation"]
@@ -221,7 +245,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     naming = inp.profile.get("file_naming") or "{client}_{title}_{period}_v{version}"
     base = _safe(naming.format(client=t.get("client") or "Report", brand=t.get("brand") or t.get("client") or "Report", title=t.get("title") or "Report",
                                period=period_label.replace(" ", ""), version=inp.version_number))
-    calc_fp = _fp([f["inspection"]["sha256"] for f in raw], str(t.get("period_start")), str(t.get("period_end")), str(t.get("comparison_start")), currency, R.usd_aed_rate(t), "rules-2026-11",
+    calc_fp = _fp([f["inspection"]["sha256"] for f in raw], [f["inspection"]["sha256"] for f in plan_files], str(t.get("period_start")), str(t.get("period_end")), str(t.get("comparison_start")), currency, R.usd_aed_rate(t), "rules-2026-11",
                   calc.settings, sorted(inp.answers.items()), inp.profile.get("column_overrides"), inp.profile.get("naming"))
     artifacts = []
     excel_info = template_info = upd_info = new_info = None
@@ -256,7 +280,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
             path = os.path.join(out_dir, f"{base}{'_consolidated' if template_file else ''}.xlsx")
             fp = _fp(calc_fp, "excel", plan.get("split_tabs_by"), plan.get("breakdowns"), plan.get("include_commentary"), plan.get("short_summary"), commentary)
             reused = reuse("excel_consolidated", fp, path)
-            written = build_excel(path, calc, norm, ctx, commentary, plan, inp.profile)
+            written = build_excel(path, calc, norm, ctx, commentary, plan, inp.profile, media_plan={"comparison": plan_cmp, "lines": mp_lines} if plan_files else None)
             excel_info = {"path": path, "written": written}
             artifacts.append({"kind": "excel_consolidated", "path": path, "label": "Consolidated Excel report", "fingerprint": fp, "reused_from": reused})
     check_cancel()
@@ -276,13 +300,27 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
         res = up.run(path)
         for sl in sorted({int(x) for x in plan.get("remove_slides", [])}, reverse=True):
             _delete_slide(path, sl, res)
+        if plan_cmp and plan_cmp.get("rows"):
+            pres = apply_plan_to_deck(path, plan_cmp, currency, period_label, add_slide=plan.get("plan_slide", True) and i == 0, na=up.na)
+            res["changes"] = res["changes"] + pres["changes"]
+            res["flags"] = res["flags"] + pres["flags"]
+            for sl in pres["slides"]:
+                res["slide_map"] = [m for m in res["slide_map"] if m["slide"] != sl] + [
+                    {"slide": sl, "title": "Booked vs delivered", "classification": "plan_table", "status": "updated", "entity": "Media plan", "changes": len([c for c in pres["changes"] if c["slide"] == sl and not c.get("unchanged")])}]
+            if pres["added_slide"]:
+                a = pres["added_slide"]
+                for m in res["slide_map"]:
+                    if m["slide"] >= a:
+                        m["slide"] += 1
+                res["slide_map"].append({"slide": a, "title": "Delivered vs booked (added)", "classification": "plan_table", "status": "added", "entity": "Media plan", "changes": 0})
+            res["slide_map"].sort(key=lambda m: m["slide"])
         free_decks()
         info = {**res, "path": path, "na": up.na, "kind": kind, "label": label, "name": df["name"]}
         if i == 0:
             upd_info = info
         else:
             extra_decks.append(info)
-        fpd = _fp(calc_fp, "deck", plan.get("remove_slides"), df["inspection"]["sha256"], sorted(f["inspection"]["sha256"] for f in shots))
+        fpd = _fp(calc_fp, "deck", plan.get("remove_slides"), plan.get("plan_slide", True), df["inspection"]["sha256"], sorted(f["inspection"]["sha256"] for f in shots))
         artifacts.append({"kind": kind, "path": path, "label": label, "fingerprint": fpd, "reused_from": reuse(kind, fpd, path)})
     if "deck_new" in deliverables:
         path = os.path.join(out_dir, f"{base}_new_deck.pptx")
@@ -333,7 +371,7 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
             shutil.copy(src["pdf"], pdfp)
             artifacts.append({"kind": "pdf", "path": pdfp, "label": f"PDF export of {src['label']}", "fingerprint": src["fingerprint"], "reused_from": src.get("reused_from")})
     validation = run_validation(files=raw, norm=norm, calc=calc, excel=excel_info, deck_update=upd_info, extra_decks=extra_decks, deck_new=new_info, template=template_info,
-                                commentary_dropped=dropped, render=render, layout_issues=layout, ctx=ctx)
+                                commentary_dropped=dropped, render=render, layout_issues=layout, ctx=ctx, media_plan=result.get("media_plan"))
     result["validation"] = validation
     result["deck"] = upd_info and {"slide_map": upd_info["slide_map"], "flags": upd_info["flags"],
                                    "changes": [c for c in upd_info["changes"] if not c.get("unchanged")][:400], "range_text": upd_info.get("range_text"),

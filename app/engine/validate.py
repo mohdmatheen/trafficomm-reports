@@ -136,7 +136,8 @@ def _deck_checks(deck_update: dict, excel: dict | None) -> list[dict]:
 
 def run_validation(*, files: list[dict], norm, calc, excel: dict | None, deck_update: dict | None, deck_new: dict | None,
                    extra_decks: list[dict] | None = None,
-                   template: dict | None, commentary_dropped: list[str], render: dict, layout_issues: list[dict], ctx: dict) -> dict:
+                   template: dict | None, commentary_dropped: list[str], render: dict, layout_issues: list[dict], ctx: dict,
+                   media_plan: dict | None = None) -> dict:
     checks = []
     df = norm.df
     # 0 required columns present
@@ -362,6 +363,26 @@ def run_validation(*, files: list[dict], norm, calc, excel: dict | None, deck_up
     if ctx.get("commentary_enabled"):
         checks.append(_chk("commentary", "Commentary traceability", "warn" if commentary_dropped else "pass",
                            "Every number in the commentary matches a calculated value" if not commentary_dropped else f"{len(commentary_dropped)} statement(s) dropped for untraceable figures", commentary_dropped))
+    # 14 media plan
+    if media_plan:
+        files = media_plan.get("files") or []
+        read = [f for f in files if f.get("lines")]
+        cmp = media_plan.get("comparison") or {}
+        det = [f"{f['name']}: {f['lines']} line(s) read ({ {'rules': 'built-in rules', 'claude': 'Claude located the table', 'saved': 'saved layout'}.get(f.get('engine'), 'not read') })" for f in files]
+        det += list(media_plan.get("warnings") or [])
+        if not read:
+            checks.append(_chk("media_plan", "Media plan read", "warn", "No booked figures could be read from the media plan", det))
+        else:
+            st = "warn" if media_plan.get("warnings") or not cmp.get("rows") else "pass"
+            msg = (f"{sum(f['lines'] for f in read)} plan line(s) read; {cmp.get('lines_used', 0)} fall in the reporting period and are compared with delivery"
+                   if cmp.get("rows") else "Plan read, but no plan line with a platform falls in the reporting period")
+            checks.append(_chk("media_plan", "Media plan read", st, msg, det))
+        tc = media_plan.get("total_checks") or []
+        if tc:
+            bad = [c for c in tc if not c["ok"]]
+            checks.append(_chk("media_plan_totals", "Media plan totals", "warn" if bad else "pass",
+                               "Lines read add up to the plan's own Total row on every tab" if not bad else f"{len(bad)} total(s) differ from the plan's Total row",
+                               [f"{c['sheet']} {c['metric']}: lines {c['lines_total']:,.2f} vs plan total {c['plan_total']:,.2f}" for c in tc][:20]))
     overall = "blocked" if any(c["status"] == "fail" for c in checks) else ("warnings" if any(c["status"] == "warn" for c in checks) else "passed")
     return {"overall": overall, "checks": checks,
             "counts": {s: sum(1 for c in checks if c["status"] == s) for s in ("pass", "warn", "fail", "not_run")}}

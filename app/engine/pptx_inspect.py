@@ -178,8 +178,12 @@ def inspect_deck(path: str, profile: dict | None = None) -> dict:
             info["has_numbers_in_notes"] = bool(re.search(r"\d", n))
         # classification
         metric_tables = [t for t in info["tables"] if len([m for m in t["metric_cols"].values() if m not in ("range", "audience_size")]) >= 3]
+        from .media_plan import is_plan_header
+        plan_tables = [t for t in info["tables"] if is_plan_header(t["header"])]
         if info["client_markers"]:
             cls = "client_content"
+        elif plan_tables:
+            cls = "plan_table"  # booked vs delivered: filled from the media plan, not from creative data
         elif metric_tables:
             cls = "metric_slide"
         elif any(any(s["metric"] for s in c["series"]) for c in info["charts"]):
