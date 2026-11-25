@@ -50,10 +50,16 @@ def test_login_page_is_zoho_only(app):
         assert gone not in r.text
     for gone in ("Forgot", "Google", "Microsoft", "Create account", "Sign up"):
         assert gone not in r.text
+    # Copy from the approved Data+ sign-in design (26 Nov 2026). The earlier
+    # page's eyebrow, headline and footer ("Built for your next report",
+    # "Less reporting work.", "Built for the Trafficomm team.") were replaced
+    # by that design and are deliberately no longer asserted; everything above
+    # this list — Zoho-only, no password or email field, no other provider —
+    # is unchanged and still guarded.
     for copy in ("Welcome back.", "Sign in to your reporting workspace.", "Authorized employees only.",
-                 "Internal workspace", "Built for your next report", "Less reporting work.", "More clarity.",
+                 "Internal workspace", "Reporting workspace", "From data", "to presentation.",
                  "You’ll continue to Zoho to sign in.", "Need access? Contact your workspace administrator.",
-                 "Built for the Trafficomm team.", "Trafficomm Reporting Workspace", "/static/img/login-hero-"):
+                 "Trafficomm Reporting Workspace", "/static/img/login-office-", "dataplus-primary.png"):
         assert copy in r.text
 
 
