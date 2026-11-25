@@ -507,6 +507,11 @@ async def update_task(request: Request, task_id: int):
             t.client_id = _client_for_task(s, user, body["client_id"], current=t.client_id).id
         if "profile_id" in body:
             t.profile_id = int(body["profile_id"]) if body["profile_id"] else None
+        if "event_report" in (t.deliverables or []):
+            s.flush()
+            s.refresh(t)
+            if not S.event_reports_allowed(t):  # daily app-event reports are FAB-only
+                t.deliverables = [d for d in t.deliverables if d != "event_report"] or ["excel"]
         s.commit()
         return {"ok": True}
 

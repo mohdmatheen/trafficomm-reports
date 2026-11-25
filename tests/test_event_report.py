@@ -429,3 +429,28 @@ def test_web_claude_recipe_saved_after_sheet_verified(emp, tmp_path):
         assert E.match_recipe(E.read_previous(prev), E.recipes_for("FAB", s.get(Profile, t.profile_id).settings))["key"] == saved[-1]["key"]
     assert "FAB two NTB events" in emp.get("/tasks/new").text
     _ = S
+
+
+@pytest.mark.web
+def test_web_event_report_is_fab_only(emp, tmp_path):
+    """ATC and other clients keep the campaign report flow: no report-type choice, no event_report."""
+    from sqlalchemy import select
+
+    from app.db import Client, Session, Task, TaskFile
+    from tests.test_web_acceptance import H
+    with Session() as s:
+        atc = s.scalar(select(Client.id).where(Client.short == "ATC"))
+    tid = emp.post("/api/tasks", json={"client_id": atc}, headers=H).json()["id"]
+    html = emp.get(f"/tasks/{tid}/edit").text
+    assert 'id="rtypeField"' in html and 'data-mode="standard"' in html
+    assert 'id="rtypeField" aria-describedby="rtypeHint" hidden' in html
+    r = emp.patch(f"/api/tasks/{tid}", headers=H, json={"title": "ATC test", "deliverables": ["event_report"]})
+    assert r.status_code == 200
+    with Session() as s:
+        assert s.get(Task, tid).deliverables == ["excel"]
+    # raw uploads for ATC are not read as AppsFlyer exports
+    f = write_exports(str(tmp_path / "raw"), 2)[0]
+    r = emp.post(f"/api/tasks/{tid}/files", headers=H, files={"file": (f["name"], open(f["path"], "rb"))}, data={"role": "raw"})
+    assert r.status_code == 200 and not r.json().get("appsflyer")
+    with Session() as s:
+        assert "appsflyer" not in (s.get(TaskFile, r.json()["id"]).inspection or {})

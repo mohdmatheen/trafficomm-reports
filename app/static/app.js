@@ -427,6 +427,9 @@
     const evTypes = (() => { try { return JSON.parse(form.dataset.eventTypes || "{}"); } catch (e) { return {}; } })();
     function isEvent() { return form.dataset.mode === "event"; }
     function setMode() {
+      const allowed = (evTypes[form.client_id.value] || []).length > 0; // FAB only
+      const fs = $("#rtypeField"); if (fs) fs.hidden = !allowed;
+      if (!allowed) { const std = form.querySelector('input[name=rtype][value="standard"]'); if (std) std.checked = true; }
       const r = form.querySelector("input[name=rtype]:checked");
       form.dataset.mode = r && r.value === "event" ? "event" : "standard";
       const names = evTypes[form.client_id.value] || [];

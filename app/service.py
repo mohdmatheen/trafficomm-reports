@@ -71,7 +71,7 @@ def add_file(s, task: Task, user: User, tmp_path: str, original_name: str, role:
     role = role or insp.get("role_suggested") or "raw"
     if ext not in ROLE_EXT.get(role, set()):
         role = insp.get("role_suggested") or "raw"
-    if role == "raw" and ext in (".csv", ".xlsx"):
+    if role == "raw" and ext in (".csv", ".xlsx") and event_reports_allowed(task):  # FAB only: other clients' uploads are untouched
         from .engine.event_report import sniff_appsflyer
         af = sniff_appsflyer(tmp_path, original_name)
         if af:
@@ -154,6 +154,8 @@ def submit_task(s, task: Task, user: User) -> TaskVersion:
     files = s.scalars(select(TaskFile).where(TaskFile.task_id == task.id, TaskFile.removed.is_(False))).all()
     if not any(f.role == "raw" for f in files):
         raise UserError("Upload at least one raw report (CSV/XLSX)")
+    if "event_report" in task.deliverables and not event_reports_allowed(task):
+        raise UserError(f"Daily app-event reports aren't set up for {task.client.name}. Choose Campaign report.")
     if "event_report" in task.deliverables and not any(f.role == "previous_report" for f in files):
         raise UserError("Upload the previous day's report under 'Previous day report'. It sets the layout and is used to check today's figures.")
     v = TaskVersion(task_id=task.id, number=1, kind="initial", file_ids=[f.id for f in files], created_by=user.id, answers={}, plan_overrides={})
@@ -739,6 +741,12 @@ def change_summary(base: TaskVersion, v: TaskVersion, s) -> dict:
 # ---------------------------------------------------------------------------
 # Daily app-event reports: Google Sheet verification and new report types
 # ---------------------------------------------------------------------------
+def event_reports_allowed(task: Task) -> bool:
+    """Daily app-event reports exist only for clients with a built-in or saved report type (FAB)."""
+    from .engine.event_report import has_event_reports
+    return bool(task.client) and has_event_reports(task.client.name, profile_settings(task))
+
+
 def is_event_task(task: Task) -> bool:
     return "event_report" in (task.deliverables or [])
 

@@ -35,7 +35,7 @@
         <label for="f-client">Client</label>
         <select id="f-client" name="client_id">{% for c in clients %}<option value="{{ c.id }}" {% if default_client and c.id == default_client.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select>
       </div>
-      <fieldset class="field rtype" aria-describedby="rtypeHint">
+      <fieldset class="field rtype" id="rtypeField" aria-describedby="rtypeHint" {% if not (default_client and default_client.id in event_types) and not is_event %}hidden{% endif %}>
         <legend>Report type</legend>
         <div class="opt-cards opt-row">
           <label class="opt-card">
