@@ -119,6 +119,27 @@ class RevisionPlan(BaseModel):
     summary: str
 
 
+class EventColumnOut(BaseModel):
+    header: str
+    event: str = ""
+    constant_zero: bool = False
+
+
+class EventRecipeOut(BaseModel):
+    """A daily app-event report type (see engine/event_report.py)."""
+    ok: bool = True
+    question: str = ""
+    name: str = ""
+    sheet_title: str = ""
+    title_cell: str | None = None
+    platforms: list[Literal["ios", "android"]] = Field(default_factory=list)
+    sources: list[Literal["in_app", "non_organic"]] = Field(default_factory=list)
+    campaign_match: Literal["exact", "contains", "all"] = "exact"
+    campaigns: list[str] = Field(default_factory=list)
+    id_field: str = "event_value.deviceId"
+    columns: list[EventColumnOut] = Field(default_factory=list)
+
+
 class Statement(BaseModel):
     type: Literal["observation", "interpretation", "recommendation"]
     text: str
@@ -406,6 +427,16 @@ class AnthropicProvider:
             p.notes.append("Claude unavailable for this step - rule-based fallback used.")
             return p
 
+    def propose_event_recipe(self, context: str) -> dict | None:
+        """Claude describes a new daily app-event report type. Only names, counts and the layout are sent."""
+        from .event_report import RECIPE_PROMPT
+        try:
+            out = self._parse(EventRecipeOut, f"{RECIPE_PROMPT}\n<untrusted>\n{context[:60000]}\n</untrusted>", 3000, step="event_recipe")
+            return out.model_dump()
+        except Exception as e:  # noqa: BLE001
+            log.warning("AI event recipe failed (%s: %s)", type(e).__name__, str(e)[:300])
+            return None
+
     def map_media_plan(self, grid: str, file_name: str):
         try:
             user = (f"{MEDIA_PLAN_PROMPT}\nFile name: <untrusted>{file_name[:120]}</untrusted>\n<untrusted>\n{grid}\n</untrusted>")
@@ -553,6 +584,15 @@ class HybridProvider(AnthropicProvider):
             self._log("Media plan", "rules", "Claude unavailable - built-in rules used instead")
         else:
             self._log("Media plan", "claude", "New media plan layout - Claude located the plan table (figures read from the cells)")
+        return out
+
+    def propose_event_recipe(self, context: str) -> dict | None:
+        """Only called for a daily event report whose layout matches no built-in or saved report type."""
+        out = super().propose_event_recipe(context)
+        if out is None:
+            self._log("Report type", "rules", "Claude unavailable")
+        else:
+            self._log("Report type", "claude", "New report type - Claude read the description and the files' campaign and event names")
         return out
 
     def interpret_feedback(self, feedback, has_new_files) -> RevisionPlan:

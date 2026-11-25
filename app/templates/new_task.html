@@ -23,10 +23,11 @@
   <a href="#sec-details" class="on" aria-current="true"><b>01</b><span>Report details</span></a>
   <a href="#sec-instructions"><b>02</b><span>Instructions</span></a>
   <a href="#sec-files"><b>03</b><span>Source files</span></a>
-  <a href="#sec-outputs"><b>04</b><span>Outputs</span></a>
+  <a href="#sec-outputs" class="std-only"><b>04</b><span>Outputs</span></a>
 </nav>
 
-<form id="taskForm" class="builder" autocomplete="off" novalidate>
+{% set ev_mode = is_event or (not draft and default_client and default_client.id in event_types) %}
+<form id="taskForm" class="builder" autocomplete="off" novalidate data-mode="{{ 'event' if ev_mode else 'standard' }}" data-event-types="{{ event_types|tojson|forceescape }}">
   <div class="b-col">
     <section class="card b-card" id="sec-details" aria-labelledby="h-details">
       <header class="card-h"><span class="card-ic">{{ icon('file') }}</span><div><h2 id="h-details">Report details</h2><p>Set the scope for this reporting task.</p></div></header>
@@ -34,6 +35,22 @@
         <label for="f-client">Client</label>
         <select id="f-client" name="client_id">{% for c in clients %}<option value="{{ c.id }}" {% if default_client and c.id == default_client.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select>
       </div>
+      <fieldset class="field rtype" aria-describedby="rtypeHint">
+        <legend>Report type</legend>
+        <div class="opt-cards opt-row">
+          <label class="opt-card">
+            <input type="radio" name="rtype" value="standard" {% if not ev_mode %}checked{% endif %}>
+            <span class="oc-ic">{{ icon('layers') }}</span>
+            <span class="oc-txt"><b>Campaign report</b><span>Excel and PowerPoint from platform exports</span></span>
+          </label>
+          <label class="opt-card">
+            <input type="radio" name="rtype" value="event" {% if ev_mode %}checked{% endif %}>
+            <span class="oc-ic">{{ icon('table') }}</span>
+            <span class="oc-txt"><b>Daily app-event report</b><span>AppsFlyer exports + yesterday’s report, checked against your Google Sheet</span></span>
+          </label>
+        </div>
+        <p class="f-hint" id="rtypeHint"></p>
+      </fieldset>
       <div hidden>{# the client's reporting rules are picked automatically from the selected client #}
         <select name="profile_id" aria-hidden="true" tabindex="-1">{% for p in profiles %}<option value="{{ p.id }}" data-client="{{ p.client_id }}" {% if draft and draft.profile_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select>
       </div>
@@ -46,6 +63,7 @@
         <label for="f-brand">Brand / campaign <span class="opt">(optional)</span></label>
         <input id="f-brand" name="brand" maxlength="300" placeholder="e.g. Brighton College Abu Dhabi" value="{{ draft.brand if draft else '' }}">
       </div>
+      <div class="std-only">
       <div class="row2">
         <div class="field">
           <label for="f-ps">Reporting start</label>
@@ -81,9 +99,11 @@
       </div>
       <p class="f-hint" id="hint-fx">Applied to spend in USD when the report is in AED. A currency stated in an export is always kept; Snapchat and TikTok exports that state none are read as USD.</p>
       <p class="f-hint detected" id="detectedCur" hidden></p>
+      </div>
+      <p class="f-hint ev-only">The reporting days, campaigns and events come from the exports and yesterday’s report. Nothing else to set here.</p>
     </section>
 
-    <section class="card b-card" id="sec-outputs" aria-labelledby="h-outputs">
+    <section class="card b-card std-only" id="sec-outputs" aria-labelledby="h-outputs">
       <header class="card-h"><span class="card-ic">{{ icon('layers') }}</span><div><h2 id="h-outputs">Output files</h2><p>Choose what you need delivered.</p></div></header>
       {% set dsel = (draft.deliverables if draft else ['excel']) or [] %}
       <fieldset class="opt-cards" aria-describedby="err-outputs">
@@ -108,10 +128,11 @@
 
   <div class="b-col">
     <section class="card b-card" id="sec-instructions" aria-labelledby="h-instr">
-      <header class="card-h"><span class="card-ic">{{ icon('pencil') }}</span><div><h2 id="h-instr">Instructions</h2><p>Paste the client brief or describe the report you need.</p></div></header>
+      <header class="card-h"><span class="card-ic">{{ icon('pencil') }}</span><div><h2 id="h-instr">Instructions</h2><p class="std-only">Paste the client brief or describe the report you need.</p><p class="ev-only">Leave empty for a report type the portal already knows. For a new type, describe it here.</p></div></header>
       <label for="f-instr" class="sr">Instructions</label>
       <textarea id="f-instr" name="instructions" rows="7" placeholder="Update the deck with the latest figures. Use link clicks, break down by school and creative, and add short commentary." aria-describedby="hint-instr">{{ draft.instructions if draft else '' }}</textarea>
-      <p class="f-hint" id="hint-instr">Include required metrics, breakdowns and formatting preferences.</p>
+      <p class="f-hint std-only" id="hint-instr">Include required metrics, breakdowns and formatting preferences.</p>
+      <p class="f-hint ev-only">Known report types run on built-in rules, with no Claude call. For a new type, say which campaigns to keep, which events to count and whether it covers iOS, Android or both, e.g. “Keep campaigns starting with CASA_iOS_PLT; count af_purchase and Account_Open; iOS only.” Claude reads it once, checks it reproduces yesterday’s report, and after your Google Sheet is verified it becomes a built-in rule.</p>
     </section>
 
     <section class="card b-card" id="sec-files" aria-labelledby="h-files">
@@ -124,14 +145,28 @@
             <div class="dz-txt">
               <div class="dz-title"><b>Raw reports</b><span class="req">Required</span></div>
               <div class="dz-hint">Drop files here or <button type="button" class="dz-pick">browse files</button></div>
-              <div class="dz-meta">CSV, XLSX · Multiple files · Meta, TikTok, Snapchat, Google, LinkedIn, X… · up to {{ max_upload_mb }} MB each</div>
-              <div class="dz-meta">Name files <code>Client_Platform_Market_Period</code>, e.g. <code>BWA_Meta_UAE_Oct2026.xlsx</code> · <a href="#sec-guide" data-open-guide>Upload guidelines</a></div>
+              <div class="dz-meta std-only">CSV, XLSX · Multiple files · Meta, TikTok, Snapchat, Google, LinkedIn, X… · up to {{ max_upload_mb }} MB each</div>
+              <div class="dz-meta ev-only">AppsFlyer raw reports (CSV): <b>In-app events</b> and <b>Non-organic in-app events</b>, for iOS and Android, from the 1st of the month to today. The app id stays in the file name, as AppsFlyer names it.</div>
+              <div class="dz-meta std-only">Name files <code>Client_Platform_Market_Period</code>, e.g. <code>BWA_Meta_UAE_Oct2026.xlsx</code> · <a href="#sec-guide" data-open-guide>Upload guidelines</a></div>
             </div>
           </div>
           <p class="f-err" id="err-raw" hidden></p>
           <ul class="filelist" aria-live="polite"></ul>
         </div>
-        <div class="dropzone" data-role="media_plan" data-accept=".xlsx,.csv" data-multiple="1" id="zone-plan">
+        <div class="dropzone ev-only" data-role="previous_report" data-accept=".xlsx" id="zone-prev">
+          <input type="file" accept=".xlsx" class="sr" tabindex="-1" aria-hidden="true">
+          <div class="dz-main">
+            <span class="dz-ic xl">{{ icon('table') }}</span>
+            <div class="dz-txt">
+              <div class="dz-title"><b>Previous day report</b><span class="req">Required</span></div>
+              <div class="dz-hint">Drop yesterday’s report here or <button type="button" class="dz-pick">browse files</button></div>
+              <div class="dz-meta">XLSX · e.g. <code>FAB_CASA Always On Report_24_11_2026.xlsx</code> · it sets the layout, and today’s figures are checked against it</div>
+            </div>
+          </div>
+          <p class="f-err" id="err-prev" hidden></p>
+          <ul class="filelist" aria-live="polite"></ul>
+        </div>
+        <div class="dropzone std-only" data-role="media_plan" data-accept=".xlsx,.csv" data-multiple="1" id="zone-plan">
           <input type="file" multiple accept=".xlsx,.csv" class="sr" tabindex="-1" aria-hidden="true">
           <div class="dz-main">
             <span class="dz-ic xl">{{ icon('table') }}</span>
@@ -144,7 +179,7 @@
           </div>
           <ul class="filelist" aria-live="polite"></ul>
         </div>
-        <div class="zone-pair">
+        <div class="zone-pair std-only">
           <div class="dropzone" data-role="template" data-accept=".xlsx">
             <input type="file" accept=".xlsx" class="sr" tabindex="-1" aria-hidden="true">
             <div class="dz-main">
@@ -171,7 +206,7 @@
             <ul class="filelist" aria-live="polite"></ul>
           </div>
         </div>
-        <div class="dropzone" data-role="screenshots" data-accept=".png,.jpg,.jpeg,.zip" data-multiple="1">
+        <div class="dropzone std-only" data-role="screenshots" data-accept=".png,.jpg,.jpeg,.zip" data-multiple="1">
           <input type="file" multiple accept=".png,.jpg,.jpeg,.zip" class="sr" tabindex="-1" aria-hidden="true">
           <div class="dz-main">
             <span class="dz-ic">{{ icon('image') }}</span>

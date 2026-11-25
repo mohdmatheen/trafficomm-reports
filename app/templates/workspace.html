@@ -42,7 +42,7 @@
   {% if cur and cur.status in ['failed','cancelled'] %}<button class="btn btn-sm" data-action="retry">{{ icon('refresh') }}Retry v{{ cur.number }}</button>{% endif %}
   {% if view and view.status == 'ready_for_review' and t.approved_version_id != view.id %}<button class="btn btn-sm btn-primary" data-action="approve" data-version="{{ view.id }}">{{ icon('check') }}Approve v{{ view.number }}</button>{% endif %}
   <button class="btn btn-quiet btn-sm" data-action="delete">{{ icon('trash') }}Delete task</button>
-  <a class="btn btn-sm jump-fb" href="#feedback">{{ icon('chat') }}Go to feedback</a>
+  {% if not is_event %}<a class="btn btn-sm jump-fb" href="#feedback">{{ icon('chat') }}Go to feedback</a>{% endif %}
 </div>
 
 {% if view and not is_latest %}
@@ -51,7 +51,7 @@
 
 {# ------------------------------------------------------------------ stage tracker #}
 <ol class="tracker" aria-label="Processing stages for version {{ view.number if view else '' }}">
-  {% for st in track %}
+  {% for st in (event_track or track) %}
   <li class="tk tk-{{ st.state }}">
     <span class="tk-ic" aria-hidden="true">{% if st.state == 'done' %}{{ icon('check-circle') }}{% elif st.state == 'active' %}<span class="tk-spin"></span>{% elif st.state == 'attention' %}{{ icon('alert') }}{% elif st.state == 'failed' %}{{ icon('x') }}{% else %}<span class="tk-box"></span>{% endif %}</span>
     <span class="tk-txt"><b>{{ st.label }}</b><span class="tk-note">{{ st.note or {'done':'Done','pending':'Not started','active':'In progress','attention':'Needs attention','failed':'Failed'}[st.state] }}</span></span>
@@ -110,6 +110,7 @@
 
 {# ---------- Overview #}
 <div class="tabpanel" role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" tabindex="0">
+  {% if is_event %}{% include "partials/event_report.html" %}{% endif %}
   <section class="card" id="outputs" aria-labelledby="outT">
     <div class="card-head"><h2 id="outT">Generated outputs</h2>{% if view %}<span class="vtag">Version {{ view.number }}</span>{% endif %}</div>
     {% if outputs %}
@@ -131,7 +132,7 @@
       </article>
       {% endfor %}
     </div>
-    <p class="f-hint">{% if t.approved_version_id == view.id %}Approved by an employee. Nothing is sent to the client automatically.{% elif review_state[0] == 'bad' %}Validation blocked this version. Downloads are kept for inspection only and must not be sent to the client.{% else %}Draft outputs need review before client use. Download links are private and created fresh on each click.{% endif %}</p>
+    <p class="f-hint">{% if is_event and view.status == 'completed' %}Verified against the Google Sheet. Nothing is sent to the client automatically.{% elif is_event and view.status in ['awaiting_sheet', 'sheet_mismatch'] %}Don’t send this to the client until the Google Sheet check below passes.{% elif t.approved_version_id == view.id %}Approved by an employee. Nothing is sent to the client automatically.{% elif review_state[0] == 'bad' %}Validation blocked this version. Downloads are kept for inspection only and must not be sent to the client.{% else %}Draft outputs need review before client use. Download links are private and created fresh on each click.{% endif %}</p>
     {% elif view and view.status in ['queued','inspecting','mapping','calculating','generating','validating'] %}
       <div class="inline-state"><span class="spinner"></span>Outputs are being generated for v{{ view.number }}.</div>
     {% elif view and view.status == 'awaiting_clarification' %}
@@ -141,6 +142,7 @@
     {% endif %}
   </section>
 
+  {% if not is_event %}
   <section class="card preview-card" id="preview" aria-labelledby="pvT">
     <div class="card-head pv-head">
       <h2 id="pvT">Report preview</h2>
@@ -174,6 +176,7 @@
       <div class="inline-state">{{ icon('image') }}A preview appears once outputs are generated.</div>
     {% endif %}
   </section>
+  {% endif %}
 
   <section class="card" aria-labelledby="vsT">
     <div class="card-head"><h2 id="vsT">Validation summary</h2>
@@ -370,7 +373,9 @@
   </details>
   {% endif %}
 
-  {% if can_feedback and feedback_bases %}
+  {% if is_event %}
+  <div class="inline-state">{{ icon('info') }}Daily reports don’t take feedback: fix files or describe a new report type in the box on the left and run again. The task completes when the Google Sheet matches.</div>
+  {% elif can_feedback and feedback_bases %}
   <form id="feedbackForm" class="feedback" novalidate>
     <label for="fb-base">Feedback for</label>
     <select id="fb-base" name="base_version_id">

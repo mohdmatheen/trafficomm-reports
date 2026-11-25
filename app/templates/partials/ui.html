@@ -4,7 +4,7 @@
 {%- endmacro %}
 
 {% set _TONE = {'draft':'neutral','queued':'info','inspecting':'info','mapping':'info','calculating':'info','generating':'info','validating':'info',
-               'awaiting_clarification':'warn','ready_for_review':'ok','approved':'ok-strong','validation_blocked':'bad','failed':'bad','cancelled':'neutral','blocked':'bad'} %}
+               'awaiting_clarification':'warn','ready_for_review':'ok','approved':'ok-strong','validation_blocked':'bad','failed':'bad','cancelled':'neutral','blocked':'bad','awaiting_sheet':'warn','sheet_mismatch':'bad','completed':'ok-strong'} %}
 {% set _SHORT = {'queued':'Queued','approved':'Approved'} %}
 {% macro status_badge(status, label=None, short=False) -%}
 <span class="badge-st tone-{{ _TONE.get(status, 'neutral') }}"><span class="bdot" aria-hidden="true"></span>{{ label or (_SHORT.get(status) if short and _SHORT.get(status) else STATUS_LABEL.get(status, status)) }}</span>

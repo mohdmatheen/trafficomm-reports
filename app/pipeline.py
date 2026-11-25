@@ -60,6 +60,9 @@ def run_version(inp: VersionInput, stage, check_cancel=lambda: None, provider=No
     provider = provider or AI.get_provider()
     t = inp.task
     os.makedirs(inp.workdir, exist_ok=True)
+    if "event_report" in (t.get("deliverables") or []):
+        from .event_pipeline import run_event_report
+        return run_event_report(inp, stage, check_cancel, provider)
     out_dir = os.path.join(inp.workdir, "outputs")
     prev_dir = os.path.join(inp.workdir, "previews")
     os.makedirs(out_dir, exist_ok=True)
