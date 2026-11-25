@@ -5,3 +5,6 @@ __pycache__/
 .env
 tests/fixtures/synthetic/
 .venv/
+
+# Local development virtualenv (not part of the deployment image)
+.venv/
