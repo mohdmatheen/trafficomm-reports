@@ -1,0 +1,95 @@
+{# Daily app-event report (e.g. FAB CASA Always On): fix box, Google Sheet rows, Google Sheet check. #}
+{% set E = EV %}
+{% set live = is_latest and not processing %}
+
+{% if E.error %}
+<section class="card ev-card ev-fix" id="event-fix" aria-labelledby="evFixT">
+  <div class="ev-h"><span class="card-ic warn">{{ icon('alert') }}</span>
+    <div><h3 id="evFixT">{{ E.error.title }}</h3><p>{{ E.error.fix }}</p>
+      {% if E.error.detail %}<ul>{% for d in E.error.detail[:30] %}<li>{{ d }}</li>{% endfor %}{% if E.error.detail|length > 30 %}<li class="muted">… {{ E.error.detail|length - 30 }} more</li>{% endif %}</ul>{% endif %}
+    </div>
+  </div>
+  {% if live %}
+    {% if E.needs_instructions %}
+    <form id="evInstrForm" class="ev-form" novalidate>
+      <label for="ev-instr"><b>Describe this report</b></label>
+      <textarea id="ev-instr" rows="5" placeholder="e.g. Keep campaigns starting with CASA_iOS_PLT. Count af_purchase and Account_Open. iOS only (In-app events and Non-organic in-app events)." aria-describedby="evInstrErr evInstrHint">{{ t.instructions or '' }}</textarea>
+      <p class="f-hint" id="evInstrHint">Name the campaigns exactly as in AppsFlyer, the events as in the Event Name column, and iOS, Android or both. Claude reads this once and must reproduce yesterday’s report before anything is offered; after your Google Sheet is verified it becomes a built-in rule for {{ client }}.</p>
+      <p class="f-err" id="evInstrErr" role="alert" hidden></p>
+      <div class="ev-actions"><button type="submit" class="btn btn-primary">{{ icon('refresh') }}Run with this description</button></div>
+    </form>
+    {% else %}
+    <form id="evFilesForm" class="ev-form" novalidate>
+      <p class="small"><b>Upload the corrected file(s) and run again.</b> A new export replaces the old one for the same app and report; a new previous day report replaces the old one.</p>
+      <div class="ev-actions">
+        <label class="sr" for="ev-role">File type</label>
+        <select id="ev-role"><option value="raw">AppsFlyer raw export (CSV)</option><option value="previous_report">Previous day report (XLSX)</option></select>
+        <input type="file" id="ev-files" multiple accept=".csv,.xlsx">
+      </div>
+      <p class="f-err" id="evFilesErr" role="alert" hidden></p>
+      <div class="ev-actions"><button type="submit" class="btn btn-primary">{{ icon('refresh') }}Upload and run again</button></div>
+    </form>
+    {% endif %}
+  {% endif %}
+</section>
+{% endif %}
+
+{% if E.rows %}
+<section class="card ev-card" id="event-report" aria-labelledby="evRepT">
+  <div class="card-head"><h2 id="evRepT">Daily report · up to {{ E.end_day }}</h2>{% if view %}<span class="vtag">Version {{ view.number }}</span>{% endif %}</div>
+  <p class="small">{{ E.recipe_name }} · {{ {'built-in': 'built-in rules, no Claude call', 'saved': 'saved rule, no Claude call', 'claude': 'new report type read by Claude'}.get(E.source, E.source) }} · {{ '{:,}'.format(E.unique_events or 0) }} unique events this month · file <code>{{ E.file }}</code></p>
+  {% if E.compare and E.compare.text %}<p class="small muted">{{ E.compare.text }}</p>{% endif %}
+  <div class="scroll-x">
+  <table class="ev-rows" id="evRows">
+    <thead><tr><th scope="col">Day</th><th scope="col">Campaign</th>{% for h in E.headers %}<th scope="col">{{ h }}</th>{% endfor %}<th scope="col">Daily Count</th></tr></thead>
+    <tbody>
+    {% for r in E.rows %}
+      <tr class="{% if r.date == E.end_day %}ev-new{% endif %}"><td>{{ r.day }}</td><td>{{ E.campaign_label or '' }}</td>{% for v in r['values'] %}<td>{{ v }}</td>{% endfor %}<td>{{ r.daily }}</td></tr>
+    {% endfor %}
+    </tbody>
+    {% if E.totals %}<tfoot><tr><th scope="row">Total</th><td></td>{% for h in E.headers %}<td><b>{{ E.totals.get(h, 0) }}</b></td>{% endfor %}<td><b>{{ E.totals.values()|sum }}</b></td></tr></tfoot>{% endif %}
+  </table>
+  </div>
+  <div class="ev-actions">
+    {% for o in outputs if o.available and o.a.kind == 'excel' %}<a class="btn btn-sm btn-primary" href="/artifacts/{{ o.a.id }}/download">{{ icon('download') }}Download report<span class="sr"> {{ o.a.label }}</span></a>{% endfor %}
+    <button type="button" class="btn btn-sm" data-ev-copy="{{ E.rows|map(attribute='values')|map('join', '\t')|join('\n') }}">{{ icon('file') }}Copy event figures (all days)</button>
+    <span class="f-hint">Paste into the first event column of the month’s first day in the Google Sheet. Days already reported can change slightly as AppsFlyer updates, so paste every day.</span>
+  </div>
+  {% if E.steps %}
+  <details class="small"><summary>How the figures were counted</summary>
+    <ul class="ev-steps">{% for s in E.steps %}<li>{% if s.file %}{{ s.step }}: {{ '{:,}'.format(s.rows) }} rows, {{ '{:,}'.format(s.in_campaigns) }} in the campaigns, {{ '{:,}'.format(s.after_dedup) }} after removing duplicates (same device and event){% else %}{{ s.step }}: {{ '{:,}'.format(s.rows) }} merged, {{ '{:,}'.format(s.after_dedup) }} after removing duplicates{% endif %}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+</section>
+
+{% if view and view.status in ['awaiting_sheet', 'sheet_mismatch', 'completed'] %}
+<section class="card ev-card {% if view.status == 'completed' %}ev-ok{% elif view.status == 'sheet_mismatch' %}ev-fix{% endif %}" id="sheet" aria-labelledby="evSheetT">
+  <div class="card-head"><h2 id="evSheetT">{% if view.status == 'completed' %}Google Sheet verified{% else %}Check the Google Sheet before informing the client{% endif %}</h2></div>
+  {% if SC %}
+    <p><b>{{ SC.title }}</b>{% if SC.tab %} <span class="muted small">· tab “{{ SC.tab }}”, {{ SC.file }}, checked {{ SC.by }}</span>{% endif %}</p>
+    {% if not SC.ok %}
+      {% if SC.fix %}<p>{{ SC.fix }}</p>{% endif %}
+      {% if SC.errors %}<ul class="small">{% for e in SC.errors[:40] %}<li>{{ e }}</li>{% endfor %}{% if SC.errors|length > 40 %}<li class="muted">… {{ SC.errors|length - 40 }} more</li>{% endif %}</ul>{% endif %}
+    {% endif %}
+    {% if SC.warnings %}<ul class="small muted">{% for w in SC.warnings[:10] %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}
+  {% endif %}
+  {% if view.status == 'completed' %}
+    <p class="small">The report is complete. You can now inform the client. Nothing is sent to the client automatically.</p>
+  {% else %}
+    <ol class="small">
+      <li>Download the report (button above). Send nothing to the client yet.</li>
+      <li>Paste the day rows into the client’s monthly Google Sheet (the Copy button gives you the event figures).</li>
+      <li>In Google Sheets choose File › Download › Microsoft Excel (.xlsx) and upload that file here.</li>
+    </ol>
+  {% endif %}
+  {% if live %}
+  <form id="evSheetForm" class="ev-actions" novalidate>
+    <label class="sr" for="ev-sheet">Google Sheet export</label>
+    <input type="file" id="ev-sheet" accept=".xlsx,.csv">
+    <button type="submit" class="btn {{ 'btn-primary' if view.status != 'completed' else '' }}">{{ icon('check') }}{{ 'Check again' if SC else 'Check Google Sheet' }}</button>
+    <p class="f-err" id="evSheetErr" role="alert" hidden></p>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+{% endif %}

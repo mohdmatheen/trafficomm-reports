@@ -4,8 +4,8 @@
   const $ = (s, el) => (el || document).querySelector(s);
   const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
   const body = document.body;
-  const ROLE_EXT = { raw: [".csv", ".xlsx"], media_plan: [".xlsx", ".csv"], template: [".xlsx"], client_deck: [".pptx"], screenshots: [".png", ".jpg", ".jpeg", ".zip"] };
-  const ROLE_LABEL = { raw: "Raw data", media_plan: "Media plan", template: "Excel template", client_deck: "Client deck", screenshots: "Screenshots", creatives: "Screenshots (ZIP)" };
+  const ROLE_EXT = { raw: [".csv", ".xlsx"], media_plan: [".xlsx", ".csv"], template: [".xlsx"], client_deck: [".pptx"], screenshots: [".png", ".jpg", ".jpeg", ".zip"], previous_report: [".xlsx"] };
+  const ROLE_LABEL = { raw: "Raw data", media_plan: "Media plan", template: "Excel template", client_deck: "Client deck", screenshots: "Screenshots", creatives: "Screenshots (ZIP)", previous_report: "Previous day report", sheet_export: "Google Sheet" };
 
   function toast(msg, err) {
     const t = $("#toast"); if (!t) return;
@@ -424,11 +424,28 @@
     const saveState = $("#saveState");
     let creating = null, saveTimer = null, saving = Promise.resolve(), submitting = false, triedSubmit = false;
 
+    const evTypes = (() => { try { return JSON.parse(form.dataset.eventTypes || "{}"); } catch (e) { return {}; } })();
+    function isEvent() { return form.dataset.mode === "event"; }
+    function setMode() {
+      const r = form.querySelector("input[name=rtype]:checked");
+      form.dataset.mode = r && r.value === "event" ? "event" : "standard";
+      const names = evTypes[form.client_id.value] || [];
+      const h = $("#rtypeHint");
+      if (h) h.textContent = !isEvent() ? "" : names.length
+        ? "Built-in rules for this client: " + names.join(", ") + ". A different layout? Describe it under Instructions."
+        : "No daily report type is saved for this client yet. Upload the files and describe the report under Instructions; Claude reads it once and it becomes a built-in rule after your Google Sheet is verified.";
+    }
+    $$("input[name=rtype]", form).forEach((r) => r.addEventListener("change", setMode));
+    form.client_id.addEventListener("change", () => {
+      if (!files.size) { const want = (evTypes[form.client_id.value] || []).length ? "event" : "standard"; const r = form.querySelector('input[name=rtype][value="' + want + '"]'); if (r) r.checked = true; }
+      setMode();
+    });
+    setMode();
     function setSave(state, text) { saveState.dataset.state = state; saveState.textContent = text; }
     function formData() {
       const fd = new FormData(form); const o = {};
       ["client_id", "profile_id", "title", "brand", "period_start", "period_end", "comparison_start", "comparison_end", "currency", "fx_usd_aed", "instructions"].forEach((k) => { o[k] = fd.get(k) || ""; });
-      o.deliverables = fd.getAll("deliverables");
+      o.deliverables = isEvent() ? ["event_report"] : fd.getAll("deliverables").filter((d) => d !== "event_report");
       return o;
     }
     async function ensureTask() {
@@ -513,6 +530,8 @@
       if (f.deck) meta = f.deck.slides + " slides · " + esc(f.deck.aspect) + (f.deck.unsupported ? " · " + f.deck.unsupported + " unsupported element(s)" : "") + (f.deck.summary ? "<br>" + esc(typeof f.deck.summary === "string" ? f.deck.summary : JSON.stringify(f.deck.summary)) : "");
       if (f.images != null) meta = f.images + " image(s)";
       if (f.role === "media_plan" && f.media_plan) meta = esc(f.media_plan.text);
+      if (f.appsflyer) { const a = f.appsflyer; meta = "AppsFlyer · " + ({ ios: "iOS", android: "Android" }[a.platform] || "platform not recognised") + " · " + ({ in_app: "in-app events", non_organic: "non-organic in-app events" }[a.source] || "export type not recognised") + " · " + a.rows + " rows" + (a.first_event ? " · " + esc(a.first_event) + " → " + esc(a.last_event) : ""); }
+      if (f.role === "previous_report" && f.previous_report) { const p = f.previous_report; meta = p.error ? '<span class="bad">' + esc(p.error) + "</span>" : "Tab " + esc(p.sheet_title) + " · " + (p.headers || []).length + " event column(s) · up to " + esc(p.last_day); }
       li.innerHTML = '<div class="frow"><span class="f-ic">' + svg(ICON[f.role] || "file") + '</span><span class="fname">' + esc(f.name) + '</span><span class="fsize">' + size(f.size) + '</span><span class="fstate">Uploaded</span>' +
         (opts.length > 1 ? '<label class="sr" for="role-' + f.id + '">File type for ' + esc(f.name) + '</label><select id="role-' + f.id + '">' + opts.map((r) => '<option value="' + r + '"' + (r === f.role ? " selected" : "") + ">" + ROLE_LABEL[r] + "</option>").join("") + "</select>" : "") +
         '<button type="button" class="btn btn-quiet btn-sm" data-remove>' + svg("trash") + 'Remove<span class="sr"> ' + esc(f.name) + "</span></button></div>" +
@@ -580,6 +599,14 @@
       const d = formData(), out = [];
       const hasRaw = Array.from(files.values()).some((f) => f.role === "raw");
       const hasDeck = Array.from(files.values()).some((f) => f.role === "client_deck");
+      const prevs = Array.from(files.values()).filter((f) => f.role === "previous_report").length;
+      if (isEvent()) {
+        if (!d.title.trim()) out.push({ id: "err-title", field: "#f-title", msg: "Give the task a title, e.g. FAB CASA Always On – 25 Nov.", short: "add a task title" });
+        if (!hasRaw) out.push({ id: "err-raw", field: "#zone-raw .dz-pick", zone: "#zone-raw", msg: "Upload the AppsFlyer raw reports (In-app events and Non-organic in-app events, CSV, iOS and Android).", short: "upload the AppsFlyer exports" });
+        if (!prevs) out.push({ id: "err-prev", field: "#zone-prev .dz-pick", zone: "#zone-prev", msg: "Upload yesterday’s report. It sets the layout and today’s figures are checked against it.", short: "upload the previous day report" });
+        if (prevs > 1) out.push({ id: "err-prev", field: "#zone-prev .dz-pick", zone: "#zone-prev", msg: "Keep only yesterday’s report here and remove the others.", short: "keep one previous day report" });
+        return out;
+      }
       if (!d.title.trim()) out.push({ id: "err-title", field: "#f-title", msg: "Give the task a title.", short: "add a task title" });
       if (d.period_start && d.period_end && d.period_start > d.period_end) out.push({ id: "err-period", field: "#f-ps", msg: "The reporting start is after the end.", short: "fix the reporting dates" });
       const fx = (d.fx_usd_aed || "").trim();
@@ -599,6 +626,7 @@
     }
     function refresh() {
       const ps = problems();
+      setMode();
       const want = formData().deliverables.includes("deck_update");
       const tag = $("#deckTag"); tag.textContent = want ? "Required" : "Optional"; tag.classList.toggle("need", want);
       const hint = $("#submitHint");
@@ -760,6 +788,47 @@
       const btn = $("button", qf); btn.disabled = true; btn.textContent = "Resuming…"; busy = true;
       try { await api("POST", "/api/tasks/" + tid + "/answers", { answers, save }); dirty = false; location.reload(); }
       catch (ex) { toast(ex.message, true); btn.disabled = false; btn.textContent = "Submit answers and continue"; busy = false; }
+    });
+
+    // ---- daily app-event reports: copy figures, describe a new report type, corrected files, Google Sheet check
+    $$("[data-ev-copy]").forEach((b) => b.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(b.dataset.evCopy); toast("Event figures copied. Paste them into the Google Sheet."); }
+      catch (e) { toast("Copy isn't available in this browser. Select the table and copy it instead.", true); }
+    }));
+    function evErr(id, msg) { const e = $("#" + id); if (e) { e.textContent = msg; e.hidden = !msg; } }
+    async function evBusy(form, fn) {
+      if (busy) return; busy = true;
+      const btn = $("button[type=submit]", form); const label = btn.innerHTML; btn.disabled = true; btn.classList.add("is-busy");
+      try { await fn(); dirty = false; location.reload(); }
+      catch (e) { btn.disabled = false; btn.classList.remove("is-busy"); btn.innerHTML = label; busy = false; throw e; }
+    }
+    const evi = $("#evInstrForm");
+    if (evi) evi.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const t = $("#ev-instr").value.trim();
+      if (!t) { evErr("evInstrErr", "Describe the report first: which campaigns, which events and iOS, Android or both."); $("#ev-instr").focus(); return; }
+      evErr("evInstrErr", "");
+      evBusy(evi, () => api("POST", "/api/tasks/" + tid + "/event-rerun", { instructions: t })).catch((ex) => evErr("evInstrErr", "Not started: " + ex.message));
+    });
+    const evf = $("#evFilesForm");
+    if (evf) evf.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const list = Array.from($("#ev-files").files), role = $("#ev-role").value;
+      if (!list.length) { evErr("evFilesErr", "Choose the corrected file(s) first."); return; }
+      evErr("evFilesErr", "");
+      evBusy(evf, async () => {
+        const ids = [];
+        for (const f of list) { const r = await upload("/api/tasks/" + tid + "/files", f, { role: role, for_revision: "1" }); ids.push(r.id); }
+        await api("POST", "/api/tasks/" + tid + "/event-rerun", { file_ids: ids });
+      }).catch((ex) => evErr("evFilesErr", "Not started: " + ex.message));
+    });
+    const evs = $("#evSheetForm");
+    if (evs) evs.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const f = $("#ev-sheet").files[0];
+      if (!f) { evErr("evSheetErr", "Choose the Google Sheet export (File > Download > Microsoft Excel) first."); return; }
+      evErr("evSheetErr", "");
+      evBusy(evs, () => upload("/api/tasks/" + tid + "/sheet", f, {})).catch((ex) => evErr("evSheetErr", "Not checked: " + ex.message));
     });
 
     // ---- feedback & revisions

@@ -24,14 +24,16 @@ log = logging.getLogger("trafficomm.service")
 
 ALLOWED_EXT = {".csv", ".xlsx", ".pptx", ".zip", ".png", ".jpg", ".jpeg"}
 ROLE_EXT = {"raw": {".csv", ".xlsx"}, "template": {".xlsx"}, "client_deck": {".pptx"}, "screenshots": {".png", ".jpg", ".jpeg", ".zip"}, "creatives": {".zip"},
-            "media_plan": {".xlsx", ".csv"}}
+            "media_plan": {".xlsx", ".csv"}, "previous_report": {".xlsx"}, "sheet_export": {".xlsx", ".csv"}}
 STAGE_TO_STATUS = {"inspecting": "inspecting", "mapping": "mapping", "awaiting_clarification": "awaiting_clarification",
                    "calculating": "calculating", "generating": "generating", "validating": "validating",
                    "ready_for_review": "ready_for_review", "validation_blocked": "validation_blocked", "blocked": "validation_blocked"}
 STATUS_LABEL = {"draft": "Draft", "queued": "Uploaded - queued", "inspecting": "Inspecting files", "mapping": "Mapping data",
                 "awaiting_clarification": "Awaiting clarification", "calculating": "Calculating", "generating": "Generating files",
                 "validating": "Validating", "ready_for_review": "Ready for review", "validation_blocked": "Validation blocked",
-                "approved": "Approved by employee", "failed": "Failed", "cancelled": "Cancelled"}
+                "approved": "Approved by employee", "failed": "Failed", "cancelled": "Cancelled",
+                "awaiting_sheet": "Report ready - upload the Google Sheet", "sheet_mismatch": "Google Sheet doesn't match",
+                "completed": "Verified - client can be informed"}
 PROCESSING = {"queued", "inspecting", "mapping", "calculating", "generating", "validating"}
 
 
@@ -69,6 +71,20 @@ def add_file(s, task: Task, user: User, tmp_path: str, original_name: str, role:
     role = role or insp.get("role_suggested") or "raw"
     if ext not in ROLE_EXT.get(role, set()):
         role = insp.get("role_suggested") or "raw"
+    if role == "raw" and ext in (".csv", ".xlsx"):
+        from .engine.event_report import sniff_appsflyer
+        af = sniff_appsflyer(tmp_path, original_name)
+        if af:
+            insp["appsflyer"] = af
+    if role == "previous_report":
+        from .engine.event_report import ReportError, read_previous
+        try:
+            p = read_previous(tmp_path)
+            insp["previous_report"] = {"sheet_title": p["sheet_title"], "headers": p["headers"], "last_day": str(p.get("last_day") or "")}
+        except ReportError as e:
+            insp["previous_report"] = {"error": e.title + ". " + e.fix}
+        except Exception:  # noqa: BLE001
+            insp["previous_report"] = {"error": "This file couldn't be read as a daily report."}
     if role == "media_plan" or insp.get("role_suggested") == "media_plan":
         from .engine.media_plan import summary_text
         insp["media_plan"] = summary_text(insp.get("sheets", []), tmp_path, task.currency or None)
@@ -93,11 +109,16 @@ def file_summary(f: TaskFile) -> dict:
                        "unresolved": sh.get("unresolved", []), "formula_cells": sh.get("formula_cells", 0)})
     deck = insp.get("deck")
     mp = insp.get("media_plan") if f.role == "media_plan" else None
-    warns = [w for w in insp.get("warnings", []) if not (f.role == "media_plan" and "recognisable reporting data" in w)]
+    af = insp.get("appsflyer") if f.role == "raw" else None
+    quiet = f.role in ("media_plan", "previous_report", "sheet_export") or bool(af)  # not ad-platform exports: no platform/naming notes
+    warns = [w for w in insp.get("warnings", []) if not (quiet and "recognisable reporting data" in w)]
+    if quiet:
+        sheets = [] if f.role != "media_plan" else sheets
     return {"media_plan": mp, "id": f.id, "name": f.original_name, "size": f.size, "role": f.role, "sheets": sheets if f.role != "media_plan" else [], "warnings": warns,
+            "previous_report": insp.get("previous_report") if f.role == "previous_report" else None,
             "deck": deck and {"slides": deck["slide_count"], "summary": deck["summary"], "aspect": deck["aspect"], "unsupported": deck["unsupported_total"]},
             "images": len(insp.get("images", [])) if insp.get("images") else None, "added_in_version": f.added_in_version, "excluded": f.excluded,
-            "name_notes": check_name(f.original_name, f.role, sheets)}
+            "appsflyer": af, "name_notes": [] if quiet else check_name(f.original_name, f.role, sheets)}
 
 
 def _json_safe(o):
@@ -133,6 +154,8 @@ def submit_task(s, task: Task, user: User) -> TaskVersion:
     files = s.scalars(select(TaskFile).where(TaskFile.task_id == task.id, TaskFile.removed.is_(False))).all()
     if not any(f.role == "raw" for f in files):
         raise UserError("Upload at least one raw report (CSV/XLSX)")
+    if "event_report" in task.deliverables and not any(f.role == "previous_report" for f in files):
+        raise UserError("Upload the previous day's report under 'Previous day report'. It sets the layout and is used to check today's figures.")
     v = TaskVersion(task_id=task.id, number=1, kind="initial", file_ids=[f.id for f in files], created_by=user.id, answers={}, plan_overrides={})
     s.add(v)
     s.flush()
@@ -197,6 +220,8 @@ def _save_answer_to_profile(s, task, q: Question, val: str):
 
 
 def create_revision(s, task: Task, user: User, feedback: str, base_version_id: int | None, new_file_ids: list[int]) -> tuple[TaskVersion | None, str]:
+    if is_event_task(task):
+        raise UserError("Daily app-event reports don't take feedback. Upload corrected files or describe the report type in the box above and re-run.")
     versions = s.scalars(select(TaskVersion).where(TaskVersion.task_id == task.id).order_by(TaskVersion.number)).all()
     if not versions:
         raise UserError("Task has no version yet")
@@ -667,12 +692,21 @@ def persist_result(job_id: int, vid: int, tid: int, result: dict):
             n_ok = result["validation"]["counts"]
             msg = (f"v{v.number} is {'ready for review' if result['status'] == 'ready_for_review' else 'BLOCKED by validation'}: "
                    f"{n_ok['pass']} checks passed, {n_ok['warn']} warnings, {n_ok['fail']} failed.")
+            if result.get("kind") == "event_report" and result["status"] == "validation_blocked":
+                msg = f"v{v.number} needs a fix before the report can be built: {result.get('error') or 'see the box above'}"
             fb = result.get("definition_fallback")
             if fb:
                 lbl = {"link_clicks": "link clicks", "clicks_all": "all clicks"}
                 msg += (f" Note: you asked for {lbl.get(fb['requested'], fb['requested'])}, but none of the uploaded exports contain that column, "
                         f"so {lbl.get(fb['used'], fb['used'])} were kept. Upload an export with that column to switch.")
             s.add(Message(task_id=tid, version_id=vid, author_id=None, kind="assistant", text=msg))
+        elif result["status"] == "awaiting_sheet":
+            v.completed_at = now()
+            ev = result.get("event") or {}
+            s.add(Message(task_id=tid, version_id=vid, author_id=None, kind="assistant",
+                          text=f"v{v.number}: {ev.get('file')} is ready ({ev.get('unique_events', 0):,} unique events, up to {ev.get('end_day')}). "
+                               "Paste the day rows into the client's Google Sheet, then upload the sheet export here. "
+                               "Don't inform the client until the sheet is verified."))
         elif result["status"] == "awaiting_clarification":
             s.add(Message(task_id=tid, version_id=vid, author_id=None, kind="assistant",
                           text=f"I need {len(result['questions'])} answer(s) before generating files. Inspection and mapping are saved."))
@@ -700,3 +734,107 @@ def change_summary(base: TaskVersion, v: TaskVersion, s) -> dict:
         names = [f.original_name for f in s.scalars(select(TaskFile).where(TaskFile.id.in_(newf))).all()]
         out["new_files"] = names
     return out
+
+
+# ---------------------------------------------------------------------------
+# Daily app-event reports: Google Sheet verification and new report types
+# ---------------------------------------------------------------------------
+def is_event_task(task: Task) -> bool:
+    return "event_report" in (task.deliverables or [])
+
+
+def verify_google_sheet(s, task: Task, user: User, f: TaskFile) -> dict:
+    """Check the employee's Google Sheet export against the current report. The task completes (and the
+    client may be informed) only when every day matches. A report type Claude read for the first time is
+    saved as a built-in rule for this client at that point."""
+    from .engine import event_report as E
+    v = s.get(TaskVersion, task.current_version_id) if task.current_version_id else None
+    R = dict(v.result or {}) if v else {}
+    ev = R.get("event") or {}
+    if not v or not ev.get("rows") or task.status not in ("awaiting_sheet", "sheet_mismatch", "completed"):
+        raise UserError("There's no finished report to check the Google Sheet against yet. Wait for the report, or fix the problem shown above first.")
+    recipe = ev.get("new_recipe") or next((r for r in E.recipes_for(task.client.name, profile_settings(task)) if r["key"] == ev.get("recipe_key")), None)
+    if not recipe:
+        recipe = {"columns": [{"header": h, "event": h} for h in ev.get("headers", [])]}
+    res = E.verify_sheet(f.stored_path, f.original_name, recipe, ev["rows"])
+    res.update({"file": f.original_name, "file_id": f.id, "at": now().isoformat(), "by": user.name})
+    history = list(R.get("sheet_checks") or [])
+    history.append(res)
+    R["sheet_check"] = res
+    R["sheet_checks"] = history[-10:]
+    V = dict(R.get("validation") or {})
+    checks = [c for c in V.get("checks", []) if c.get("id") != "event_sheet"]
+    checks.append({"id": "event_sheet", "title": "Google Sheet", "status": "pass" if res["ok"] else "fail", "message": res["title"],
+                   "details": (res.get("errors") or []) + (res.get("warnings") or [])})
+    counts = {st: sum(1 for c in checks if c["status"] == st) for st in ("pass", "warn", "fail", "not_run")}
+    V.update({"checks": checks, "counts": counts, "overall": "blocked" if counts["fail"] else "warnings" if counts["warn"] else "passed"})
+    R["validation"] = V
+    v.result = _json_safe(R)
+    if res["ok"]:
+        task.status = v.status = "completed"
+        v.approved_at, v.approved_by = now(), user.id
+        task.approved_version_id = v.id
+        text = (f"Google Sheet verified: {res['matched']} of {res['days']} days match the report in tab '{res['tab']}'. "
+                "The report is complete - you can now inform the client.")
+        if res.get("warnings"):
+            text += " Notes: " + " ".join(res["warnings"][:3])
+        new = ev.get("new_recipe")
+        if new:
+            prof = s.get(Profile, task.profile_id) if task.profile_id else None
+            if not prof:
+                prof = Profile(client_id=task.client_id, name=f"{task.client.name} rules", settings={})
+                s.add(prof)
+                s.flush()
+                task.profile_id = prof.id
+            st = dict(prof.settings or {})
+            saved = [r for r in (st.get("event_recipes") or []) if E.recipe_signature(r) != E.recipe_signature(new)]
+            st["event_recipes"] = (saved + [{**new, "verified": now().date().isoformat(), "verified_task": task.id}])[-20:]
+            prof.settings = st
+            text += f" '{new['name']}' is now saved as a built-in rule for {task.client.name}: next time it runs without Claude."
+            audit(s, user.id, "event_recipe_saved", f"task {task.id} {new['key']}")
+    else:
+        task.status = v.status = "sheet_mismatch"
+        text = res["title"] + ". " + (res.get("fix") or "") + (" First issue: " + res["errors"][0] if res.get("errors") else "")
+    s.add(Message(task_id=task.id, version_id=v.id, author_id=None, kind="assistant", text=text))
+    audit(s, user.id, "sheet_check", f"task {task.id} v{v.number} {'ok' if res['ok'] else 'mismatch'}")
+    return res
+
+
+def rerun_event_report(s, task: Task, user: User, instructions: str | None, new_file_ids: list[int]) -> TaskVersion:
+    """Run the daily report again: with a description of a new report type (read by Claude once)
+    and/or replacement files. Files of a replaced kind are dropped from the new version."""
+    versions = s.scalars(select(TaskVersion).where(TaskVersion.task_id == task.id).order_by(TaskVersion.number)).all()
+    if not versions:
+        raise UserError("Task has no version yet")
+    if versions[-1].status in PROCESSING:
+        raise UserError("This report is still processing - wait for it to finish")
+    text = (instructions or "").strip()
+    if instructions is not None and not text:
+        raise UserError("Describe the report first: which campaigns, which events and which apps (iOS, Android or both).")
+    if not text and not new_file_ids:
+        raise UserError("Add a description or upload corrected files first.")
+    base = versions[-1]
+    files = {f.id: f for f in s.scalars(select(TaskFile).where(TaskFile.task_id == task.id, TaskFile.removed.is_(False))).all()}
+    new = [files[i] for i in new_file_ids if i in files]
+    keep = [fid for fid in (base.file_ids or []) if fid in files and files[fid].role != "sheet_export"]
+    if any(f.role == "previous_report" for f in new):
+        keep = [fid for fid in keep if files[fid].role != "previous_report"]
+    new_af = {((f.inspection or {}).get("appsflyer") or {}).get("platform", "") + "/" + ((f.inspection or {}).get("appsflyer") or {}).get("source", "")
+              for f in new if f.role == "raw"}
+    keep = [fid for fid in keep if not (files[fid].role == "raw" and (((files[fid].inspection or {}).get("appsflyer") or {}).get("platform", "") + "/" +
+                                                                   ((files[fid].inspection or {}).get("appsflyer") or {}).get("source", "")) in new_af)]
+    file_ids = keep + [f.id for f in new if f.role in ("raw", "previous_report") and f.id not in keep]
+    if text:
+        task.instructions = text[:20000]
+        s.add(Message(task_id=task.id, author_id=user.id, kind="feedback", text="Report description for Claude: " + text[:4000]))
+    v = TaskVersion(task_id=task.id, number=base.number + 1, base_version_id=base.id, kind="revision",
+                    feedback=("Report description: " + text[:2000]) if text else f"Re-run with {len(new)} new file(s)",
+                    plan_overrides={}, answers={}, file_ids=file_ids, created_by=user.id)
+    s.add(v)
+    s.flush()
+    task.current_version_id = v.id
+    task.status = "queued"
+    task.approved_version_id = None
+    enqueue(s, v, "event_rerun")
+    audit(s, user.id, "event_rerun", f"task {task.id} v{v.number}")
+    return v

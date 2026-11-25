@@ -37,7 +37,8 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 STAGES = [("uploaded", "Uploaded"), ("inspecting", "Inspecting files"), ("mapping", "Mapping data"),
           ("awaiting_clarification", "Awaiting clarification"), ("calculating", "Calculating"), ("generating", "Generating files"),
           ("validating", "Validating"), ("ready_for_review", "Ready for review")]
-DELIVERABLE_LABELS = {"excel": "Consolidated Excel report", "deck_update": "Updated client PowerPoint", "deck_new": "New PowerPoint", "pdf": "PDF export"}
+DELIVERABLE_LABELS = {"excel": "Consolidated Excel report", "deck_update": "Updated client PowerPoint", "deck_new": "New PowerPoint", "pdf": "PDF export",
+                      "event_report": "Daily app-event report (AppsFlyer)"}
 
 
 def _ago(t: dt.datetime | None) -> str:
@@ -249,9 +250,9 @@ def account_page(request: Request):
 STATUS_GROUPS = {
     "processing": sorted(S.PROCESSING),
     "needs_answer": ["awaiting_clarification"],
-    "ready_for_review": ["ready_for_review"],
-    "approved": ["approved"],
-    "blocked": ["validation_blocked", "failed"],
+    "ready_for_review": ["ready_for_review", "awaiting_sheet"],
+    "approved": ["approved", "completed"],
+    "blocked": ["validation_blocked", "failed", "sheet_mismatch"],
 }
 ARTIFACT_SHORT = {"excel": "Excel", "excel_consolidated": "Excel", "deck_update": "PPTX", "deck_new": "New PPTX", "pdf": "PDF"}
 # a task can carry several client decks: the first is "deck_update", the others "deck_update_2", "deck_update_3", ...
@@ -272,6 +273,10 @@ def task_action(t: Task) -> dict:
         return {"label": "Review issue", "href": f"/tasks/{t.id}#progress", "primary": True}
     if st == "ready_for_review":
         return {"label": "Review report", "href": f"/tasks/{t.id}#outputs", "primary": False}
+    if st == "awaiting_sheet":
+        return {"label": "Upload Google Sheet", "href": f"/tasks/{t.id}#sheet", "primary": True}
+    if st == "sheet_mismatch":
+        return {"label": "Fix Google Sheet", "href": f"/tasks/{t.id}#sheet", "primary": True}
     return {"label": "Open workspace", "href": f"/tasks/{t.id}", "primary": False}
 
 
@@ -318,14 +323,17 @@ def _task_list(request: Request, user: User, view: str, q: str, status: str, cli
         counts = {k: sum(raw_counts.get(x, 0) for x in v) for k, v in STATUS_GROUPS.items()}
         total = sum(raw_counts.values())
         # tasks that need someone to act: questions to answer, validation blocked, failed
-        attn_tasks = s.scalars(select(Task).where(*scope, Task.status.in_(["awaiting_clarification", "validation_blocked", "failed"]))
+        attn_tasks = s.scalars(select(Task).where(*scope, Task.status.in_(["awaiting_clarification", "validation_blocked", "failed", "sheet_mismatch"]))
                                .order_by(Task.updated_at.desc()).limit(50)).all()
         attention = None
         if attn_tasks:
             n_q = sum(1 for t in attn_tasks if t.status == "awaiting_clarification")
             n_b = sum(1 for t in attn_tasks if t.status == "validation_blocked")
             n_f = sum(1 for t in attn_tasks if t.status == "failed")
+            n_s = sum(1 for t in attn_tasks if t.status == "sheet_mismatch")
             parts = []
+            if n_s:
+                parts.append(f"{n_s} with a Google Sheet that doesn't match the report")
             if n_q:
                 parts.append(f"{n_q} waiting for answers to questions")
             if n_b:
@@ -336,7 +344,8 @@ def _task_list(request: Request, user: User, view: str, q: str, status: str, cli
                 a = task_action(attn_tasks[0])
                 attention = {"count": 1, "detail": {"awaiting_clarification": "Answer the open questions so processing can continue.",
                                                     "validation_blocked": "Some validation checks failed. Review them before the report can be used.",
-                                                    "failed": "Processing stopped with an error. Review it and retry."}[attn_tasks[0].status],
+                                                    "failed": "Processing stopped with an error. Review it and retry.",
+                                                    "sheet_mismatch": "The uploaded Google Sheet doesn't match the report. Fix the rows listed and upload it again."}[attn_tasks[0].status],
                              "title_task": attn_tasks[0].title or "Untitled task", "label": a["label"], "href": a["href"]}
             else:
                 only = {t.status for t in attn_tasks}
@@ -393,9 +402,22 @@ def new_task_page(request: Request):
 CURRENCIES = ["AED", "USD", "SAR", "QAR", "KWD", "BHD", "OMR", "EGP", "EUR", "GBP", "INR"]
 
 
+def _event_types(clients, profiles) -> dict:
+    """Client id -> names of the daily app-event report types it has (built-in or saved)."""
+    from .engine.event_report import recipes_for
+    by_client = {p.client_id: (p.settings or {}) for p in profiles if p.client_id}
+    out = {}
+    for c in clients:
+        names = [r["name"] for r in recipes_for(c.name, by_client.get(c.id, {}))]
+        if names:
+            out[c.id] = names
+    return out
+
+
 def _builder_ctx(user, clients, profiles, default_client, draft, files, p_start, p_end) -> dict:
     cur = (draft.currency if draft else "") or "AED"
-    return {"user": user, "clients": clients, "profiles": profiles, "default_client": default_client, "draft": draft, "draft_files": files,
+    return {"event_types": _event_types(clients, profiles),
+            "is_event": bool(draft and "event_report" in (draft.deliverables or [])),"user": user, "clients": clients, "profiles": profiles, "default_client": default_client, "draft": draft, "draft_files": files,
             "p_start": p_start, "p_end": p_end, "currencies": CURRENCIES if cur in CURRENCIES else [cur] + CURRENCIES, "currency": cur,
             "max_upload_mb": settings.max_upload_bytes // (1024 * 1024), "nav": "tasks",
             "crumbs": [("Reporting tasks", "/tasks"), ("Edit draft" if draft else "New report", None)]}
@@ -664,6 +686,32 @@ def _track(v: TaskVersion | None, reached: set, t: Task) -> list[dict]:
     return out
 
 
+def _event_track(v: TaskVersion | None, t: Task) -> list[dict]:
+    """Daily event reports: files -> report built -> checks -> Google Sheet verified -> client can be informed."""
+    st = v.status if v else "queued"
+    R = (v.result or {}) if v else {}
+    ev = R.get("event") or {}
+    built = bool(ev.get("rows"))
+    proc = st in S.PROCESSING
+    def item(k, label, state, note=""):
+        return {"key": k, "label": label, "state": state, "note": note}
+    out = [item("received", "Files received", "done" if v else "pending")]
+    if proc:
+        out.append(item("built", "Report built", "active", "In progress"))
+    elif ev.get("error") or st == "failed":
+        out.append(item("built", "Report built", "attention" if st != "failed" else "failed", "Needs your input" if ev.get("needs_instructions") else "Fix needed"))
+    else:
+        out.append(item("built", "Report built", "done" if built else "pending", (f"Up to {ev.get('end_day')}" if built else "")))
+    V = R.get("validation") or {}
+    c = V.get("counts") or {}
+    out.append(item("validation", "Checks", "done" if built and not c.get("fail") else ("attention" if c.get("fail") and built else "pending"),
+                    (f"{c.get('warn')} warning" + ("s" if c.get("warn") != 1 else "")) if built and c.get("warn") else ("All passed" if built else "")))
+    sheet = {"awaiting_sheet": ("active", "Waiting for the export"), "sheet_mismatch": ("attention", "Doesn't match"), "completed": ("done", "Matches the report")}
+    out.append(item("sheet", "Google Sheet", *sheet.get(st, ("pending", ""))))
+    out.append(item("approved", "Client can be informed", "done" if st == "completed" else "pending", "Verified" if st == "completed" else ""))
+    return out
+
+
 def _attention(t: Task, v: TaskVersion | None, cur: TaskVersion | None, open_qs, job) -> dict | None:
     if open_qs and v and cur and v.id == cur.id:
         n = len(open_qs)
@@ -671,6 +719,30 @@ def _attention(t: Task, v: TaskVersion | None, cur: TaskVersion | None, open_qs,
                 "text": "Processing is paused until you answer. Inspection and mapping are saved.", "action": "Answer question" + ("s" if n != 1 else ""), "href": "#questions"}
     if not v:
         return None
+    if S.is_event_task(t):
+        ev = (v.result or {}).get("event") or {}
+        if v.status in S.PROCESSING:
+            return {"tone": "info", "icon": "clock", "busy": True, "title": f"Building the daily report (v{v.number}): {S.STATUS_LABEL.get(v.status, v.status)}",
+                    "text": "Built-in rules, usually under a minute. This page updates automatically."}
+        if v.status == "failed":
+            err = v.error or (job.error if job and job.version_id == v.id else "") or "No error detail was recorded."
+            return {"tone": "error", "icon": "alert", "title": f"Processing failed for v{v.number}", "text": err[:400], "action": "View error", "tab": "diagnostics",
+                    "retry": cur is not None and v.id == cur.id}
+        if ev.get("error"):
+            e = ev["error"]
+            return {"tone": "error", "icon": "alert", "title": e["title"], "text": e["fix"], "action": "Describe the report" if ev.get("needs_instructions") else "Fix and re-run",
+                    "href": "#event-fix"}
+        if v.status == "awaiting_sheet":
+            return {"tone": "warn", "icon": "upload", "title": "Report ready. Don't inform the client yet",
+                    "text": "Download the report, paste the day rows into the client's monthly Google Sheet, then upload the sheet export here. "
+                            "The task completes when every day matches.", "action": "Upload Google Sheet", "href": "#sheet"}
+        if v.status == "sheet_mismatch":
+            sc = (v.result or {}).get("sheet_check") or {}
+            return {"tone": "error", "icon": "alert", "title": sc.get("title") or "The Google Sheet doesn't match the report",
+                    "text": (sc.get("errors") or [sc.get("fix") or ""])[0], "action": "See what to fix", "href": "#sheet"}
+        if v.status == "completed":
+            return {"tone": "info", "icon": "check-circle", "title": "Verified: you can inform the client",
+                    "text": ((v.result or {}).get("sheet_check") or {}).get("title", "The Google Sheet matches the report.")}
     V = (v.result or {}).get("validation") or {}
     cnt = V.get("counts") or {}
     if v.status == "failed":
@@ -769,6 +841,8 @@ def workspace_ctx(s, user: User, t: Task, view_id: int | None = None) -> dict:
         review_state = ("neutral", S.STATUS_LABEL.get(view.status, view.status) if view else "")
     role_groups = [("raw", "Raw reports", "table"), ("media_plan", "Media plan", "table"), ("template", "Excel templates", "table"), ("client_deck", "Client PowerPoint", "present"),
                    ("screenshots", "Screenshots and reference files", "image")]
+    if S.is_event_task(t):
+        role_groups = [("raw", "AppsFlyer raw exports", "table"), ("previous_report", "Previous day report", "table"), ("sheet_export", "Google Sheet exports", "table")]
     fsum = [S.file_summary(f) for f in files]
     files_by_role = {k: [f for f in fsum if (f["role"] == k or (k == "screenshots" and f["role"] == "creatives"))] for k, _, _ in role_groups}
     feedback_bases = [v for v in versions if v.result or v.status in ("ready_for_review", "approved", "validation_blocked")]
@@ -780,6 +854,7 @@ def workspace_ctx(s, user: User, t: Task, view_id: int | None = None) -> dict:
             "R": R, "V": V, "groups": groups, "group_summary": group_summary, "outputs": outputs, "records": records, "previews": previews,
             "review_state": review_state, "activity": _activity(s, t, versions, users), "feedback_bases": feedback_bases, "can_feedback": can_feedback,
             "state": _state_token(s, t), "processing": t.status in S.PROCESSING, "profile_name": t.profile.name if t.profile else None,
+            "is_event": S.is_event_task(t), "EV": R.get("event") or {}, "SC": R.get("sheet_check"), "event_track": _event_track(view, t) if S.is_event_task(t) else None,
             "PREVIEW_LABEL": PREVIEW_LABEL, "pv_named": len(previews) > 2 or any(k in EXTRA_DECK_KINDS for k in previews), "nav": "tasks", "crumbs": [("Reporting tasks", "/tasks"), (t.title or "Untitled task", None)]}
 
 
@@ -833,6 +908,55 @@ async def feedback(request: Request, task_id: int):
         v, summary = S.create_revision(s, t, user, text[:8000], int(body["base_version_id"]) if body.get("base_version_id") else None, [f for f in fids if f in owned])
         s.commit()
         return {"ok": bool(v), "version": v.number if v else None, "summary": summary}
+
+
+@app.post("/api/tasks/{task_id}/sheet")
+async def upload_sheet(request: Request, task_id: int, file: UploadFile = File(...)):
+    """The employee's updated Google Sheet (downloaded as .xlsx or .csv). The daily report task
+    completes only when it matches the report."""
+    user = require_user(request)
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in S.ROLE_EXT["sheet_export"]:
+        raise S.UserError("Download the Google Sheet as Microsoft Excel (.xlsx) or CSV (File > Download) and upload that file.")
+    fd, tmp = tempfile.mkstemp(prefix="sheet_", suffix=ext)
+    size = 0
+    with os.fdopen(fd, "wb") as out:
+        while chunk := await file.read(1 << 20):
+            size += len(chunk)
+            if size > settings.max_upload_bytes:
+                out.close()
+                os.remove(tmp)
+                raise S.UserError(f"'{file.filename}' exceeds the {settings.max_upload_bytes // (1024 * 1024)} MB limit")
+            out.write(chunk)
+    with Session() as s:
+        t = get_task_checked(s, user, task_id)
+        s.refresh(t, with_for_update=True)
+        if not S.is_event_task(t):
+            os.remove(tmp)
+            raise S.UserError("Google Sheet checks are only for daily app-event reports")
+        v = s.get(TaskVersion, t.current_version_id) if t.current_version_id else None
+        f = S.add_file(s, t, user, tmp, file.filename or "google_sheet" + ext, "sheet_export", v.number if v else 1)
+        s.flush()
+        res = S.verify_google_sheet(s, t, user, f)
+        s.commit()
+        return {"ok": res["ok"], "result": res}
+
+
+@app.post("/api/tasks/{task_id}/event-rerun")
+async def event_rerun(request: Request, task_id: int):
+    user = require_user(request)
+    body = await request.json()
+    with Session() as s:
+        t = get_task_checked(s, user, task_id)
+        s.refresh(t, with_for_update=True)
+        if not S.is_event_task(t):
+            raise S.UserError("This action is only for daily app-event reports")
+        fids = [int(x) for x in body.get("file_ids") or []]
+        owned = [f.id for f in s.scalars(select(TaskFile).where(TaskFile.task_id == t.id, TaskFile.id.in_(fids))).all()]
+        instr = body.get("instructions")
+        v = S.rerun_event_report(s, t, user, None if instr is None else str(instr), owned)
+        s.commit()
+        return {"ok": True, "version": v.number}
 
 
 @app.post("/api/tasks/{task_id}/approve")

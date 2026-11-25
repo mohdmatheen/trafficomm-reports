@@ -1022,3 +1022,21 @@ th[aria-sort=descending] .th-sort::after{content:" ↓"}
 .cl-tbl tr.is-archived td{color:var(--text-2)}
 .au-clients{max-width:260px}
 .dlg-danger{display:flex;gap:6px;flex-wrap:wrap}
+
+/* daily app-event report mode */
+.builder[data-mode=event] .std-only,.steps:has(~ .builder[data-mode=event]) .std-only{display:none!important}
+.builder:not([data-mode=event]) .ev-only{display:none!important}
+.rtype{border:0;padding:0;margin:0 0 16px}
+.rtype legend{font-weight:600;font-size:13.5px;margin-bottom:8px;padding:0}
+.opt-row{flex-direction:row;flex-wrap:wrap}.opt-row .opt-card{flex:1 1 220px}
+.ev-card .ev-h{display:flex;gap:12px;align-items:flex-start}
+.ev-fix{border-color:var(--red-line);background:var(--red-soft)}
+.ev-fix h3{margin:0 0 4px;font-size:15px}.ev-fix ul{margin:8px 0 0;padding-left:18px;font-size:13px}
+.ev-ok{border-color:#9BD3AE;background:#EEF9F1}
+.ev-rows{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+.ev-rows th,.ev-rows td{padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap}
+.ev-rows th:first-child,.ev-rows td:first-child,.ev-rows th:nth-child(2),.ev-rows td:nth-child(2){text-align:left}
+.ev-rows tr.ev-new td{background:#FFF8E6;font-weight:600}
+.ev-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
+.ev-steps{margin:8px 0 0;padding-left:18px;font-size:12.5px;color:var(--text-2)}
+.ev-card textarea{width:100%;min-height:110px}
