@@ -115,8 +115,7 @@ def run_event_report(inp, stage, check_cancel=lambda: None, provider=None) -> di
     checks.append({"id": "event_type", "title": "Report type", "status": "pass",
                    "message": {"built-in": f"{recipe['name']} - built-in rules", "saved": f"{recipe['name']} - saved rule (no Claude call)",
                                "claude": f"New report type read by Claude: {recipe['name']}"}[source],
-                   "details": [f"Campaigns: " + (", ".join(recipe["campaigns"]) if recipe.get("campaign_match") != "all" else "all") +
-                               f" ({recipe.get('campaign_match')} match)",
+                   "details": ["Campaigns: " + E.campaign_rule_text(recipe),
                                "Exports: " + ", ".join(f"{E.PLATFORM_LABEL[p]} {E.SOURCE_LABEL[s]}" for p in recipe["platforms"] for s in recipe["sources"]),
                                "Events: " + ", ".join(f"{c['header']}" + (f" (= {c['event']})" if c.get("event") and c["event"] != c["header"] else "")
                                                       for c in recipe["columns"])]})

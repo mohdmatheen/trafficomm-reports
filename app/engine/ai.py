@@ -134,7 +134,7 @@ class EventRecipeOut(BaseModel):
     title_cell: str | None = None
     platforms: list[Literal["ios", "android"]] = Field(default_factory=list)
     sources: list[Literal["in_app", "non_organic"]] = Field(default_factory=list)
-    campaign_match: Literal["exact", "contains", "all"] = "exact"
+    campaign_match: Literal["exact", "contains", "exclude", "all"] = "exact"
     campaigns: list[str] = Field(default_factory=list)
     id_field: str = "event_value.deviceId"
     columns: list[EventColumnOut] = Field(default_factory=list)
