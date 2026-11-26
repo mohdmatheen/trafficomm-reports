@@ -55,7 +55,64 @@ FAB_CASA_ALWAYS_ON = {
     ],
     "sheet_campaign_label": "CASA",
 }
-BUILTIN_RECIPES = [FAB_CASA_ALWAYS_ON]
+_ALWAYS_ON_CAMPAIGNS = list(FAB_CASA_ALWAYS_ON["campaigns"])
+
+# FAB iOS (PLT) reports. Both use only the iOS app (id1383237548) in-app + non-organic exports and the
+# monthly tab name changes ("FAB_IOS-PLT - Nov_All events"), so they are matched on their columns.
+FAB_IOS_PLT_ALL_EVENTS = {
+    "key": "fab_ios_plt_all_events",
+    "name": "FAB IOS-PLT All events daily report",
+    "builtin": True,
+    "client_match": ["fab", "first abu dhabi bank"],
+    "sheet_title": "FAB_IOS-PLT - Nov_All events",
+    "file_prefix": "FAB_IOS-PLT Report All events",
+    "title_cell": "IOS",
+    "platforms": ["ios"],
+    "sources": ["in_app", "non_organic"],
+    # Every campaign except the 5 CASA Always On ones (those have their own report). Including them is what
+    # roughly doubled 01-02 Nov when this layout was first read as a new report type.
+    "campaign_match": "exclude",
+    "campaigns": _ALWAYS_ON_CAMPAIGNS,
+    "match_title": True,  # tab name must match too (the month part may change)
+    "id_field": "event_value.deviceId",
+    "columns": [
+        {"header": "casa_and_cc_ntb_uae_contact_continue_click", "event": "", "constant_zero": True},
+        {"header": "ntb_casa_isl_congratulation_view", "event": "ntb_casa_isl_congratulation_view"},
+        {"header": "IOS Contact Details", "event": "cc_ntb_contactDetail_continue_click"},
+        {"header": "IOS Islamic Cards", "event": "cc_ntb_isl_card_created"},
+        {"header": "IOS ISL Contact details", "event": "cc_ntb_isl_contactdetail_continue_click"},
+        {"header": "ntb_bundle_account_created", "event": "", "constant_zero": True},
+        {"header": "ntb_bundle_card_created", "event": "", "constant_zero": True},
+        {"header": "ntb_bundle_isl_account_created", "event": "", "constant_zero": True},
+        {"header": "ntb_bundle_isl_card_created", "event": "", "constant_zero": True},
+        {"header": "ntb_casa_account_created", "event": "", "constant_zero": True},
+        {"header": "ntb_casa_isl_account_created", "event": "", "constant_zero": True},
+        {"header": "IOS Fab Cards", "event": "ntb_cc_card_created"},
+        {"header": "casa_cc_ntb_contactDetail_continue_click", "event": "", "constant_zero": True},
+    ],
+    "sheet_campaign_label": "",
+}
+FAB_IOS_PLT_CASA = {
+    "key": "fab_ios_plt_casa",
+    "name": "FAB IOS-PLT CASA daily report",
+    "builtin": True,
+    "client_match": ["fab", "first abu dhabi bank"],
+    "sheet_title": "FAB_IOS CASA- Nov_All events",
+    "file_prefix": "FAB_IOS-PLT Report - CASA",
+    "title_cell": "IOS",
+    "platforms": ["ios"],
+    "sources": ["in_app", "non_organic"],
+    "campaign_match": "contains",
+    "campaigns": ["CASA"],
+    "match_title": True,
+    "id_field": "event_value.deviceId",
+    "columns": [
+        {"header": "casa_ntb_congratulations_view", "event": "casa_ntb_congratulations_view"},
+        {"header": "ntb_casa_isl_congratulation_view", "event": "ntb_casa_isl_congratulation_view"},
+    ],
+    "sheet_campaign_label": "",
+}
+BUILTIN_RECIPES = [FAB_CASA_ALWAYS_ON, FAB_IOS_PLT_ALL_EVENTS, FAB_IOS_PLT_CASA]
 
 PLATFORM_LABEL = {"ios": "iOS", "android": "Android"}
 SOURCE_LABEL = {"in_app": "in-app events", "non_organic": "non-organic in-app events"}
@@ -111,9 +168,9 @@ def validate_recipe(r: dict) -> list[str]:
             p.append("a column has no header")
         if not (c.get("event") or "").strip() and not c.get("constant_zero"):
             p.append(f"column '{c.get('header')}' has no event")
-    if r.get("campaign_match") not in ("exact", "contains", "all"):
-        p.append("campaign_match must be exact, contains or all")
-    if r.get("campaign_match") in ("exact", "contains") and not r.get("campaigns"):
+    if r.get("campaign_match") not in ("exact", "contains", "exclude", "all"):
+        p.append("campaign_match must be exact, contains, exclude or all")
+    if r.get("campaign_match") in ("exact", "contains", "exclude") and not r.get("campaigns"):
         p.append("no campaigns listed")
     if not set(r.get("platforms") or []) <= {"ios", "android"} or not r.get("platforms"):
         p.append("platforms must be ios and/or android")
@@ -207,6 +264,13 @@ def _device_id(rec: dict, id_field: str) -> str:
     return str(rec.get(col) or "").strip()
 
 
+def campaign_rule_text(recipe: dict) -> str:
+    """The campaign filter in words, for checks and error messages."""
+    mode, camps = recipe.get("campaign_match", "exact"), ", ".join(recipe.get("campaigns") or [])
+    return {"all": "all campaigns", "exact": f"only these campaigns: {camps}", "contains": f"campaigns whose name contains: {camps}",
+            "exclude": f"every campaign except: {camps}"}.get(mode, camps)
+
+
 def _campaign_ok(c: str, recipe: dict) -> bool:
     mode = recipe.get("campaign_match", "exact")
     if mode == "all":
@@ -214,6 +278,8 @@ def _campaign_ok(c: str, recipe: dict) -> bool:
     c = (c or "").strip()
     if mode == "exact":
         return c in set(recipe["campaigns"])
+    if mode == "exclude":
+        return c not in set(recipe["campaigns"])
     low = c.lower()
     return any(x.lower() in low for x in recipe["campaigns"])
 
@@ -348,6 +414,15 @@ def previous_layout_formulas(path: str, prev: dict) -> list[dict]:
     return out
 
 
+_MONTH_RE = re.compile(r"(?<![a-z])(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*", re.I)
+
+
+def title_key(title: str) -> str:
+    """A tab name with the month and year taken out: 'FAB_IOS-PLT - Nov_All events' and '... - Dec_All events' are the same report."""
+    t = _MONTH_RE.sub("<m>", (title or "").strip().lower())
+    return re.sub(r"\s+", " ", re.sub(r"\d+", "<n>", t))
+
+
 def match_recipe(prev: dict, recipes: list[dict]) -> dict | None:
     heads = [h.strip().lower() for h in prev["headers"]]
     title = prev["sheet_title"].strip().lower()
@@ -355,8 +430,11 @@ def match_recipe(prev: dict, recipes: list[dict]) -> dict | None:
         rh = [c["header"].strip().lower() for c in r["columns"]]
         if rh == heads and (r.get("sheet_title") or "").strip().lower() == title:
             return r
-    for r in recipes:  # same columns, sheet renamed
-        if [c["header"].strip().lower() for c in r["columns"]] == heads:
+    for r in recipes:  # same columns, month in the tab name changed
+        if [c["header"].strip().lower() for c in r["columns"]] == heads and title_key(r.get("sheet_title")) == title_key(prev["sheet_title"]):
+            return r
+    for r in recipes:  # same columns, sheet renamed (not for report types that share columns with others)
+        if not r.get("match_title") and [c["header"].strip().lower() for c in r["columns"]] == heads:
             return r
     return None
 
@@ -489,8 +567,7 @@ def build_counts(recipe: dict, raw_files: list[dict]) -> dict:
                   "rows": sum(len(v) for v in per_platform.values()), "after_dedup": len(final)})
     if not any(v["campaign_rows"] for v in per_file.values()):
         raise ReportError("None of the rows belong to this report's campaigns",
-                          "Check that you exported the right apps and dates. The report counts only these campaigns: "
-                          + (", ".join(recipe["campaigns"]) if recipe.get("campaigns") else "all") + ".",
+                          "Check that you exported the right apps and dates. This report counts " + campaign_rule_text(recipe) + ".",
                           [f"{n}: {v['rows']} rows, 0 in these campaigns" for n, v in per_file.items()])
     if no_id:
         warnings.append(f"{no_id} event row(s) had no device ID in '{recipe['id_field']}' and were left out (same as the manual process).")
@@ -891,7 +968,8 @@ def recipe_context(raw_files: list[dict], prev: dict, instructions: str, prev_co
 RECIPE_PROMPT = """An employee needs a daily app-event count report built from AppsFlyer raw exports. Describe the report as a recipe.
 How the report is made (fixed steps, you only choose the parameters):
  1. In each raw export keep rows whose Campaign matches (campaign_match 'exact' = Campaign equals one of `campaigns`;
-    'contains' = Campaign contains one of `campaigns` as text; 'all' = no campaign filter).
+    'contains' = Campaign contains one of `campaigns` as text; 'exclude' = every campaign except those in `campaigns`;
+    'all' = no campaign filter).
  2. Keep rows whose Event Name is one of the columns' events. Device ID = id_field ('event_value.deviceId' reads the deviceId key
     of the Event Value JSON; or a column such as 'AppsFlyer ID', 'IDFV'). Drop duplicates (same device + event) per export,
     then per platform (in-app + non-organic), then across platforms.

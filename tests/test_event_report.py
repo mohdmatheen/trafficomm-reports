@@ -216,6 +216,36 @@ def test_claude_reads_new_type_once_and_must_reproduce_previous(tmp_path):
     assert "Which campaigns?" in q["event"]["error"]["fix"]
 
 
+def test_exclude_campaigns_and_month_in_tab_name(tmp_path):
+    """FAB IOS-PLT All events: every campaign except the CASA Always On ones, iOS only; the tab name's month changes."""
+    rec = E.FAB_IOS_PLT_ALL_EVENTS
+    assert not E.validate_recipe(rec) and not E.validate_recipe(E.FAB_IOS_PLT_CASA)
+    assert E._campaign_ok("AN~FAB_CBG_CN~CASA", rec) and not E._campaign_ok("Dining_PLT", rec)
+    assert "except" in E.campaign_rule_text(rec)
+    prev = {"sheet_title": "FAB_IOS-PLT - Dec_All events", "headers": [c["header"] for c in rec["columns"]]}
+    assert E.match_recipe(prev, E.recipes_for("FAB", {}))["key"] == "fab_ios_plt_all_events"
+    # same columns as the CASA iOS-PLT report but another tab name: not taken for it
+    casa = {"sheet_title": "FAB Other", "headers": [c["header"] for c in E.FAB_IOS_PLT_CASA["columns"]]}
+    assert E.match_recipe(casa, E.recipes_for("FAB", {})) is None
+    assert E.match_recipe({**casa, "sheet_title": "FAB_IOS CASA- January_All events"}, E.recipes_for("FAB", {}))["key"] == "fab_ios_plt_casa"
+    # other clients get none of the FAB report types
+    assert E.recipes_for("ATC", {}) == [] and E.match_recipe(prev, E.recipes_for("ATC", {})) is None
+    # counts: Always On campaigns and Android exports are left out
+    ev = "cc_ntb_contactDetail_continue_click"
+    rows = {(p, s): [] for p in APPS for s in KINDS}
+    rows[("ios", "in_app")] += [_row(1, ev, "A", "Brand_CASA", "ios"), _row(1, ev, "B", "Dining_PLT", "ios"), _row(2, ev, "C", "Cards_X", "ios")]
+    rows[("ios", "non_organic")] += [_row(1, ev, "A", "Brand_CASA", "ios", hour=12), _row(2, ev, "D", "Cards_X", "ios")]
+    rows[("android", "in_app")] += [_row(1, ev, "E", "Brand_CASA", "android")]
+    raw = write_exports(str(tmp_path / "raw"), 2, rows=rows)
+    run = E.build_counts(rec, raw)
+    assert run["counts"][dt.date(2026, 11, 1)][ev] == 1 and run["counts"][dt.date(2026, 11, 2)][ev] == 2
+    assert any("ignored" in w for w in run["warnings"])  # the Android exports aren't used by an iOS report
+    only_ao = {k: [r for r in v if r[8] == "Dining_PLT"] for k, v in rows.items()}
+    with pytest.raises(E.ReportError) as e:
+        E.build_counts(rec, write_exports(str(tmp_path / "raw2"), 2, rows=only_ao))
+    assert "every campaign except" in e.value.fix
+
+
 # ---------------------------------------------------------------------------------------------- Google Sheet check
 def make_sheet(path, rows, headers=EVS, tweak=None, extra_days=0):
     wb = openpyxl.Workbook()
@@ -279,27 +309,52 @@ def test_real_fab_always_on_reproduces_25_nov(tmp_path):
     assert res["event"]["unique_events"] == 1388
 
 
-@pytest.mark.real_client
-def test_real_casa_ios_plt_new_type_via_claude(tmp_path):
-    d = "02e2db87*"
-    raw = _real(d, "id*_2026-11-01_2026-11-25*.csv")
-    prev = _real(d, "FAB_IOS-PLT Report - CASA_24_11_2026.xlsx")
-    real25 = _real(d, "FAB_IOS-PLT Report - CASA_25_11_2026.xlsx")
-    if len(raw) != 2 or not prev:
+def _check_real_builtin(tmp_path, folder, prefix, key, prev_day=24, max_changed=0):
+    raw = _real(folder, "id*_2026-11-01_2026-11-25*.csv")
+    prev = _real(folder, f"{prefix}_{prev_day}_11_2026.xlsx")
+    real25 = _real(folder, f"{prefix}_25_11_2026.xlsx")
+    if len(raw) != 2 or not prev or not real25:
         pytest.skip("FAB samples not available")
     raw = [{"name": os.path.basename(p), "path": p} for p in raw]
-    first = run_event(tmp_path / "a", raw, prev)
-    assert first["event"]["needs_instructions"]
-    hdr = ["casa_ntb_congratulations_view", "ntb_casa_isl_congratulation_view"]
-    fake = FakeClaude(_proposal(name="FAB iOS PLT CASA", sheet_title=None, platforms=["ios"], campaigns=["CASA"],
-                                columns=[{"header": h, "event": h} for h in hdr]))
-    res = run_event(tmp_path / "b", raw, prev, instructions="CASA campaigns, count the two NTB congratulation views, iOS only", provider=fake)
+    # no description and no Claude: the layout is a built-in FAB report type
+    res = run_event(tmp_path, raw, prev, provider=FakeClaude(None))
     assert res["status"] == "awaiting_sheet", res.get("error")
+    assert res["event"]["recipe_key"] == key and res["event"]["source"] == "built-in" and res["ai_mocked"]
     want = E.read_previous(real25[0])
-    for h in hdr:
-        got = {r["date"]: r["values"][hdr.index(h)] for r in res["event"]["rows"]}
-        for day, n in want["blocks"][h]["days"].items():
-            assert got[day.isoformat()] == n, (h, day)
+    hdr = res["event"]["headers"]
+    recipe = next(r for r in E.BUILTIN_RECIPES if r["key"] == key)
+    changed = []
+    for i, c in enumerate(recipe["columns"]):
+        got = {r["date"]: r["values"][i] for r in res["event"]["rows"]}
+        if c.get("constant_zero"):
+            assert not any(got.values()), c["header"]
+            continue
+        for day, n in want["blocks"][c["event"]]["days"].items():
+            if got.get(day.isoformat(), 0) != n:
+                changed.append((hdr[i], day, n, got.get(day.isoformat())))
+    assert len(changed) <= max_changed, changed
+    assert all(abs((g or 0) - n) <= 2 for _, _, n, g in changed), changed
+    # the output workbook keeps the previous report's tab and layout
+    out = next(a for a in res["artifacts"] if a["kind"] == "excel")
+    wb = openpyxl.load_workbook(out["path"])
+    assert want["sheet_title"] in wb.sheetnames
+    return res
+
+
+@pytest.mark.real_client
+def test_real_casa_ios_plt_is_builtin(tmp_path):
+    _check_real_builtin(tmp_path, "02e2db87*", "FAB_IOS-PLT Report - CASA", "fab_ios_plt_casa")
+
+
+@pytest.mark.real_client
+def test_real_ios_plt_all_events_is_builtin(tmp_path):
+    """The live failure: Claude counted every campaign, so 01-02 Nov came out about double (e.g. IOS Contact Details 19 -> 36).
+    The built-in rule counts every campaign except the 5 CASA Always On ones. FAB's own 24 and 25 Nov reports differ from
+    each other in 11 cells by AppsFlyer's late updates; against 25 Nov 10 cells differ, by 1 or 2."""
+    res = _check_real_builtin(tmp_path, "ca034957*", "FAB_IOS-PLT Report All events", "fab_ios_plt_all_events", max_changed=10)
+    rows = {r["date"]: dict(zip(res["event"]["headers"], r["values"])) for r in res["event"]["rows"]}
+    assert rows["2026-11-01"]["IOS Contact Details"] == 19 and rows["2026-11-02"]["IOS Contact Details"] == 47
+    assert "except" in chk(res, "event_type")["details"][0]
 
 
 # ---------------------------------------------------------------------------------------------- web flow
