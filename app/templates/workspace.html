@@ -41,6 +41,7 @@
   {% if processing or t.status == 'awaiting_clarification' %}<button class="btn btn-sm" data-action="cancel">Cancel processing</button>{% endif %}
   {% if cur and cur.status in ['failed','cancelled'] %}<button class="btn btn-sm" data-action="retry">{{ icon('refresh') }}Retry v{{ cur.number }}</button>{% endif %}
   {% if view and view.status == 'ready_for_review' and t.approved_version_id != view.id %}<button class="btn btn-sm btn-primary" data-action="approve" data-version="{{ view.id }}">{{ icon('check') }}Approve v{{ view.number }}</button>{% endif %}
+  <a class="btn btn-sm btn-ai" href="/support/new?task={{ t.id }}{% if view %}&amp;v={{ view.id }}{% endif %}">{{ icon('chat') }}Resolve with AI</a>
   <button class="btn btn-quiet btn-sm" data-action="delete">{{ icon('trash') }}Delete task</button>
   {% if not is_event %}<a class="btn btn-sm jump-fb" href="#feedback">{{ icon('chat') }}Go to feedback</a>{% endif %}
 </div>

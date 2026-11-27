@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% from "partials/ui.html" import icon, avatar %}
+{% block page %}support-issue{% endblock %}
+{% block title %}{{ i.ref }} · AI Support{% endblock %}
+{% block head %}<script src="/static/support.js" defer></script>{% endblock %}
+{% block bodyattrs %}data-issue-id="{{ i.id }}" data-state-token="{{ token }}"{% endblock %}
+{% block mainclass %}page page-wide{% endblock %}
+{% block content %}
+<div class="page-head sp-head">
+  <div>
+    <p class="muted small sp-ref">{{ i.ref }} · {{ CATEGORIES.get(i.category, i.category) }} · risk {{ i.risk }}{% if i.source == 'validation' %} · opened by report validation{% endif %}</p>
+    <h1>{{ i.title }}</h1>
+    <p class="page-sub">{% if client %}{{ client.name }}{% endif %}{% if task %} · <a href="/tasks/{{ task.id }}">{{ task.title }}</a>{% if i.version_number %} (v{{ i.version_number }}){% endif %}{% endif %}
+      · reported by {{ users[i.reporter_id].name if i.reporter_id in users else 'System' }} {{ i.created_at|ago }}</p>
+  </div>
+  <span class="sp-st sp-st-{{ i.status }} sp-st-lg">{{ ISSUE_STATUSES.get(i.status, i.status) }}</span>
+</div>
+<div class="sr" id="spLive" role="status" aria-live="polite"></div>
+
+<div class="sp-grid">
+<div class="sp-main">
+  {% if i.status == 'awaiting_validation' %}
+  <section class="card notice-ok-card" aria-labelledby="h-val">
+    <h2 id="h-val">{{ icon('check-circle') }}Review the corrected report</h2>
+    <p>The fix is live and the report was regenerated{% if task %} on <a href="/tasks/{{ task.id }}">{{ task.title }}</a>{% endif %}. Check the figures, then confirm.</p>
+    <div class="sp-actions"><button class="btn btn-primary" data-sp="confirm-ok">{{ icon('check') }}Figures are correct</button>
+    <button class="btn" data-sp="confirm-bad">Still wrong</button></div>
+  </section>
+  {% endif %}
+
+  {% if i.pilot %}
+  <section class="card" aria-labelledby="h-pilot">
+    <div class="card-h"><span class="card-ic">{{ icon('upload') }}</span><div><h2 id="h-pilot">Evidence for the investigation</h2>
+      <p>Files stay on the Trafficomm server. Figures are reconciled here; only totals, column names and redacted notes are shared with Claude.</p></div></div>
+    <ul class="sp-slots">
+      {% for sl in slots %}
+      <li class="sp-slot{% if uploaded.get(sl.key) %} done{% endif %}">
+        <div><b>{{ sl.label }}</b>{% if sl.required %} <span class="req">required</span>{% endif %}<p class="muted small">{{ sl.hint }}</p>
+          {% for a in uploaded.get(sl.key, []) %}<p class="small">{{ icon('file') }}<a href="/support/attachments/{{ a.id }}/download">{{ a.original_name }}</a> · {{ a.size|mb }}</p>{% endfor %}</div>
+        <label class="btn btn-sm">{{ icon('upload') }}{{ 'Replace' if uploaded.get(sl.key) else 'Upload' }}<input type="file" class="sr" data-slot="{{ sl.key }}" accept="{{ sl.ext|join(',') }}"></label>
+      </li>
+      {% endfor %}
+    </ul>
+    <form id="pilotForm" class="sp-pilot-q">
+      <h3>Questions about the manual procedure</h3>
+      {% for q in questions %}
+      <div class="field">
+        <label for="pq-{{ q.key }}">{{ q.label }}{% if q.optional %} <span class="opt">(optional)</span>{% endif %}</label>
+        {% if q.kind == 'choice' %}
+        <select id="pq-{{ q.key }}" name="{{ q.key }}"><option value="">Choose…</option>{% for v, l in q.options %}<option value="{{ v }}" {{ 'selected' if answers.get(q.key) == v }}>{{ l }}</option>{% endfor %}</select>
+        {% else %}
+        <textarea id="pq-{{ q.key }}" name="{{ q.key }}" rows="2" maxlength="4000">{{ answers.get(q.key, '') }}</textarea>
+        {% endif %}
+      </div>
+      {% endfor %}
+      <button class="btn btn-primary" type="submit">{{ icon('check') }}Save answers</button>
+    </form>
+    {% if i.meta.get('reconciliation') %}{% include "partials/support_reconciliation.html" ignore missing %}{% endif %}
+  </section>
+  {% endif %}
+
+  <section class="card sp-chat" aria-labelledby="h-chat">
+    <h2 id="h-chat">Conversation</h2>
+    <ol class="sp-msgs">
+      {% for m in msgs %}
+      <li class="sp-msg sp-{{ m.kind }}">
+        <div class="sp-who">{% if m.author_id %}{{ avatar(users[m.author_id].name if m.author_id in users else '?') }}<b>{{ users[m.author_id].name if m.author_id in users else 'Employee' }}</b>
+          {% elif m.kind == 'assistant' %}<span class="sp-bot">AI</span><b>Support agent</b>{% if m.engine %} <span class="sp-engine">{{ {'claude':'Claude','rules':'built-in rules'}.get(m.engine, m.engine) }}</span>{% endif %}
+          {% elif m.kind == 'engineering' %}<span class="sp-bot sp-bot-eng">ENG</span><b>Engineering agent</b>{% else %}<b class="muted">System</b>{% endif %}
+          <span class="muted small">{{ m.created_at|local }}</span></div>
+        <div class="sp-text">{{ m.text }}</div>
+      </li>
+      {% endfor %}
+    </ol>
+    <form id="msgForm" class="sp-compose">
+      <label for="msgText" class="sr">Your message</label>
+      <textarea id="msgText" rows="3" maxlength="8000" placeholder="Answer the questions, add details, or explain how you do it by hand…" required></textarea>
+      <div class="sp-actions">
+        <button class="btn btn-primary" type="submit">{{ icon('arrow-right') }}Send</button>
+        <label class="btn">{{ icon('upload') }}Attach file<input type="file" class="sr" data-slot="other"></label>
+        {% if i.status != 'resolved' %}<button class="btn btn-quiet" type="button" data-sp="resolve">{{ icon('check') }}Mark resolved</button>{% else %}<button class="btn btn-quiet" type="button" data-sp="reopen">{{ icon('refresh') }}Reopen</button>{% endif %}
+      </div>
+    </form>
+  </section>
+</div>
+
+<aside class="sp-side">
+  <section class="card" aria-labelledby="h-eng">
+    <h2 id="h-eng">Engineering</h2>
+    {% if run %}
+      <dl class="sp-dl">
+        <dt>Status</dt><dd>{{ run.status|replace('_', ' ')|capitalize }}</dd>
+        {% if run.pr_url %}<dt>Pull request</dt><dd><a href="{{ run.pr_url }}" target="_blank" rel="noopener">#{{ run.pr_number }}</a> ({{ run.pr_state }})</dd>{% endif %}
+        {% if run.checks_state %}<dt>Automated tests</dt><dd>{{ run.checks_state }}</dd>{% endif %}
+        {% if run.approval_level %}<dt>Approval needed</dt><dd>{{ 'Administrator' if run.approval_level == 'admin' else 'Reporting lead or administrator' }}</dd>{% endif %}
+        {% if run.approved_by %}<dt>Approved by</dt><dd>{{ users[run.approved_by].name if run.approved_by in users else '' }} {{ run.approved_at|ago }}</dd>{% endif %}
+        {% if run.agent_report.get('root_cause') %}<dt>Root cause</dt><dd>{{ run.agent_report.root_cause }}</dd>{% endif %}
+        {% if run.last_error %}<dt>Note</dt><dd class="bad">{{ run.last_error }}</dd>{% endif %}
+      </dl>
+      {% if can_approve_run %}<button class="btn btn-primary btn-block" data-sp="approve" data-run="{{ run.id }}">{{ icon('check') }}Approve fix #{{ run.pr_number }}</button>
+      {% elif run.status in ('checks_passed', 'awaiting_approval') %}<p class="muted small">{{ approve_why }}</p>{% endif %}
+      {% if user.role == 'admin' %}
+        {% if run.status in ('failed', 'closed', 'cancelled') %}<button class="btn btn-sm" data-sp="retry" data-run="{{ run.id }}">{{ icon('refresh') }}Retry investigation</button>{% endif %}
+        {% if run.status in ('queued','dispatched','pr_open','checks_failed','checks_passed','awaiting_approval') %}<button class="btn btn-sm btn-quiet" data-sp="cancel" data-run="{{ run.id }}">Cancel run</button>{% endif %}
+        {% if run.status in ('merged', 'deployed') %}<button class="btn btn-sm btn-quiet" data-sp="rollback" data-run="{{ run.id }}">Roll back (revert PR)</button>{% endif %}
+      {% endif %}
+    {% else %}
+      {% if ready %}<p>Claude has enough evidence for a code-level investigation.</p>{% else %}<p class="muted small">Before engineering can start, add: {{ missing|join('; ') }}.</p>{% endif %}
+      <button class="btn btn-block {{ 'btn-primary' if ready }}" data-sp="engineering" {% if not ready and user.role != 'admin' %}disabled{% endif %}>{{ icon('gear') }}Send for engineering investigation</button>
+      <p class="muted small">Engine: {{ eng.label }}.{% if client and not client.ai_processing_allowed %} {{ client.name }} isn’t yet authorised for external AI processing.{% endif %}</p>
+    {% endif %}
+  </section>
+  {% if atts and not i.pilot %}
+  <section class="card"><h2>Files</h2><ul class="sp-files">{% for a in atts %}<li>{{ icon('file') }}<a href="/support/attachments/{{ a.id }}/download">{{ a.original_name }}</a> <span class="muted small">{{ a.size|mb }}</span></li>{% endfor %}</ul></section>
+  {% endif %}
+  <section class="card"><h2>History</h2>
+    <ol class="sp-events">{% for e in events %}<li><span class="muted small">{{ e.at|local('%d %b, %H:%M') }}</span> {{ e.action|replace('_',' ') }}{% if e.detail %}: {{ e.detail[:160] }}{% endif %}{% if e.actor_id and e.actor_id in users %} · {{ users[e.actor_id].name }}{% endif %}</li>{% endfor %}</ol>
+  </section>
+</aside>
+</div>
+{% endblock %}

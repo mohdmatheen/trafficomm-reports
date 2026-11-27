@@ -25,6 +25,7 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(20), default="employee")  # employee | admin
+    is_lead: Mapped[bool] = mapped_column(Boolean, default=False)  # reporting lead: may approve client rules for their clients
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -35,6 +36,9 @@ class Client(Base):
     name: Mapped[str] = mapped_column(String(200), unique=True)
     short: Mapped[str] = mapped_column(String(30), default="")
     archived: Mapped[bool] = mapped_column(Boolean, default=False)  # hidden from new tasks; existing tasks stay visible
+    # External AI processing (Claude) of this client's support conversations and diagnostics. Off until an admin
+    # confirms the client has authorised it; built-in rules still answer while it is off.
+    ai_processing_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class UserClient(Base):
@@ -363,6 +367,9 @@ class AppSetting(Base):
     value: Mapped[str] = mapped_column(String(300))
 
 
+from .support.models import (ClientRule, EngineeringRun, Notification, SupportAttachment, SupportEvent,  # noqa: E402,F401
+                             SupportIssue, SupportMessage)
+
 _engine = None
 _Session = None
 
@@ -399,6 +406,9 @@ def init_db():
     with engine().begin() as c:
         c.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS fx_usd_aed DOUBLE PRECISION"))
         c.execute(text("ALTER TABLE clients ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE"))
+        # AI Support (additive only: new nullable/defaulted columns, no data rewritten)
+        c.execute(text("ALTER TABLE clients ADD COLUMN IF NOT EXISTS ai_processing_allowed BOOLEAN NOT NULL DEFAULT FALSE"))
+        c.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_lead BOOLEAN NOT NULL DEFAULT FALSE"))
     migrate_access()
 
 

@@ -32,6 +32,18 @@ services:
         value: trafficomm.com
       - key: ZOHO_ADMIN_EMAILS
         value: matheen.m@trafficomm.com
+      - key: CLAUDE_ROUTINE_FIRE_URL
+        sync: false
+      - key: CLAUDE_ROUTINE_TOKEN
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: ENGINEERING_CALLBACK_SECRET
+        sync: false
+      - key: ZOHO_SMTP_USER
+        sync: false
+      - key: ZOHO_SMTP_PASSWORD
+        sync: false
 databases:
   - name: trafficomm-db
     plan: basic-256mb

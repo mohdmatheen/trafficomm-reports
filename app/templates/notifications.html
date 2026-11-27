@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% from "partials/ui.html" import icon, empty_state %}
+{% block page %}notifications{% endblock %}
+{% block title %}Notifications · Trafficomm{% endblock %}
+{% block head %}<script src="/static/support.js" defer></script>{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Notifications</h1><p class="page-sub">Questions from Claude, approvals, corrected reports and validation results.</p></div>
+{% if rows %}<button class="btn" data-sp="read-all">{{ icon('check') }}Mark all as read</button>{% endif %}</div>
+{% if rows %}
+<div class="card"><ul class="nt-list">
+{% for n in rows %}<li class="{{ 'unread' if not n.read_at }}"><a href="{{ n.link or '#' }}">{{ n.text }}</a><span class="muted small">{{ n.created_at|ago }}</span></li>{% endfor %}
+</ul></div>
+{% else %}{{ empty_state('Nothing yet', 'You’ll see questions, approvals and corrected reports here.', 'clock') }}{% endif %}
+{% endblock %}

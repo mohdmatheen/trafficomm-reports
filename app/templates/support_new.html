@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "partials/ui.html" import icon %}
+{% block page %}support-new{% endblock %}
+{% block title %}New issue · AI Support{% endblock %}
+{% block head %}<script src="/static/support.js" defer></script>{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>{{ 'Start the FAB iOS All Events investigation' if pilot else 'New issue' }}</h1>
+<p class="page-sub">{% if task %}About <a href="/tasks/{{ task.id }}">{{ task.title }}</a>. The task, its version, files and validation results are attached automatically.{% else %}Tell Claude what’s wrong. You can attach files on the next page.{% endif %}</p></div></div>
+<form class="card sp-form" id="newIssueForm" data-pilot="{{ pilot }}">
+  {% if task %}<input type="hidden" name="task_id" value="{{ task.id }}"><input type="hidden" name="version_id" value="{{ version_id or '' }}">
+  {% else %}
+  <div class="field">
+    <label for="ni-client">Client</label>
+    <select id="ni-client" name="client_id">
+      {% if not pilot %}<option value="">No specific client (portal problem)</option>{% endif %}
+      {% for c in (fab_clients if pilot else clients) %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  {% if pilot %}
+  <input type="hidden" name="pilot" value="{{ pilot }}">
+  <div class="notice notice-info">{{ icon('info') }}<div><b>{{ pilot_title }}</b><p>Reported: 25 Nov 2026 portal higher by 11; 26 Nov 2026 portal higher by 12 (verified total 4191). On the next page you upload the AppsFlyer exports, the verified report and the internal workbook, and answer a few questions about the manual procedure. The figures are reconciled on our server, day by day and event by event.</p></div></div>
+  {% else %}
+  <div class="field"><label for="ni-title">Short title</label><input id="ni-title" name="title" maxlength="300" placeholder="e.g. 26 Nov All events total is 12 higher than our checked report"></div>
+  {% endif %}
+  <div class="field"><label for="ni-text">{{ 'Anything to add?' if pilot else 'What happened, and what did you expect?' }}{% if pilot %} <span class="opt">(optional)</span>{% endif %}</label>
+    <textarea id="ni-text" name="text" rows="6" maxlength="8000" placeholder="Dates, figures, file names and the steps you take by hand all help. Don’t paste passwords or customer details."></textarea>
+    <p class="f-hint">Your message is treated as information, not instructions. Customer and device identifiers are removed before anything is sent to Claude.</p></div>
+  <p class="f-err" id="ni-err" hidden></p>
+  <div class="sp-actions"><button class="btn btn-primary" type="submit">{{ icon('arrow-right') }}{{ 'Start investigation' if pilot else 'Send to Claude' }}</button>
+  <a class="btn btn-quiet" href="{{ '/tasks/' ~ task.id if task else '/support' }}">Cancel</a></div>
+</form>
+{% if fab_clients and not pilot and not task %}
+<div class="card sp-pilot-card">{{ icon('alert') }}<div><b>FAB iOS All Events discrepancy</b><p class="muted">The portal’s All events totals are higher than FAB’s verified report (25–26 Nov). Use the guided investigation to upload the files and answer the procedure questions.</p>
+<a class="btn btn-sm" href="/support/new?pilot=fab_ios_all_events">Start the guided investigation</a></div></div>
+{% endif %}
+{% endblock %}

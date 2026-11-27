@@ -25,13 +25,18 @@
     <nav class="sb-nav">
       <a href="/" class="sb-link{% if nav == 'overview' %} on{% endif %}"{% if nav == 'overview' %} aria-current="page"{% endif %}>{{ icon('home') }}<span>Overview</span></a>
       <a href="/tasks" class="sb-link{% if nav == 'tasks' %} on{% endif %}"{% if nav == 'tasks' %} aria-current="page"{% endif %}>{{ icon('layers') }}<span>Reporting tasks</span></a>
+      {% set _unread = unread_count(user) %}
+      <a href="/support" class="sb-link{% if nav == 'support' %} on{% endif %}"{% if nav == 'support' %} aria-current="page"{% endif %}>{{ icon('chat') }}<span>AI Support</span></a>
+      <a href="/intelligence" class="sb-link{% if nav == 'intelligence' %} on{% endif %}"{% if nav == 'intelligence' %} aria-current="page"{% endif %}>{{ icon('shield') }}<span>Client Intelligence</span></a>
+      <a href="/notifications" class="sb-link{% if nav == 'notifications' %} on{% endif %}"{% if nav == 'notifications' %} aria-current="page"{% endif %}>{{ icon('clock') }}<span>Notifications</span>{% if _unread %}<span class="sb-count" aria-label="{{ _unread }} unread">{{ _unread }}</span>{% endif %}</a>
       <a href="/guidelines" class="sb-link{% if nav == 'guidelines' %} on{% endif %}"{% if nav == 'guidelines' %} aria-current="page"{% endif %}>{{ icon('info') }}<span>Upload guidelines</span></a>
       {% if user.role == 'admin' %}
       <hr class="sb-sep">
-      <a href="/admin" class="sb-link{% if nav in ('admin', 'usage') %} on{% endif %}"{% if nav == 'admin' %} aria-current="page"{% endif %}>{{ icon('gear') }}<span>Administration</span></a>
+      <a href="/admin" class="sb-link{% if nav in ('admin', 'usage', 'admin_support') %} on{% endif %}"{% if nav == 'admin' %} aria-current="page"{% endif %}>{{ icon('gear') }}<span>Administration</span></a>
       <div class="sb-sub">
         <a href="/admin" class="sb-sublink{% if nav == 'admin' %} on{% endif %}">Users &amp; access</a>
         <a href="/admin/usage" class="sb-sublink{% if nav == 'usage' %} on{% endif %}"{% if nav == 'usage' %} aria-current="page"{% endif %}>Usage &amp; costs</a>
+        <a href="/admin/support" class="sb-sublink{% if nav == 'admin_support' %} on{% endif %}"{% if nav == 'admin_support' %} aria-current="page"{% endif %}>AI Support control centre</a>
       </div>
       {% endif %}
     </nav>
