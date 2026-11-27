@@ -480,3 +480,38 @@ def test_pages_render(app, mp, boss, people):
     assert r.status_code == 200 and "Emergency" in r.text
     assert "AI Support" in boss.get("/").text
     assert people["janani"].post("/api/notifications/read", headers=H, json={}).json()["ok"]
+
+
+def test_fab_reconciliation_runs_locally_and_proposes_a_rule(app, mp, people, tmp_path):
+    from app.engine import event_report as E
+    from tests.test_event_reconcile import REC, _data, _row, _write, EVS as REVS
+    rows, _ = _data(lambda day, j: [_row(day, REVS[j % len(REVS)], f"T{day}{j}", "Internal_QA_Test")])
+    files = _write(str(tmp_path / "raw"), rows, 26)
+    clean_rows = {k: [r for r in v if r[4] != "Internal_QA_Test"] for k, v in rows.items()}
+    clean = _write(str(tmp_path / "clean"), clean_rows, 26)
+    verified_path = str(tmp_path / "FAB_IOS-PLT Report All events_26_11_2026.xlsx")
+    E.write_workbook(REC, E.build_counts(REC, clean), None, verified_path)
+    jan = people["janani"]
+    i = new_issue(jan, pilot="fab_ios_all_events", client_id=cid(FAB), text="Portal higher by 11 and 12.")
+    assert jan.post(f"/api/support/issues/{i['id']}/reconcile", headers=H).status_code == 400  # files missing
+    for slot, f in (("ios_in_app", files[0]), ("ios_non_organic", files[1])):
+        with open(f["path"], "rb") as fh:
+            assert jan.post(f"/api/support/issues/{i['id']}/attachments", headers=H, data={"slot": slot},
+                            files={"file": (f["name"], fh.read(), "text/csv")}).status_code == 200
+    with open(verified_path, "rb") as fh:
+        assert jan.post(f"/api/support/issues/{i['id']}/attachments", headers=H, data={"slot": "verified_report"},
+                        files={"file": ("verified.xlsx", fh.read(), "application/octet-stream")}).status_code == 200
+    r = jan.post(f"/api/support/issues/{i['id']}/reconcile", headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["rule_candidate"]
+    with Session() as s:
+        iss = s.get(SupportIssue, i["id"])
+        rc = iss.meta["reconciliation"]
+        assert rc["rule_candidate"]["key"] == "exclude_campaign:Internal_QA_Test"
+        rule = s.scalar(select(ClientRule).where(ClientRule.key == "ios-all-events-exclude-campaign-internal-qa-test"))
+        assert rule.status == "proposed" and rule.spec["add_campaign_exclusions"] == ["Internal_QA_Test"]
+    assert jan.post(f"/api/support/issues/{i['id']}/reconcile", headers=H).status_code == 200  # re-run doesn't duplicate the rule
+    with Session() as s:
+        assert len(s.scalars(select(ClientRule).where(ClientRule.key.like("ios-all-events-%"))).all()) == 1
+    page = jan.get(f"/support/{i['id']}").text
+    assert "Reconciliation result" in page and "Internal_QA_Test" in page

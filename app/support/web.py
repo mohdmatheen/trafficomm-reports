@@ -251,6 +251,24 @@ def _action(request, issue_id, fn):
         return out or {"ok": True}
 
 
+@router.post("/api/support/issues/{issue_id}/reconcile")
+async def api_reconcile(request: Request, issue_id: int):
+    from starlette.concurrency import run_in_threadpool
+    from .reconcile_job import ReconcileError, run_reconciliation
+    user = require_user(request)
+
+    def work():
+        with Session() as s:
+            i = _issue_or_404(s, user, issue_id)
+            try:
+                out = run_reconciliation(s, i, user)
+            except ReconcileError as e:
+                _err(e)
+            s.commit()
+            return {"ok": True, "verdict": out["verdict"], "rule_candidate": bool(out.get("rule_candidate"))}
+    return await run_in_threadpool(work)
+
+
 @router.post("/api/support/issues/{issue_id}/engineering")
 async def api_engineering(request: Request, issue_id: int):
     d = await request.json() if (await request.body()) else {}

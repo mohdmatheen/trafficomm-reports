@@ -1,0 +1,25 @@
+{% from "partials/ui.html" import icon %}
+{% set rc = i.meta.get('reconciliation') %}
+<div class="sp-recon" aria-labelledby="h-recon">
+  <h3 id="h-recon">Reconciliation result</h3>
+  <p class="sp-verdict">{{ rc.verdict }}</p>
+  <div class="tbl-wrap"><table class="tbl">
+    <caption class="sr">Totals per verified date under the current rule</caption>
+    <thead><tr><th scope="col">Date</th><th scope="col" class="num">Portal</th><th scope="col" class="num">Verified</th><th scope="col" class="num">Cell difference</th></tr></thead>
+    <tbody>{% for d in rc.baseline.per_date %}<tr><td>{{ d.date }}</td><td class="num">{{ d.portal }}</td><td class="num">{{ d.verified }}</td><td class="num">{{ d.cell_error }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% if rc.mismatched_cells %}
+  <h4>Cells that differ</h4>
+  <div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th scope="col">Date</th><th scope="col">Event</th><th scope="col" class="num">Portal</th><th scope="col" class="num">Verified</th><th scope="col">Campaigns in this cell</th></tr></thead>
+    <tbody>{% for c in rc.mismatched_cells[:20] %}<tr><td>{{ c.date }}</td><td><code>{{ c.event }}</code></td><td class="num">{{ c.portal }}</td><td class="num">{{ c.verified }}</td>
+      <td class="small">{% for n, k in c.campaigns %}{{ n or '(blank)' }} ({{ k }}){{ ', ' if not loop.last }}{% endfor %}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+  <h4>Candidate rules, tested on every date</h4>
+  <div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th scope="col">Candidate</th><th scope="col" class="num">Total cell error</th><th scope="col" class="num">Dates exact</th></tr></thead>
+    <tbody>{% for c in rc.candidates[:10] %}<tr{% if c.reproduces_all %} class="row-ok"{% endif %}><td>{{ c.label }}</td><td class="num">{{ c.total_error }}</td><td class="num">{{ c.exact_dates }} / {{ rc.dates|length }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% if rc.rule_candidate %}<p class="small">{{ icon('info') }}Proposed in <a href="/intelligence/{{ i.client_id }}">Client Intelligence</a> for a reporting lead to approve.</p>{% endif %}
+</div>
