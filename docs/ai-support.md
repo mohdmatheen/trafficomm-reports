@@ -58,7 +58,7 @@ use Render's rollback. Every step is in the issue's event log and the admin audi
 | `CLAUDE_ROUTINE_FIRE_URL` | `https://api.anthropic.com/v1/claude_code/routines/<trig_id>/fire` of the scheduled task's API trigger |
 | `CLAUDE_ROUTINE_TOKEN` | the trigger's bearer token (shown once when the API trigger is created) |
 | `ENGINEERING_BACKEND` | `routine` (default when the two above are set), `github_actions`, or `off` |
-| `GITHUB_TOKEN` | fine-grained token for this repo: Pull requests read (write only if auto-merge is wanted), Checks read, Contents read, Metadata read |
+| `GITHUB_TOKEN` | fine-grained token for this repo: read-only Contents, Metadata, Pull requests, Actions and Commit statuses (fine-grained tokens have no Checks permission, so test results are read from Actions runs, then commit statuses) |
 | `GITHUB_DISPATCH_TOKEN` | only for `github_actions`: Contents write (repository_dispatch) |
 | `ENGINEERING_CALLBACK_SECRET` | optional; random 32+ chars, also given to the agent so it can sign callbacks |
 | `ENGINEERING_MERGE_ON_APPROVAL` | `1` to squash-merge on portal approval (default off: merge on GitHub) |

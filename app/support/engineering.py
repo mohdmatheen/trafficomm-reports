@@ -363,19 +363,41 @@ def find_pr(issue: SupportIssue, run: EngineeringRun) -> dict | None:
     return None
 
 
+def _summarise(states: list[str]) -> str:
+    """Combine per-check states (pending | success | failure) into one; nothing reported yet counts as pending."""
+    if not states or "pending" in states:
+        return "pending"
+    return "failure" if "failure" in states else "success"
+
+
+def _conclusion(status: str | None, conclusion: str | None) -> str:
+    if status != "completed":
+        return "pending"
+    return "success" if conclusion in ("success", "neutral", "skipped") else "failure"
+
+
 def checks_state(sha: str) -> str:
-    c = cfg()
-    r = _gh("GET", f"/repos/{c['repo']}/commits/{sha}/check-runs", params={"per_page": 100})
-    if r.status_code != 200:
-        return "pending"
-    runs = r.json().get("check_runs", [])
-    if not runs:
-        return "pending"
-    if any(x["status"] != "completed" for x in runs):
-        return "pending"
-    if all(x.get("conclusion") in ("success", "neutral", "skipped") for x in runs):
-        return "success"
-    return "failure"
+    """Test result for a commit: check runs, else workflow runs, else commit statuses.
+
+    Fine-grained GitHub tokens have no "Checks" permission, so check-runs can return 403; the Actions runs
+    API (Actions: read) and the combined commit status (Commit statuses: read) give the same answer.
+    """
+    repo = cfg()["repo"]
+    r = _gh("GET", f"/repos/{repo}/commits/{sha}/check-runs", params={"per_page": 100})
+    if r.status_code == 200:
+        runs = r.json().get("check_runs", [])
+        if runs:
+            return _summarise([_conclusion(x.get("status"), x.get("conclusion")) for x in runs])
+    r = _gh("GET", f"/repos/{repo}/actions/runs", params={"head_sha": sha, "per_page": 100})
+    if r.status_code == 200:
+        runs = r.json().get("workflow_runs", [])
+        if runs:
+            return _summarise([_conclusion(x.get("status"), x.get("conclusion")) for x in runs])
+    r = _gh("GET", f"/repos/{repo}/commits/{sha}/status")
+    if r.status_code == 200 and r.json().get("statuses"):
+        st = r.json().get("state")
+        return {"success": "success", "failure": "failure", "error": "failure"}.get(st, "pending")
+    return "pending"
 
 
 def pr_files(number: int) -> list[str]:

@@ -480,3 +480,36 @@ def test_pages_render(app, mp, boss, people):
     assert r.status_code == 200 and "Emergency" in r.text
     assert "AI Support" in boss.get("/").text
     assert people["janani"].post("/api/notifications/read", headers=H, json={}).json()["ok"]
+
+
+def test_checks_state_falls_back_when_check_runs_forbidden(monkeypatch):
+    """Fine-grained tokens can't read check-runs (403): use Actions runs, then commit statuses."""
+    from app.support import engineering as E
+    monkeypatch.setattr(E, "cfg", lambda: {"repo": "o/r"})
+
+    def make(check, actions, status):
+        def gh(method, path, token=None, **kw):
+            if path.endswith("/check-runs"):
+                return check
+            if path.endswith("/actions/runs"):
+                assert kw["params"]["head_sha"] == "abc"
+                return actions
+            if path.endswith("/status"):
+                return status
+            raise AssertionError(path)
+        return gh
+    forbidden = FakeResp(403, {})
+    run = lambda st, c=None: {"status": st, "conclusion": c}
+    cases = [
+        (FakeResp(200, {"check_runs": [run("completed", "success")]}), forbidden, forbidden, "success"),
+        (forbidden, FakeResp(200, {"workflow_runs": [run("completed", "success"), run("completed", "skipped")]}), forbidden, "success"),
+        (forbidden, FakeResp(200, {"workflow_runs": [run("completed", "success"), run("completed", "failure")]}), forbidden, "failure"),
+        (forbidden, FakeResp(200, {"workflow_runs": [run("in_progress"), run("completed", "failure")]}), forbidden, "pending"),
+        (forbidden, FakeResp(200, {"workflow_runs": []}), FakeResp(200, {"state": "failure", "statuses": [{}]}), "failure"),
+        (forbidden, forbidden, FakeResp(200, {"state": "success", "statuses": [{}]}), "success"),
+        (forbidden, forbidden, FakeResp(200, {"state": "pending", "statuses": []}), "pending"),
+        (forbidden, forbidden, forbidden, "pending"),
+    ]
+    for check, actions, status, want in cases:
+        monkeypatch.setattr(E, "_gh", make(check, actions, status))
+        assert E.checks_state("abc") == want, (check.status_code, want)
