@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "partials/ui.html" import icon %}
+{% block page %}intelligence-client{% endblock %}
+{% block title %}{{ c.name }} · Client Intelligence{% endblock %}
+{% block head %}<script src="/static/support.js" defer></script>{% endblock %}
+{% block bodyattrs %}data-client-id="{{ c.id }}"{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>{{ c.name }}</h1><p class="page-sub">Only approved rules are used in reports. Rules that change calculations become permanent through a reviewed pull request.</p></div>
+<span class="chip-ind">{{ icon('shield') }}{{ 'AI processing authorised' if c.ai_processing_allowed else 'AI processing not authorised' }}</span></div>
+
+{% if proposed %}
+<section class="card" aria-labelledby="h-prop"><h2 id="h-prop">Awaiting review ({{ proposed|length }})</h2>
+{% for r in proposed %}
+<article class="ci-rule ci-proposed">
+  <header><b>{{ r.title }}</b> <span class="muted small">{{ RULE_CATEGORIES.get(r.category, r.category) }} · v{{ r.version }} · proposed {{ 'by ' ~ users[r.proposed_by].name if r.proposed_by in users else 'by the ' ~ r.source ~ ' agent' }} {{ r.created_at|ago }}{% if r.issue_id %} · from <a href="/support/{{ r.issue_id }}">AIS-{{ '%04d'|format(r.issue_id) }}</a>{% endif %}</span></header>
+  <div class="ci-body">{{ r.body }}</div>
+  {% if can_approve %}
+  <div class="sp-actions"><label class="check"><input type="checkbox" data-validated="{{ r.id }}"> Validated against real report data</label>
+  <button class="btn btn-sm btn-primary" data-rule="approve" data-id="{{ r.id }}">{{ icon('check') }}Approve</button>
+  <button class="btn btn-sm" data-rule="reject" data-id="{{ r.id }}">Reject</button></div>
+  {% endif %}
+</article>
+{% endfor %}
+{% if not can_approve %}<p class="muted small">A reporting lead for {{ c.name }} or an administrator reviews these.</p>{% endif %}
+</section>
+{% endif %}
+
+{% for cat, label in RULE_CATEGORIES.items() %}{% if by_cat.get(cat) %}
+<section class="card"><h2>{{ label }}</h2>
+{% for r in by_cat[cat] %}
+<details class="ci-rule"><summary><b>{{ r.title }}</b> <span class="muted small">v{{ r.version }} · {{ 'from code' if r.source == 'code' else r.source }}{% if r.validated %} · validated{% endif %}{% if r.decided_at %} · approved {{ r.decided_at|ago }}{% endif %}</span></summary>
+  <div class="ci-body">{{ r.body }}</div>
+  {% if r.pr_url %}<p class="small"><a href="{{ r.pr_url }}" target="_blank" rel="noopener">Pull request</a></p>{% endif %}
+  {% if history[r.key]|length > 1 %}<p class="small muted">History: {% for h in history[r.key] %}v{{ h.version }} {{ h.status }}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+</details>
+{% endfor %}
+</section>
+{% endif %}{% endfor %}
+
+<section class="card" aria-labelledby="h-new"><h2 id="h-new">Propose a rule or change</h2>
+<form id="ruleForm">
+  <div class="row2"><div class="field"><label for="r-title">Title</label><input id="r-title" name="title" maxlength="300" required placeholder="e.g. Exclude Test_ campaigns from All events"></div>
+  <div class="field"><label for="r-cat">Category</label><select id="r-cat" name="category">{% for k, l in RULE_CATEGORIES.items() %}<option value="{{ k }}">{{ l }}</option>{% endfor %}</select></div></div>
+  <div class="field"><label for="r-key">Replaces rule <span class="opt">(optional)</span></label><select id="r-key" name="key"><option value="">New rule</option>{% for k, hs in history.items() %}<option value="{{ k }}">{{ hs[0].title }}</option>{% endfor %}</select></div>
+  <div class="field"><label for="r-body">The rule, precisely</label><textarea id="r-body" name="body" rows="4" required placeholder="What it applies to, exactly what to do, and since when."></textarea></div>
+  <button class="btn btn-primary" type="submit">{{ icon('plus') }}Submit for approval</button>
+</form></section>
+{% endblock %}

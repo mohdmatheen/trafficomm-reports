@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% from "partials/ui.html" import icon, empty_state %}
+{% block page %}intelligence{% endblock %}
+{% block title %}Client Intelligence · Trafficomm{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Client Intelligence</h1><p class="page-sub">Each client’s approved reporting rules: data sources, metrics and events, campaign rules, exclusions, calculation and validation rules, with full version history.</p></div></div>
+{% if clients %}
+<div class="ci-grid">
+{% for c in clients %}
+<a class="card ci-card" href="/intelligence/{{ c.id }}"><h2>{{ c.name }}</h2>
+<p class="muted">{{ counts[c.id].approved }} approved rule{{ 's' if counts[c.id].approved != 1 }}{% if counts[c.id].proposed %} · <b>{{ counts[c.id].proposed }} awaiting review</b>{% endif %}</p>
+<p class="small">{{ icon('shield') }}{{ 'AI processing authorised' if c.ai_processing_allowed else 'AI processing not authorised' }}</p></a>
+{% endfor %}
+</div>
+{% else %}{{ empty_state('No clients', 'Ask an administrator to give you access to a client.', 'shield') }}{% endif %}
+{% endblock %}

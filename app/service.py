@@ -715,6 +715,19 @@ def persist_result(job_id: int, vid: int, tid: int, result: dict):
         job = s.get(Job, job_id)
         job.heartbeat_at = now()
         s.commit()
+    if result["status"] in ("validation_blocked", "sheet_mismatch") and not (result.get("kind") == "event_report" and result["status"] == "validation_blocked"):
+        _support_issue_for_validation(tid, vid)
+
+
+def _support_issue_for_validation(tid: int, vid: int):
+    """AI Support: a blocking validation discrepancy opens an issue for the task owner (never breaks processing)."""
+    try:
+        from .support.service import from_validation
+        with Session() as s:
+            from_validation(s, s.get(Task, tid), s.get(TaskVersion, vid))
+            s.commit()
+    except Exception:  # noqa: BLE001
+        logging.getLogger("trafficomm.service").exception("could not open a support issue for validation")
 
 
 def change_summary(base: TaskVersion, v: TaskVersion, s) -> dict:
@@ -803,6 +816,12 @@ def verify_google_sheet(s, task: Task, user: User, f: TaskFile) -> dict:
     else:
         task.status = v.status = "sheet_mismatch"
         text = res["title"] + ". " + (res.get("fix") or "") + (" First issue: " + res["errors"][0] if res.get("errors") else "")
+        try:
+            from .support.service import from_validation
+            with s.begin_nested():
+                from_validation(s, task, v, [res["title"]] + list(res.get("errors") or [])[:7])
+        except Exception:  # noqa: BLE001 - AI Support must never block the sheet check
+            logging.getLogger("trafficomm.service").exception("could not open a support issue for the sheet mismatch")
     s.add(Message(task_id=task.id, version_id=v.id, author_id=None, kind="assistant", text=text))
     audit(s, user.id, "sheet_check", f"task {task.id} v{v.number} {'ok' if res['ok'] else 'mismatch'}")
     return res

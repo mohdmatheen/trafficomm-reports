@@ -81,11 +81,35 @@ templates.env.globals.update(STATUS_LABEL=S.STATUS_LABEL, PLATFORM_LABELS=F.PLAT
 @app.on_event("startup")
 def _startup():
     init_db()
+    try:  # Client Intelligence: rules that already exist as code are recorded once as approved v1
+        from .support.knowledge import seed_from_code
+        with Session() as s:
+            if s.bind.dialect.name == "postgresql":
+                from sqlalchemy import text as _t
+                s.execute(_t("SELECT pg_advisory_xact_lock(724003)"))
+            seed_from_code(s)
+            s.commit()
+    except Exception:  # noqa: BLE001
+        log.exception("Client Intelligence seed failed")
+
+
+def _unread(user) -> int:
+    if not user:
+        return 0
+    try:
+        from .support.notify import unread_count
+        return unread_count(user.id)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+templates.env.globals["unread_count"] = _unread
 
 
 @app.middleware("http")
 async def csrf_and_headers(request: Request, call_next):
-    if request.url.path.startswith("/api/") and request.method in ("POST", "PATCH", "DELETE", "PUT"):
+    if (request.url.path.startswith("/api/") and request.method in ("POST", "PATCH", "DELETE", "PUT")
+            and request.url.path != "/api/engineering/callback"):  # machine callback: HMAC-signed, no cookie session
         if request.headers.get("x-requested-with") != "fetch":
             return JSONResponse({"detail": "Missing CSRF header"}, status_code=403)
     resp = await call_next(request)
@@ -1434,3 +1458,9 @@ async def usage_stream(request: Request):
                 await conn.close()
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+# AI Support, Client Intelligence and the AI Support control centre
+from .support.web import router as support_router  # noqa: E402
+
+app.include_router(support_router)

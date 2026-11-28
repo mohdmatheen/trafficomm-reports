@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% from "partials/ui.html" import icon %}
+{% block page %}admin-support{% endblock %}
+{% block title %}AI Support control centre · Trafficomm{% endblock %}
+{% block head %}<script src="/static/support.js" defer></script>{% endblock %}
+{% block mainclass %}page page-wide{% endblock %}
+{% macro issue_row(i) %}<tr><td><a href="/support/{{ i.id }}"><b>{{ i.ref }}</b> {{ i.title[:80] }}</a></td><td>{{ ISSUE_STATUSES.get(i.status, i.status) }}</td><td class="nowrap">{{ i.updated_at|ago }}</td></tr>{% endmacro %}
+{% block content %}
+<div class="page-head"><div><h1>AI Support control centre</h1><p class="page-sub">Issues, engineering investigations, approvals, AI spend and the automation controls.</p></div>
+{% if settings.emergency_stop == '1' %}<span class="chip-ind bad">{{ icon('alert') }}Emergency stop is ON</span>{% endif %}</div>
+
+<div class="stat-row">
+  <div class="stat"><div class="stat-txt"><b>{{ stats.open }}</b><span>Open issues</span></div></div>
+  <div class="stat tone-warn"><div class="stat-txt"><b>{{ stats.waiting }}</b><span>Waiting for employees</span></div></div>
+  <div class="stat"><div class="stat-txt"><b>{{ stats.engineering }}</b><span>Engineering investigations</span></div></div>
+  <div class="stat tone-ok"><div class="stat-txt"><b>{{ stats.validation }}</b><span>Reports awaiting validation</span></div></div>
+  <div class="stat {{ 'tone-bad' if stats.failed }}"><div class="stat-txt"><b>{{ stats.failed }}</b><span>Failed automation runs</span></div></div>
+</div>
+<p class="muted">Resolved in the last 90 days: {{ stats.resolved90 }}{% if stats.avg_hours is not none %} · average resolution time {{ stats.avg_hours }} h{% endif %}</p>
+
+<section class="card" aria-labelledby="h-ctl"><h2 id="h-ctl">Automation controls</h2>
+<form id="ctlForm" class="ctl-grid">
+  {% for k, label in LABELS.items() %}
+  {% if k in BOOL_KEYS %}
+  <label class="check ctl-{{ k }}"><input type="checkbox" name="{{ k }}" {{ 'checked' if settings[k] == '1' }}> {{ label }}</label>
+  {% else %}
+  <div class="field"><label for="c-{{ k }}">{{ label }}</label><input id="c-{{ k }}" name="{{ k }}" type="number" min="0" step="{{ '0.01' if k == 'monthly_ai_budget_usd' else '1' }}" value="{{ settings[k] }}"></div>
+  {% endif %}
+  {% endfor %}
+  <div class="sp-actions"><button class="btn btn-primary" type="submit">{{ icon('check') }}Save controls</button>
+  <button class="btn btn-danger-quiet" type="button" data-sp="estop" data-on="{{ '0' if settings.emergency_stop == '1' else '1' }}">{{ icon('alert') }}{{ 'Release emergency stop' if settings.emergency_stop == '1' else 'Emergency stop' }}</button></div>
+</form>
+<p class="muted small">Engineering engine: {{ eng.label }} · GitHub status sync: {{ 'on' if eng.status_sync else 'off (GITHUB_TOKEN not set)' }} · signed callback: {{ 'on' if eng.callback else 'off' }} · running commit: {{ eng.deployed_commit or 'unknown' }} · email: {{ 'Zoho SMTP configured' if smtp else 'not configured' }}</p>
+</section>
+
+<section class="card" aria-labelledby="h-spend"><h2 id="h-spend">AI consumption this month (estimated)</h2>
+<div class="meter" role="img" aria-label="{{ spend.pct }}% of the monthly budget"><span style="width:{{ spend.pct }}%"></span></div>
+<p>All Claude steps: <b>${{ '%.2f'|format(spend.all) }}</b> of ${{ '%.2f'|format(spend.budget) }} budget · AI Support replies: ${{ '%.2f'|format(spend.support) }} ({{ spend.support_requests }} requests). Billed figures: <a href="/admin/usage">Usage &amp; costs</a>. Engineering runs use the Claude subscription, not this budget.</p>
+</section>
+
+<div class="sp-grid2">
+<section class="card"><h2>Open issues</h2>{% if open_issues %}<div class="tbl-wrap"><table class="tbl"><tbody>{% for i in open_issues %}{{ issue_row(i) }}{% endfor %}</tbody></table></div>{% else %}<p class="muted">None.</p>{% endif %}</section>
+<section class="card"><h2>Engineering investigations</h2>{% if active_runs %}<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Issue</th><th>Status</th><th>PR</th><th>Tests</th></tr></thead><tbody>
+{% for r in active_runs %}{% set i = issue_by_id.get(r.issue_id) %}<tr><td>{% if i %}<a href="/support/{{ i.id }}">{{ i.ref }}</a>{% endif %}</td><td>{{ r.status|replace('_',' ') }}</td><td>{% if r.pr_url %}<a href="{{ r.pr_url }}" target="_blank" rel="noopener">#{{ r.pr_number }}</a>{% else %}—{% endif %}</td><td>{{ r.checks_state or '—' }}</td></tr>{% endfor %}
+</tbody></table></div>{% else %}<p class="muted">None running.</p>{% endif %}</section>
+<section class="card"><h2>Waiting for employee input</h2>{% if waiting_issues %}<div class="tbl-wrap"><table class="tbl"><tbody>{% for i in waiting_issues %}{{ issue_row(i) }}{% endfor %}</tbody></table></div>{% else %}<p class="muted">None.</p>{% endif %}</section>
+<section class="card"><h2>Reports awaiting validation</h2>{% if validation_issues %}<div class="tbl-wrap"><table class="tbl"><tbody>{% for i in validation_issues %}{{ issue_row(i) }}{% endfor %}</tbody></table></div>{% else %}<p class="muted">None.</p>{% endif %}</section>
+<section class="card"><h2>Failed automation runs</h2>{% if failed_runs %}<ul class="sp-files">{% for r in failed_runs %}{% set i = issue_by_id.get(r.issue_id) %}<li>{% if i %}<a href="/support/{{ i.id }}">{{ i.ref }}</a>{% endif %}: {{ (r.last_error or '')[:160] }}</li>{% endfor %}</ul>{% else %}<p class="muted">None.</p>{% endif %}</section>
+<section class="card"><h2>Recurring issues (90 days)</h2>{% if recurring %}<ul class="sp-files">{% for r in recurring %}<li>{{ r.client }} · {{ CATEGORIES.get(r.category, r.category) }}: <b>{{ r.count }}</b></li>{% endfor %}</ul>{% else %}<p class="muted">None.</p>{% endif %}</section>
+<section class="card"><h2>Issues by client</h2><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Client</th><th>Open</th><th>Resolved</th><th>Total</th></tr></thead><tbody>{% for k, v in per_client.items() %}<tr><td>{{ k }}</td><td>{{ v.open }}</td><td>{{ v.resolved }}</td><td>{{ v.total }}</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="card"><h2>Approval history</h2>{% if rule_audit %}<ul class="sp-events">{% for a in rule_audit %}<li><span class="muted small">{{ a.at|local('%d %b, %H:%M') }}</span> {{ a.action|replace('_',' ') }}: {{ a.target }}{% if a.user_id in users %} · {{ users[a.user_id].name }}{% endif %}</li>{% endfor %}</ul>{% else %}<p class="muted">Nothing yet.</p>{% endif %}</section>
+</div>
+
+<section class="card" aria-labelledby="h-cli"><h2 id="h-cli">Client authorisation for external AI processing</h2>
+<p class="muted small">Only tick a client once they’ve agreed that report data may be processed by Anthropic’s API. While off, AI Support answers with built-in rules and nothing about that client is sent to Claude or to the engineering agent. FAB is a banking client: confirm in writing first.</p>
+<ul class="ci-auth">{% for c in clients %}<li><label class="check"><input type="checkbox" data-client-ai="{{ c.id }}" {{ 'checked' if c.ai_processing_allowed }}> {{ c.name }}</label></li>{% endfor %}</ul>
+</section>
+
+<section class="card" aria-labelledby="h-emp"><h2 id="h-emp">Employees: activity, reporting leads and limits</h2>
+<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Employee</th><th>Issues this month</th><th>Messages</th><th>Claude replies</th><th>Monthly Claude limit</th><th>Reporting lead</th></tr></thead><tbody>
+{% for a in activity %}<tr><td>{{ a.u.name }}<br><span class="muted small">{{ a.u.email }}</span></td><td>{{ a.issues }}</td><td>{{ a.messages }}</td><td>{{ a.claude }}</td>
+<td><input type="number" min="0" class="sm-num" value="{{ a.limit }}" data-user-limit="{{ a.u.id }}" aria-label="Monthly Claude limit for {{ a.u.name }}"></td>
+<td><input type="checkbox" data-user-lead="{{ a.u.id }}" {{ 'checked' if a.u.is_lead }} aria-label="{{ a.u.name }} is a reporting lead"></td></tr>{% endfor %}
+</tbody></table></div>
+<p class="muted small">Reporting leads approve client rules and calculation fixes for the clients they’re assigned to. Security, sign-in, permissions, database, infrastructure and secrets changes always need an administrator.</p>
+</section>
+{% endblock %}

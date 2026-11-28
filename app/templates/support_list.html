@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "partials/ui.html" import icon, empty_state %}
+{% block page %}support{% endblock %}
+{% block title %}AI Support · Trafficomm{% endblock %}
+{% block head %}<script src="/static/support.js" defer></script>{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>AI Support</h1><p class="page-sub">Report a discrepancy, missing data or a portal problem, explain a manual procedure, or ask for a change. Claude investigates with you.</p></div>
+  <a class="btn btn-primary" href="/support/new">{{ icon('plus') }}New issue</a>
+</div>
+<nav class="sp-tabs" aria-label="Filter issues">
+  <a href="/support?status=open{% if mine %}&mine=1{% endif %}" class="{{ 'on' if status == 'open' }}">Open <span class="muted">{{ counts.open }}</span></a>
+  <a href="/support?status=waiting{% if mine %}&mine=1{% endif %}" class="{{ 'on' if status == 'waiting' }}">Waiting for you <span class="muted">{{ counts.waiting }}</span></a>
+  <a href="/support?status=resolved{% if mine %}&mine=1{% endif %}" class="{{ 'on' if status == 'resolved' }}">Resolved <span class="muted">{{ counts.resolved }}</span></a>
+  <a href="/support?status=all{% if mine %}&mine=1{% endif %}" class="{{ 'on' if status == 'all' }}">All</a>
+  <a href="/support?status={{ status }}{% if not mine %}&mine=1{% endif %}" class="sp-mine {{ 'on' if mine }}">{{ icon('user') }}Only mine</a>
+</nav>
+{% if issues %}
+<div class="card"><div class="tbl-wrap"><table class="tbl">
+  <thead><tr><th>Issue</th><th>Client</th><th>Category</th><th>Status</th><th>Reported by</th><th>Updated</th></tr></thead>
+  <tbody>
+  {% for i in issues %}
+  <tr>
+    <td><a href="/support/{{ i.id }}"><b>{{ i.ref }}</b> {{ i.title }}</a>{% if i.source == 'validation' %} <span class="sp-tag">From validation</span>{% endif %}{% if i.pilot %} <span class="sp-tag">Pilot</span>{% endif %}</td>
+    <td>{{ clients.get(i.client_id, '—') }}</td>
+    <td>{{ CATEGORIES.get(i.category, i.category) }}</td>
+    <td><span class="sp-st sp-st-{{ i.status }}">{{ ISSUE_STATUSES.get(i.status, i.status) }}</span></td>
+    <td>{{ users[i.reporter_id].name if i.reporter_id in users else 'System' }}</td>
+    <td class="nowrap">{{ i.updated_at|ago }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div></div>
+{% else %}
+{{ empty_state('No issues here', 'When something in a report looks wrong, open an issue or use “Resolve with AI” on the task.', 'chat', '/support/new', 'New issue') }}
+{% endif %}
+{% endblock %}

@@ -202,6 +202,8 @@ def worker_loop(once: bool = False, idle_exit: float | None = None):
             except Exception:  # noqa: BLE001 - cost reporting must never stop report processing
                 log.exception("usage sync failed")
             last_usage_sync = time.time()
+        from .support.engineering import maybe_tick
+        maybe_tick()  # AI Support: dispatch engineering runs, sync GitHub/deploy status, send notification emails
         job = claim(worker_id)
         if job:
             run_one(job, worker_id)
