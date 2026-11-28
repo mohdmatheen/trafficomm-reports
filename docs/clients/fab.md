@@ -29,3 +29,12 @@ Portal higher than the verified All Events report by 11 on 25 Nov 2026 and by 12
 extra exclusions beyond the 5 Always On campaigns, dedup key, attribution window, date/timezone basis,
 manual adjustments, and whether the sheet check should compare per-campaign tabs (option A) or not (B).
 Do **not** subtract 11/12 or hardcode totals; any rule must reproduce several dates.
+
+### How the pilot investigates (local, `app/engine/event_reconcile.py`)
+On the pilot issue, **Run reconciliation** recomputes the All Events report from the uploaded iOS exports
+and compares it cell by cell (day × event) with the verified report. It then tests candidate rule
+changes suggested by the surplus cells: also excluding a campaign (or the campaigns the employee listed),
+a media source, retargeting conversions, deduplicating on AppsFlyer ID or per day, a ±4 h day boundary,
+or one export type only. Every candidate is scored on every verified date. Only a candidate that is exact on
+at least two dates is proposed in Client Intelligence, for a reporting lead to approve; nothing is applied
+automatically. The result stored on the issue holds counts and campaign names only.

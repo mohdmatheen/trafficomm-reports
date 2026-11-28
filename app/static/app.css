@@ -1084,3 +1084,10 @@ th[aria-sort=descending] .th-sort::after{content:" ↓"}
 .ctl-grid .check{min-height:44px;display:flex;align-items:center;gap:8px}.ctl-grid .sp-actions{grid-column:1/-1}
 .meter{height:10px;border-radius:5px;background:#EEEDEA;overflow:hidden;margin:4px 0 10px}.meter span{display:block;height:100%;background:var(--red)}
 .sm-num{width:90px;height:36px}.chip-ind.bad{color:var(--red-ink);border-color:var(--red-line);background:var(--red-soft)}
+.sp-recon-run{display:flex;gap:16px;align-items:flex-start;justify-content:space-between;margin-top:20px;padding-top:16px;border-top:1px solid var(--border)}
+.sp-recon-run h3{margin:0 0 4px}
+.sp-recon{margin-top:12px}
+.sp-recon h4{margin:16px 0 6px;font-size:.9rem}
+.sp-verdict{font-weight:600}
+.sp-recon .row-ok td{background:color-mix(in srgb, #16a34a 10%, transparent)}
+@media (max-width:640px){.sp-recon-run{flex-direction:column}}

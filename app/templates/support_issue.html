@@ -55,7 +55,11 @@
       {% endfor %}
       <button class="btn btn-primary" type="submit">{{ icon('check') }}Save answers</button>
     </form>
-    {% if i.meta.get('reconciliation') %}{% include "partials/support_reconciliation.html" ignore missing %}{% endif %}
+    <div class="sp-recon-run">
+      <div><h3>Day-by-day reconciliation</h3><p class="muted small">Recomputes the report on this server and tests candidate rules (extra exclusions, retargeting, timezone, dedup key, export type) against every verified date. Nothing is applied automatically.</p></div>
+      <button class="btn" data-sp="reconcile" {{ 'disabled' if not (uploaded.get('ios_in_app') and uploaded.get('ios_non_organic') and uploaded.get('verified_report')) }}>{{ icon('refresh') }}{{ 'Run again' if i.meta.get('reconciliation') else 'Run reconciliation' }}</button>
+    </div>
+    {% if i.meta.get('reconciliation') %}{% include "partials/support_reconciliation.html" %}{% endif %}
   </section>
   {% endif %}
 
