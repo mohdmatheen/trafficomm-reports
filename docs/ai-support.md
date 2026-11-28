@@ -87,9 +87,11 @@ it about credentials, permissions, merging, deploying or changing secrets.
    Trafficomm-Issue line and the agent-report JSON block). Never merge or deploy.
 ```
 
-### GitHub Actions alternative
-`ENGINEERING_BACKEND=github_actions` sends a `repository_dispatch` (`engineering-agent`) that a workflow
-running `anthropics/claude-code-action@v1` can pick up (needs `ANTHROPIC_API_KEY` as a repository secret).
+### GitHub Actions alternative and CI
+`.github/workflows/tests.yml` runs the test suite with Postgres on every pull request, so "checks passed"
+means the suite is green. `.github/workflows/engineering-agent.yml` is the alternative backend:
+`ENGINEERING_BACKEND=github_actions` sends a `repository_dispatch` (`engineering-agent`) that it picks up
+with `anthropics/claude-code-action@v1`; the issue text is written to a file, never interpolated into the prompt (needs `ANTHROPIC_API_KEY` as a repository secret).
 Trade-off: it bills API usage instead of the plan, but status and logs stay in GitHub Actions and it has
 no 30-runs/hour trigger cap. The routine is the default because it matches the requested setup.
 
