@@ -7,3 +7,5 @@
 | KI-3 | Mayfair decks | needs input | The "Targeting" table needs a region breakdown or ad sets named West Bay / Geo-target Doha. |
 | KI-4 | ATC Frequency | by design | Frequency shows '-' when reach is 0 (the hand-made deck showed 0.00). |
 | KI-5 | Staging | gap | No staging service; use Render preview environments for fix PRs (docs/ai-support.md). |
+
+- 2026-11-28: Agent PR test status stuck on "pending" with a fine-grained token (no Checks permission). Fixed by falling back to Actions runs, then commit statuses. See docs/fixes/2026-11-28-checks-fallback.md.
